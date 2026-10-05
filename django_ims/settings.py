@@ -15,8 +15,9 @@ if not SECRET_KEY:
         raise ImproperlyConfigured("Set SECRET_KEY when DEBUG is disabled.")
     SECRET_KEY = "django-insecure-local-development-only"
 ALLOWED_HOSTS = [host.strip() for host in os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if host.strip()]
-if os.getenv("RENDER_EXTERNAL_HOSTNAME"):
-    ALLOWED_HOSTS.append(os.environ["RENDER_EXTERNAL_HOSTNAME"])
+render_hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME") or "fieldwork-internship.onrender.com"
+if render_hostname not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(render_hostname)
 
 INSTALLED_APPS = [
     "django.contrib.admin",
