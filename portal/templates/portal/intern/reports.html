@@ -1,0 +1,15 @@
+{% extends "base.html" %}{% block title %}Weekly reports | Fieldwork{% endblock %}
+{% block content %}<div class="page-heading"><div><p class="eyebrow">INTERN WORKSPACE</p><h1>Weekly reports</h1><p class="muted">Current reporting week begins {{ week_start }}.</p></div></div><section class="panel form-panel"><div class="section-heading"><h2>{% if form.instance.pk %}Update this week's report{% else %}Submit this week's report{% endif %}</h2><span class="status">Drafts saved in this browser</span></div><form method="post" class="stack-form" id="weekly-report-form">{% csrf_token %}{{ form.as_p }}<button class="button button-primary" type="submit">Submit report</button></form></section><section class="panel"><div class="section-heading"><h2>Previous submissions</h2></div><div class="table-wrap"><table><thead><tr><th>Week of</th><th>Status</th><th>Submitted</th><th>Supervisor feedback</th></tr></thead><tbody>{% for report in reports %}<tr><td>{{ report.week_start }}</td><td>{{ report.get_status_display }}</td><td>{{ report.submitted_at|date:"M j, Y" }}</td><td>{{ report.supervisor_feedback|default:"—"|truncatechars:90 }}</td></tr>{% empty %}<tr><td colspan="4" class="muted">No reports submitted yet.</td></tr>{% endfor %}</tbody></table></div></section>{% endblock %}
+{% block scripts %}<script>
+  const reportForm = document.getElementById("weekly-report-form");
+  const draftKey = "fieldwork-weekly-report-{{ week_start|date:'Y-m-d' }}";
+  const draft = JSON.parse(localStorage.getItem(draftKey) || "{}");
+  reportForm.querySelectorAll("textarea").forEach((field) => {
+    if (!field.value && draft[field.name]) field.value = draft[field.name];
+    field.addEventListener("input", () => {
+      const values = Object.fromEntries([...reportForm.querySelectorAll("textarea")].map((item) => [item.name, item.value]));
+      localStorage.setItem(draftKey, JSON.stringify(values));
+    });
+  });
+  if (new URLSearchParams(window.location.search).get("saved") === "1") localStorage.removeItem(draftKey);
+</script>{% endblock %}

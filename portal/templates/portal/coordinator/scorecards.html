@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Performance scorecards | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading">
+	<div>
+		<p class="eyebrow">PROGRAM OPERATIONS</p>
+		<h1>Performance scorecards</h1>
+		<p class="muted">Record a weekly performance review for an intern.</p>
+	</div>
+	<a class="button button-secondary" href="{% url 'portal:coordinator_dashboard' %}">Coordinator overview</a>
+</div>
+
+<section class="panel form-panel">
+	<form method="post" class="stack-form">
+		{% csrf_token %}
+		<label for="intern-id">
+			Intern
+			<select id="intern-id" name="intern_id" required>
+				<option value="">Choose an intern</option>
+				{% for intern in interns %}
+				<option value="{{ intern.id }}" {% if selected_intern.id == intern.id %}selected{% endif %}>
+					{{ intern.user.get_full_name|default:intern.user.username }}
+				</option>
+				{% endfor %}
+			</select>
+		</label>
+		<label for="week-start">Week begins<input id="week-start" type="date" name="week_start" value="{{ week_start }}" required></label>
+		{{ form.as_p }}
+		<button class="button button-primary" type="submit">Save scorecard</button>
+	</form>
+</section>
+
+<section class="panel">
+	<div class="section-heading"><h2>Recent reviews</h2></div>
+	<div class="table-wrap">
+		<table>
+			<thead><tr><th>Intern</th><th>Week</th><th>Average</th><th>Reviewer</th><th>Feedback</th></tr></thead>
+			<tbody>
+				{% for scorecard in scorecards %}
+				<tr>
+					<td>{{ scorecard.intern.user.get_full_name|default:scorecard.intern.user.username }}</td>
+					<td>{{ scorecard.week_start }}</td>
+					<td>{{ scorecard.average }} / 5</td>
+					<td>{{ scorecard.reviewer.get_full_name|default:scorecard.reviewer.username }}</td>
+					<td>{{ scorecard.feedback|default:"—"|truncatechars:90 }}</td>
+				</tr>
+				{% empty %}
+				<tr><td colspan="5" class="muted">No scorecards yet.</td></tr>
+				{% endfor %}
+			</tbody>
+		</table>
+	</div>
+</section>
+{% endblock %}

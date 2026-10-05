@@ -1,0 +1,2 @@
+{% extends "base.html" %}{% block title %}My profile | Fieldwork{% endblock %}
+{% block content %}<div class="page-heading"><div><p class="eyebrow">INTERN WORKSPACE</p><h1>Profile</h1><p class="muted">Keep your placement details and resume current.</p></div></div><section class="panel form-panel"><form method="post" enctype="multipart/form-data" class="stack-form">{% csrf_token %}{{ form.as_p }}<button class="button button-primary" type="submit">Save profile</button></form></section>{% endblock %}

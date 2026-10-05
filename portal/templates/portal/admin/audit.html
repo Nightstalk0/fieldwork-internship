@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Audit log | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">PROGRAM OPERATIONS</p>
+    <h1>Audit log</h1>
+    <p class="muted">Most recent recorded actions.</p>
+  </div>
+  <a class="button button-secondary" href="{% url 'portal:coordinator_dashboard' %}">Coordinator overview</a>
+</div>
+
+<section class="panel">
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Record</th><th>Details</th></tr></thead>
+      <tbody>
+        {% for log in logs %}
+        <tr>
+          <td>{{ log.created_at|date:"M j, Y H:i" }}</td>
+          <td>{{ log.actor.get_full_name|default:log.actor.username|default:"System" }}</td>
+          <td>{{ log.action }}</td>
+          <td>{{ log.object_type }} #{{ log.object_id|default:"—" }}</td>
+          <td>{{ log.details|default:"—"|truncatechars:100 }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5" class="muted">No audit events recorded.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

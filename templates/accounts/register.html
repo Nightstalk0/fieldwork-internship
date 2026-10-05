@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Create account | Fieldwork{% endblock %}
+{% block content %}
+<section class="auth-layout register-layout">
+  <div class="auth-copy"><p class="eyebrow">GET STARTED</p><h1>Build the next step into your work.</h1><p>One shared workspace for interns and their host organizations.</p></div>
+  <div class="auth-panel"><h2>Create account</h2>
+    <div class="role-tabs" role="tablist" aria-label="Account type">
+      <button type="button" role="tab" aria-selected="true" data-role="intern">Intern</button>
+      <button type="button" role="tab" aria-selected="false" data-role="company">Company</button>
+    </div>
+    <form method="post" class="stack-form">{% csrf_token %}{{ form.non_field_errors }}{{ form.as_p }}<button class="button button-primary" type="submit">Create account</button></form>
+    <p class="form-footnote">Already registered? <a href="{% url 'accounts:login' %}">Sign in</a></p>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}<script>
+  const roleSelect = document.getElementById("id_role");
+  document.querySelectorAll("[data-role]").forEach((tab) => tab.addEventListener("click", () => {
+    roleSelect.value = tab.dataset.role;
+    document.querySelectorAll("[data-role]").forEach((item) => item.setAttribute("aria-selected", String(item === tab)));
+  }));
+</script>{% endblock %}

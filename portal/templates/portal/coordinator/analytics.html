@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Program analytics | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading">
+	<div>
+		<p class="eyebrow">PROGRAM OPERATIONS</p>
+		<h1>Program analytics</h1>
+		<p class="muted">Application, attendance, scorecard, and risk signals across the program.</p>
+	</div>
+	<a class="button button-secondary" href="{% url 'portal:coordinator_dashboard' %}">Coordinator overview</a>
+</div>
+
+<section class="metric-grid">
+	<div class="metric"><span>Average technical score</span><strong>{{ average_score|floatformat:2|default:"—" }}</strong><small>Out of 5</small></div>
+</section>
+
+<div class="content-grid">
+	<section class="panel">
+		<h2>Applications</h2>
+		<ul class="plain-list">
+			{% for row in applications_by_status %}<li><span>{{ row.status|title }}</span><strong>{{ row.total }}</strong></li>
+			{% empty %}<li class="muted">No application data.</li>{% endfor %}
+		</ul>
+	</section>
+	<section class="panel">
+		<h2>Attendance</h2>
+		<ul class="plain-list">
+			{% for row in attendance_by_status %}<li><span>{{ row.status|title }}</span><strong>{{ row.total }}</strong></li>
+			{% empty %}<li class="muted">No attendance data.</li>{% endfor %}
+		</ul>
+	</section>
+	<section class="panel">
+		<h2>Risk assessments</h2>
+		<ul class="plain-list">
+			{% for row in risk_by_level %}<li><span>{{ row.level|title }}</span><strong>{{ row.total }}</strong></li>
+			{% empty %}<li class="muted">No assessments recorded.</li>{% endfor %}
+		</ul>
+	</section>
+</div>
+
+<section class="panel">
+	<div class="section-heading"><h2>Recent intern risk assessments</h2></div>
+	<div class="table-wrap">
+		<table>
+			<thead><tr><th>Intern</th><th>Assessment date</th><th>Risk score</th><th>Level</th><th>Indicators</th></tr></thead>
+			<tbody>
+				{% for assessment in risk_assessments %}
+				<tr>
+					<td>{{ assessment.intern.user.get_full_name|default:assessment.intern.user.username }}</td>
+					<td>{{ assessment.assessment_date|date:"M j, Y" }}</td>
+					<td>{{ assessment.risk_score }} / 100</td>
+					<td><span class="status {% if assessment.level == 'low' %}status-good{% elif assessment.level == 'high' %}status-risk{% endif %}">{{ assessment.get_level_display }}</span></td>
+					<td>{{ assessment.indicators|join:", "|default:"—"|truncatechars:90 }}</td>
+				</tr>
+				{% empty %}
+				<tr><td colspan="5" class="muted">No intern risk assessments recorded.</td></tr>
+				{% endfor %}
+			</tbody>
+		</table>
+	</div>
+</section>
+{% endblock %}

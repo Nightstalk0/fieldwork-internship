@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Applicant screening | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">HOST ORGANIZATION</p>
+    <h1>Applicant screening</h1>
+    <p class="muted">{{ pending_count }} application{{ pending_count|pluralize }} awaiting review.</p>
+  </div>
+  <a class="button button-secondary" href="{% url 'portal:company_dashboard' %}">Dashboard</a>
+</div>
+
+<div class="listing-stack">
+  {% for application in pending %}
+  <article class="listing">
+    <div class="listing-top">
+      <div>
+        <h2>{{ application.intern.user.get_full_name|default:application.intern.user.username }}</h2>
+        <div class="listing-meta">
+          <span>{{ application.intern.course|default:"Program not provided" }}</span>
+          <span>For {{ application.posting.title }}</span>
+          <span>Submitted {{ application.submitted_at|date:"M j, Y" }}</span>
+        </div>
+      </div>
+      <span class="status">{{ application.get_status_display }}</span>
+    </div>
+
+    {% if application.cover_letter %}<p>{{ application.cover_letter|linebreaksbr }}</p>{% endif %}
+    {% if application.resume %}
+    <p>
+      {% if application.resume_previewable %}<a href="{% url 'portal:company_application_resume' application.pk 'preview' %}" target="_blank" rel="noopener noreferrer">Preview resume</a> · {% endif %}
+      <a href="{% url 'portal:company_application_resume' application.pk 'download' %}">Download resume</a>
+    </p>
+    {% endif %}
+
+    <div class="form-actions">
+      <form method="post" action="{% url 'portal:application_decide' application.pk 'reject' %}">
+        {% csrf_token %}
+        <button class="button button-secondary" type="submit">Reject</button>
+      </form>
+      <form method="post" action="{% url 'portal:application_decide' application.pk 'accept' %}">
+        {% csrf_token %}
+        <button class="button button-primary" type="submit">Accept</button>
+      </form>
+    </div>
+  </article>
+  {% empty %}
+  <p class="muted">No applications are waiting for review.</p>
+  {% endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,68 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="{% static 'favicon.svg' %}" type="image/svg+xml">
+  <title>{% block title %}Fieldwork | Internship Management{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'css/portal.css' %}">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="{% url 'portal:dashboard' %}"><span class="brand-mark">F</span><span>Fieldwork</span></a>
+    {% if request.user.is_authenticated %}
+    <nav class="main-nav" aria-label="Main navigation">
+      {% if request.user.is_staff or request.user.role == 'coordinator' %}
+        <a href="{% url 'portal:coordinator_dashboard' %}">Overview</a>
+        <a href="{% url 'portal:dtr_queue' %}">DTR queue{% if pending_review_count %}<span class="nav-count">{{ pending_review_count }}</span>{% endif %}</a>
+        <a href="{% url 'portal:scorecards' %}">Scorecards</a>
+        <a href="{% url 'portal:analytics' %}">Analytics</a>
+        {% if request.user.is_staff %}<a href="{% url 'admin:accounts_user_changelist' %}">User accounts</a>{% endif %}
+        <a href="{% url 'portal:admin_verify' %}">Verify companies</a>
+        <a href="{% url 'portal:admin_audit' %}">Audit log</a>
+      {% elif request.user.role == 'company' %}
+        <a href="{% url 'portal:company_dashboard' %}">Overview</a>
+        <a href="{% url 'portal:applicant_screening' %}">Screening</a>
+        <a href="{% url 'portal:company_applications' %}">Applications</a>
+        <a href="{% url 'portal:company_dtr_queue' %}">DTR</a>
+        <a href="{% url 'portal:company_scorecards' %}">Scorecards</a>
+        <a href="{% url 'portal:company_profile' %}">Profile</a>
+      {% else %}
+        <a href="{% url 'portal:intern_dashboard' %}">Overview</a>
+        <a href="{% url 'portal:profile' %}">Profile</a>
+        <a href="{% url 'portal:postings' %}">Opportunities</a>
+        <a href="{% url 'portal:attendance' %}">Attendance</a>
+        <a href="{% url 'portal:reports' %}">Weekly reports</a>
+      {% endif %}
+    </nav>
+    <div class="user-menu"><span>{{ request.user.get_full_name|default:request.user.username }}</span><form method="post" action="{% url 'accounts:logout' %}">{% csrf_token %}<button class="text-button" type="submit">Sign out</button></form></div>
+    {% else %}
+    <nav class="main-nav"><a href="{% url 'accounts:login' %}">Sign in</a><a href="{% url 'accounts:register' %}">Create account</a></nav>
+    {% endif %}
+  </header>
+  <main class="page-shell">
+    {% if request.user.is_authenticated %}
+    <nav class="quick-actions" aria-label="Quick actions">
+      <strong>Quick actions</strong>
+      {% if request.user.is_staff or request.user.role == 'coordinator' %}
+        <a class="button button-primary" href="{% url 'portal:dtr_queue' %}">Approve pending logs</a>
+        <a class="button button-secondary" href="{% url 'portal:coordinator_attendance_export' %}">Export attendance CSV</a>
+        <a class="button button-secondary" href="{% url 'portal:coordinator_dashboard' %}#intern-directory">Find an intern</a>
+      {% elif request.user.role == 'company' %}
+        <a class="button button-primary" href="{% url 'portal:company_dtr_queue' %}">Review attendance</a>
+        <a class="button button-secondary" href="{% url 'portal:company_attendance_export' %}">Export attendance CSV</a>
+        <a class="button button-secondary" href="{% url 'portal:company_scorecards' %}">Open evaluations</a>
+      {% else %}
+        <a class="button button-primary" href="{% url 'portal:attendance' %}">Log hours today</a>
+        <a class="button button-secondary" href="{% url 'portal:reports' %}">Submit weekly report</a>
+      {% endif %}
+    </nav>
+    {% endif %}
+    {% if messages %}<div class="messages" aria-live="polite">{% for message in messages %}<div class="message message-{{ message.tags }}">{{ message }}</div>{% endfor %}</div>{% endif %}
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="site-footer"><span>Fieldwork Internship Management</span><span>Secure placement records</span></footer>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

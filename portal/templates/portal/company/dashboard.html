@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Company overview | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading">
+	<div>
+		<p class="eyebrow">HOST ORGANIZATION</p>
+		<h1>{{ company.organization }}</h1>
+		<p class="muted">{% if company.verified %}Verified host organization{% else %}Profile awaiting verification{% endif %}</p>
+	</div>
+	<a class="button button-primary" href="{% url 'portal:posting_create' %}">+ New opportunity</a>
+</div>
+
+<section class="metric-grid" aria-label="Company activity">
+	<div class="metric"><span>Open opportunities</span><strong>{{ open_posting_count }}</strong><small>Published placements</small></div>
+	<div class="metric"><span>Pending applicants</span><strong>{{ pending_application_count }}</strong><small>Submitted or under review</small></div>
+	<div class="metric"><span>All applications</span><strong>{{ application_count }}</strong><small>Across your opportunities</small></div>
+</section>
+
+<div class="content-grid">
+	<section class="panel">
+		<div class="section-heading">
+			<h2>Pending applicants</h2>
+			<a href="{% url 'portal:company_applications' %}">All applications</a>
+		</div>
+		<div class="table-wrap">
+			<table>
+				<thead><tr><th>Applicant</th><th>Opportunity</th><th>Status</th></tr></thead>
+				<tbody>
+					{% for application in pending_applications %}
+					<tr>
+						<td>{{ application.intern.user.get_full_name|default:application.intern.user.username }}</td>
+						<td>{{ application.posting.title }}</td>
+						<td>{{ application.get_status_display }}</td>
+					</tr>
+					{% empty %}
+					<tr><td colspan="3" class="muted">No pending applications.</td></tr>
+					{% endfor %}
+				</tbody>
+			</table>
+		</div>
+	</section>
+
+	<section class="panel">
+		<div class="section-heading">
+			<h2>Your opportunities</h2>
+			<a href="{% url 'portal:posting_create' %}">New opportunity</a>
+		</div>
+		<div class="table-wrap">
+			<table>
+				<thead><tr><th>Opportunity</th><th>Location</th><th>Openings</th><th>Status</th></tr></thead>
+				<tbody>
+					{% for posting in postings %}
+					<tr>
+						<td>{{ posting.title }}</td>
+						<td>{{ posting.location }}</td>
+						<td>{{ posting.openings }}</td>
+						<td>{{ posting.get_status_display }}</td>
+					</tr>
+					{% empty %}
+					<tr><td colspan="4" class="muted">No opportunities yet. Create your first one.</td></tr>
+					{% endfor %}
+				</tbody>
+			</table>
+		</div>
+	</section>
+</div>
+{% endblock %}

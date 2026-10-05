@@ -1,0 +1,27 @@
+{% extends "base.html" %}{% block title %}Attendance | Fieldwork{% endblock %}
+{% block content %}<div class="page-heading"><div><p class="eyebrow">INTERN WORKSPACE</p><h1>Attendance</h1><p class="muted">Time entries use server time. Location is optional and only attached when your browser grants permission.</p></div><a class="button button-secondary" href="{% url 'portal:attendance_export' %}">Download DTR PDF</a></div>
+<section class="panel attendance-panel"><div><p class="eyebrow">{{ today|date:"l, F j" }}</p><h2>{% if today_log.clock_in %}Shift in progress{% else %}Ready to start?{% endif %}</h2><p class="muted">{% if today_log.clock_in %}Time in at {{ today_log.clock_in|date:"H:i" }}{% if today_log.clock_out %}; time out at {{ today_log.clock_out|date:"H:i" }}{% endif %}{% else %}Your device time is never used to determine attendance.{% endif %}</p></div>
+<label class="note-label">Optional work note<input id="attendance-note" type="text" maxlength="255" placeholder="Add a short note for this entry" value="{{ today_log.notes }}"></label>
+<div class="clock-actions">{% if not today_log.clock_in %}<form method="post" class="clock-form" data-action="clock_in">{% csrf_token %}<input type="hidden" name="action" value="clock_in"><input type="hidden" name="clock_in_latitude"><input type="hidden" name="clock_in_longitude"><input type="hidden" name="notes"><button class="button button-primary" type="submit">Time in</button></form>{% elif not today_log.clock_out %}<form method="post" class="clock-form" data-action="clock_out">{% csrf_token %}<input type="hidden" name="action" value="clock_out"><input type="hidden" name="clock_out_latitude"><input type="hidden" name="clock_out_longitude"><input type="hidden" name="notes"><button class="button button-primary" type="submit">Time out</button></form>{% else %}<span class="status status-good">Today's attendance is complete</span>{% endif %}<span id="location-status" class="muted" aria-live="polite">Location is optional.</span></div></section>
+<section class="panel"><div class="section-heading"><h2>Recent entries</h2><span class="muted">Latest 30 days</span></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Time in</th><th>Time out</th><th>Hours</th><th>Time in approval</th><th>Time out approval</th></tr></thead><tbody>{% for log in logs %}<tr><td>{{ log.work_date }}</td><td>{{ log.clock_in|date:"H:i"|default:"—" }}</td><td>{{ log.clock_out|date:"H:i"|default:"—" }}</td><td>{{ log.hours_worked }}</td><td>{% if not log.clock_in %}<span class="status">Not recorded</span>{% elif log.time_in_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td><td>{% if not log.clock_out %}<span class="status">Not recorded</span>{% elif log.time_out_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td></tr>{% empty %}<tr><td colspan="6" class="muted">No entries recorded.</td></tr>{% endfor %}</tbody></table></div></section>{% endblock %}
+{% block scripts %}<script>
+  const noteInput = document.getElementById("attendance-note");
+  const noteKey = `fieldwork-attendance-note-{{ today|date:'Y-m-d' }}`;
+  noteInput.value = localStorage.getItem(noteKey) ?? noteInput.value;
+  noteInput.addEventListener("input", () => localStorage.setItem(noteKey, noteInput.value));
+  const locationStatus = document.getElementById("location-status");
+  document.querySelectorAll(".clock-form").forEach((form) => form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    form.elements.notes.value = noteInput.value;
+    const submitWithoutLocation = () => { localStorage.removeItem(noteKey); form.submit(); };
+    if (!navigator.geolocation) { locationStatus.textContent = "Location unavailable; continuing without it."; submitWithoutLocation(); return; }
+    locationStatus.textContent = "Requesting optional location…";
+    navigator.geolocation.getCurrentPosition((position) => {
+      form.elements[`${form.dataset.action}_latitude`].value = position.coords.latitude.toFixed(6);
+      form.elements[`${form.dataset.action}_longitude`].value = position.coords.longitude.toFixed(6);
+      locationStatus.textContent = "Location attached.";
+      localStorage.removeItem(noteKey);
+      form.submit();
+    }, () => { locationStatus.textContent = "Location not shared; continuing without it."; submitWithoutLocation(); }, { enableHighAccuracy: true, timeout: 3000, maximumAge: 60000 });
+  }));
+</script>{% endblock %}

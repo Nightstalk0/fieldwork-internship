@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Sign in | Fieldwork{% endblock %}
+{% block content %}
+<section class="auth-layout">
+  <div class="auth-copy"><p class="eyebrow">FIELDWORK PORTAL</p><h1>Good work starts with a clear plan.</h1><p>Keep placements, progress, and people in sync.</p></div>
+  <div class="auth-panel"><h2>Sign in</h2><p class="muted">Use your internship portal account.</p>
+    <form method="post" class="stack-form">{% csrf_token %}{{ form.non_field_errors }}{{ form.as_p }}<input type="hidden" name="next" value="{{ next }}"><button class="button button-primary" type="submit">Continue</button></form>
+    <p class="form-footnote">New to Fieldwork? <a href="{% url 'accounts:register' %}">Create an account</a></p>
+  </div>
+</section>
+{% endblock %}

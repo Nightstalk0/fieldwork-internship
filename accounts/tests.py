@@ -1,0 +1,51 @@
+from django.test import TestCase
+from django.urls import reverse
+
+from .models import User
+
+
+class AccountFlowTests(TestCase):
+    def test_admin_can_view_registered_accounts_without_password_data(self):
+        User.objects.create_user(username="registered-intern", password="Safe-example-Password-927!")
+        User.objects.create_user(
+            username="registered-company",
+            password="Safe-example-Password-927!",
+            role=User.Role.COMPANY,
+        )
+        admin_user = User.objects.create_superuser(
+            username="site-admin",
+            email="admin@example.test",
+            password="Safe-example-Password-927!",
+        )
+        self.client.force_login(admin_user)
+
+        response = self.client.get(reverse("admin:accounts_user_changelist"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "registered-intern")
+        self.assertContains(response, "registered-company")
+        self.assertNotContains(response, "pbkdf2_sha256")
+
+    def test_company_registration_creates_company_profile(self):
+        response = self.client.post(
+            reverse("accounts:register"),
+            {
+                "username": "new-company",
+                "first_name": "North",
+                "last_name": "Studio",
+                "email": "north@example.test",
+                "phone": "555-0100",
+                "role": User.Role.COMPANY,
+                "password1": "Safe-example-Password-927!",
+                "password2": "Safe-example-Password-927!",
+            },
+        )
+        self.assertRedirects(response, reverse("accounts:login"))
+        user = User.objects.get(username="new-company")
+        self.assertEqual(user.company_profile.organization, "North Studio")
+
+    def test_intern_cannot_open_coordinator_routes(self):
+        user = User.objects.create_user(username="intern", password="Safe-example-Password-927!")
+        self.client.force_login(user)
+        response = self.client.get(reverse("portal:coordinator_dashboard"))
+        self.assertEqual(response.status_code, 403)

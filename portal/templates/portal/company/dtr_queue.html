@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Attendance review | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">HOST ORGANIZATION</p>
+    <h1>Attendance review</h1>
+    <p class="muted">{{ pending_dtr_count }} record{{ pending_dtr_count|pluralize }} awaiting review.</p>
+  </div>
+  <a class="button button-secondary" href="{% url 'portal:company_dashboard' %}">Company overview</a>
+</div>
+
+<section class="panel">
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Intern</th><th>Date</th><th>Time in</th><th>Time out</th><th>Hours</th><th>Time in approval</th><th>Time out approval</th><th>Actions</th></tr></thead>
+      <tbody>
+        {% for log in logs %}
+        <tr>
+          <td>{{ log.intern.user.get_full_name|default:log.intern.user.username }}</td>
+          <td>{{ log.work_date|date:"M j, Y" }}</td>
+          <td>{{ log.clock_in|date:"H:i"|default:"—" }}</td>
+          <td>{{ log.clock_out|date:"H:i"|default:"—" }}</td>
+          <td>{{ log.hours_worked }}</td>
+          <td>{% if not log.clock_in %}<span class="status">Not recorded</span>{% elif log.time_in_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
+          <td>{% if not log.clock_out %}<span class="status">Not recorded</span>{% elif log.time_out_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
+          <td>
+            <form method="post" action="{% url 'portal:company_approve_dtr' log.id %}">
+              {% csrf_token %}
+              {% if log.clock_in and not log.time_in_approved %}<button class="button button-small" type="submit" name="event" value="time_in">Approve time in</button>{% endif %}
+              {% if log.clock_out and not log.time_out_approved %}<button class="button button-small" type="submit" name="event" value="time_out">Approve time out</button>{% endif %}
+            </form>
+            {% if not log.clock_in and not log.clock_out %}<small class="approval-requirement">Waiting for time in and time out.</small>{% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="8" class="muted">No attendance records for your accepted interns.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

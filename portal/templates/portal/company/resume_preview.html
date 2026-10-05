@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Resume preview | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">APPLICANT RESUME</p>
+    <h1>{{ application.intern.user.get_full_name|default:application.intern.user.username }}</h1>
+    <p class="muted">{{ application.posting.title }} · {{ application.resume.name|cut:"applications/" }}</p>
+  </div>
+  <a class="button button-secondary" href="{% url 'portal:company_application_resume' application.pk 'download' %}">Download original</a>
+</div>
+
+<article class="panel resume-preview">
+  {% for block in preview_blocks %}
+    {% if block.kind == "paragraph" %}
+      {% if block.heading %}<h2>{{ block.text }}</h2>{% else %}<p>{{ block.text }}</p>{% endif %}
+    {% elif block.kind == "table" %}
+      <div class="table-wrap">
+        <table>
+          <tbody>
+            {% for row in block.rows %}
+            <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
+  {% empty %}
+    <p class="muted">No readable text was found in this document.</p>
+  {% endfor %}
+</article>
+{% endblock %}
