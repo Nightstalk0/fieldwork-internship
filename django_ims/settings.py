@@ -79,14 +79,11 @@ DATABASES = {
 }
 
 AUTH_USER_MODEL = "accounts.User"
+AXES_ENABLED = False
 AUTHENTICATION_BACKENDS = [
     "axes.backends.AxesBackend",
     "django.contrib.auth.backends.ModelBackend",
 ]
-AXES_FAILURE_LIMIT = int(os.getenv("AXES_FAILURE_LIMIT", "5"))
-AXES_COOLOFF_TIME = int(os.getenv("AXES_COOLOFF_HOURS", "1"))
-AXES_RESET_ON_SUCCESS = False
-AXES_LOCKOUT_PARAMETERS = ["username", "ip_address"]
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
