@@ -5,6 +5,14 @@ from .models import User
 
 
 class AccountFlowTests(TestCase):
+    def test_registration_uses_account_type_tabs_without_role_dropdown(self):
+        response = self.client.get(reverse("accounts:register"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-role="intern"')
+        self.assertContains(response, 'data-role="company"')
+        self.assertContains(response, '<input type="hidden" name="role"')
+
     def test_admin_can_view_registered_accounts_without_password_data(self):
         User.objects.create_user(username="registered-intern", password="Safe-example-Password-927!")
         User.objects.create_user(

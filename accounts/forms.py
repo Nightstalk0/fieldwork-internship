@@ -19,7 +19,10 @@ class RegistrationForm(UserCreationForm):
     email = forms.EmailField()
     first_name = forms.CharField(max_length=150)
     last_name = forms.CharField(max_length=150)
-    role = forms.ChoiceField(choices=((User.Role.INTERN, "Intern"), (User.Role.COMPANY, "Company")))
+    role = forms.ChoiceField(
+        choices=((User.Role.INTERN, "Intern"), (User.Role.COMPANY, "Company")),
+        widget=forms.HiddenInput(),
+    )
     if settings.CAPTCHA_ENABLED:
         captcha = CaptchaField()
 
