@@ -1,6 +1,6 @@
 from django import forms
 
-from .models import CompanyProfile, InternProfile, OJTRequirement, Posting, Scorecard, WeeklyReport
+from .models import CompanyProfile, DailyReport, InternProfile, OJTRequirement, Posting, Scorecard, WeeklyReport
 
 
 class CompanyProfileForm(forms.ModelForm):
@@ -12,13 +12,34 @@ class CompanyProfileForm(forms.ModelForm):
 class InternProfileForm(forms.ModelForm):
     class Meta:
         model = InternProfile
-        fields = ("student_id", "university", "course", "year_level", "bio", "resume")
+        fields = (
+            "student_id",
+            "university",
+            "course",
+            "year_level",
+            "placement_type",
+            "external_host",
+            "bio",
+            "resume",
+        )
         widgets = {"bio": forms.Textarea(attrs={"rows": 4})}
         help_texts = {
             "year_level": "Enter your current year level as a number.",
+            "placement_type": "Choose whether your host company has a Fieldwork account.",
+            "external_host": "Enter the name of your host when it does not use Fieldwork.",
             "bio": "Summarize your skills, interests, and the type of placement you are seeking.",
             "resume": "Upload a PDF or DOCX resume within the listed file-size limit.",
         }
+
+    def clean(self):
+        cleaned_data = super().clean()
+        placement_type = cleaned_data.get("placement_type")
+        external_host = (cleaned_data.get("external_host") or "").strip()
+        if placement_type == InternProfile.PlacementType.EXTERNAL and not external_host:
+            self.add_error("external_host", "Enter the name of your external host company.")
+        elif placement_type == InternProfile.PlacementType.PLATFORM:
+            cleaned_data["external_host"] = ""
+        return cleaned_data
 
 
 class OJTRequirementUploadForm(forms.ModelForm):
@@ -49,6 +70,17 @@ class WeeklyReportForm(forms.ModelForm):
             "accomplishments": "Summarize work completed and skills practiced during this reporting week.",
             "challenges": "Note blockers or support needed; leave blank when there were none.",
             "next_week_plan": "List your planned tasks and learning goals for next week.",
+        }
+
+
+class DailyReportForm(forms.ModelForm):
+    class Meta:
+        model = DailyReport
+        fields = ("accomplishments", "challenges")
+        widgets = {field: forms.Textarea(attrs={"rows": 4}) for field in fields}
+        help_texts = {
+            "accomplishments": "Summarize the tasks completed and skills practiced today.",
+            "challenges": "Note any blockers or support needed; leave blank when there were none.",
         }
 
 

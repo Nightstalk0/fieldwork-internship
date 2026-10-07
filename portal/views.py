@@ -9,7 +9,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
-from django.db.models import Avg, Count, Q
+from django.db.models import Avg, Count, Prefetch, Q
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequest
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -24,8 +24,8 @@ from zipfile import BadZipFile
 
 from accounts.models import User
 
-from .forms import CompanyProfileForm, InternProfileForm, OJTRequirementUploadForm, PostingForm, ScorecardForm, WeeklyReportForm
-from .models import Application, AttendanceLog, AuditLog, CompanyProfile, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport
+from .forms import CompanyProfileForm, DailyReportForm, InternProfileForm, OJTRequirementUploadForm, PostingForm, ScorecardForm, WeeklyReportForm
+from .models import Application, AttendanceLog, AuditLog, CompanyProfile, DailyReport, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport
 from .utils import attendance_pdf, audit, certificate_pdf
 
 OJT_TARGET_HOURS = 120
@@ -71,6 +71,7 @@ def intern_dashboard(request):
         "intern": intern,
         "recent_attendance": intern.attendance_logs.all()[:7],
         "recent_reports": intern.weekly_reports.all()[:4],
+        "recent_daily_reports": intern.daily_reports.all()[:4],
         "application_count": intern.applications.count(),
         "latest_risk": intern.risk_assessments.first(),
         "today": timezone.localdate(),
@@ -333,6 +334,9 @@ def attendance_export(request):
 @role_required(User.Role.INTERN)
 def reports(request):
     intern = get_object_or_404(InternProfile, user=request.user)
+    if intern.placement_type == InternProfile.PlacementType.EXTERNAL:
+        messages.info(request, "External placements submit a daily report to the OJT coordinator.")
+        return redirect("portal:daily_report")
     today = timezone.localdate()
     week_start = today - timedelta(days=today.weekday())
     existing = WeeklyReport.objects.filter(intern=intern, week_start=week_start).first()
@@ -356,6 +360,109 @@ def reports(request):
 
 
 @role_required(User.Role.INTERN)
+def daily_report(request):
+    intern = get_object_or_404(InternProfile, user=request.user)
+    if intern.placement_type != InternProfile.PlacementType.EXTERNAL:
+        messages.info(request, "Daily admin reports are for external placements. Use your weekly reports instead.")
+        return redirect("portal:reports")
+    today = timezone.localdate()
+    existing = DailyReport.objects.filter(intern=intern, work_date=today).first()
+    if request.method == "POST" and existing and existing.status == DailyReport.Status.REVIEWED:
+        messages.info(request, "Today's report has already been reviewed and cannot be changed.")
+        return redirect("portal:daily_report")
+    if existing and existing.status == DailyReport.Status.REVIEWED:
+        form = DailyReportForm(instance=existing)
+        form.fields["accomplishments"].disabled = True
+        form.fields["challenges"].disabled = True
+    else:
+        form = DailyReportForm(request.POST or None, instance=existing)
+    if request.method == "POST" and form.is_valid():
+        report = form.save(commit=False)
+        report.intern = intern
+        report.work_date = today
+        report.status = DailyReport.Status.SUBMITTED
+        report.supervisor_feedback = ""
+        report.reviewer = None
+        report.submitted_at = timezone.now()
+        report.reviewed_at = None
+        try:
+            with transaction.atomic():
+                report.save()
+        except IntegrityError:
+            messages.error(request, "Today's report was just saved. Refresh and try again.")
+        else:
+            audit(request.user, "daily_report.submitted", report)
+            messages.success(request, "Daily report submitted to your OJT coordinator.")
+            return redirect("portal:daily_report")
+    return render(request, "portal/intern/daily_report.html", {
+        "form": form,
+        "report": existing,
+        "today": today,
+        "reports": intern.daily_reports.select_related("reviewer")[:14],
+    })
+
+
+@role_required(User.Role.COORDINATOR)
+def coordinator_daily_reports(request):
+    reports = DailyReport.objects.select_related(
+        "intern__user",
+        "intern",
+        "reviewer",
+    ).filter(
+        status__in=(DailyReport.Status.SUBMITTED, DailyReport.Status.CHANGES_REQUESTED)
+    ).order_by("work_date", "intern__user__last_name")
+    return render(request, "portal/coordinator/daily_reports.html", {
+        "reports": reports[:100],
+        "pending_count": DailyReport.objects.filter(status=DailyReport.Status.SUBMITTED).count(),
+    })
+
+
+@role_required(User.Role.COORDINATOR)
+def coordinator_weekly_reports(request):
+    reports = WeeklyReport.objects.select_related(
+        "intern__user",
+        "intern",
+    ).filter(
+        intern__placement_type=InternProfile.PlacementType.PLATFORM,
+    )[:100]
+    return render(request, "portal/coordinator/weekly_reports.html", {
+        "reports": reports,
+    })
+
+
+@role_required(User.Role.COORDINATOR)
+@require_POST
+def review_daily_report(request, report_id):
+    report = get_object_or_404(
+        DailyReport,
+        pk=report_id,
+        status__in=(DailyReport.Status.SUBMITTED, DailyReport.Status.CHANGES_REQUESTED),
+    )
+    decision = request.POST.get("decision")
+    if decision not in {"review", "request_changes"}:
+        return HttpResponseBadRequest("Unknown daily report review decision.")
+    feedback = request.POST.get("supervisor_feedback", "").strip()
+    if decision == "request_changes" and not feedback:
+        messages.error(request, "Add feedback describing the requested changes.")
+        return redirect("portal:coordinator_daily_reports")
+
+    report.status = (
+        DailyReport.Status.REVIEWED if decision == "review" else DailyReport.Status.CHANGES_REQUESTED
+    )
+    report.reviewer = request.user
+    report.supervisor_feedback = feedback
+    report.reviewed_at = timezone.now()
+    report.save(update_fields=("status", "reviewer", "supervisor_feedback", "reviewed_at"))
+    audit(
+        request.user,
+        "daily_report.reviewed" if decision == "review" else "daily_report.changes_requested",
+        report,
+    )
+    messages.success(request, "Daily report review saved.")
+    return redirect("portal:coordinator_daily_reports")
+
+
+@role_required(User.Role.INTERN)
 def accreditation(request):
     intern = get_object_or_404(InternProfile, user=request.user)
     completed_hours = sum(
@@ -371,6 +478,7 @@ def accreditation(request):
 
 def accepted_company_interns(company):
     return InternProfile.objects.filter(
+        placement_type=InternProfile.PlacementType.PLATFORM,
         applications__posting__company=company,
         applications__status=Application.Status.ACCEPTED,
     ).select_related("user").distinct()
@@ -676,19 +784,35 @@ def coordinator_dashboard(request):
     interns = InternProfile.objects.select_related("user").prefetch_related(
         "applications__posting__company",
         "risk_assessments",
+        Prefetch(
+            "attendance_logs",
+            queryset=AttendanceLog.objects.filter(
+                time_in_approved=True,
+                time_out_approved=True,
+            ).only("intern_id", "clock_in", "clock_out"),
+        ),
     ).order_by("user__last_name", "user__first_name")[:100]
     intern_rows = []
     for intern in interns:
         application = next(iter(intern.applications.all()), None)
         risk = next(iter(intern.risk_assessments.all()), None)
+        if intern.placement_type == InternProfile.PlacementType.EXTERNAL:
+            placement = intern.external_host
+        else:
+            placement = application.posting.company.organization if application else "No placement selected"
+        completed_hours = round(sum(log.hours_worked for log in intern.attendance_logs.all()), 2)
         intern_rows.append({
             "intern": intern,
-            "company": application.posting.company.organization if application else "",
+            "company": placement,
+            "company_search": placement.lower(),
+            "placement_type": intern.get_placement_type_display(),
             "status": application.status if application else "none",
             "status_display": application.get_status_display() if application else "No application",
             "risk": risk.level if risk else "none",
             "risk_display": risk.get_level_display() if risk else "No assessment",
             "risk_score": risk.risk_score if risk else None,
+            "completed_hours": completed_hours,
+            "progress_percent": min(100, round(completed_hours / OJT_TARGET_HOURS * 100)),
         })
     context = {
         "intern_count": InternProfile.objects.count(),
@@ -699,6 +823,7 @@ def coordinator_dashboard(request):
             | Q(clock_out__isnull=False, time_out_approved=False)
         ).count(),
         "pending_report_count": WeeklyReport.objects.filter(status=WeeklyReport.Status.SUBMITTED).count(),
+        "pending_daily_report_count": DailyReport.objects.filter(status=DailyReport.Status.SUBMITTED).count(),
         "pending_ojt_requirement_count": OJTRequirement.objects.filter(
             status=OJTRequirement.Status.SUBMITTED
         ).count(),

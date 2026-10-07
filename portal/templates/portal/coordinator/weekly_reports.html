@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Weekly report monitor | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">PROGRAM OPERATIONS</p><h1>Weekly report monitor</h1><p class="muted">Monitor reports from interns working with Fieldwork partner companies.</p></div></div>
+<section class="panel">
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Intern</th><th>Week of</th><th>Status</th><th>Accomplishments</th><th>Challenges</th><th>Next week plan</th><th>Supervisor feedback</th></tr></thead>
+      <tbody>
+        {% for report in reports %}
+        <tr>
+          <td>{{ report.intern.user.get_full_name|default:report.intern.user.username }}</td>
+          <td>{{ report.week_start }}</td>
+          <td>{{ report.get_status_display }}</td>
+          <td>{{ report.accomplishments|truncatechars:140 }}</td>
+          <td>{{ report.challenges|default:"—"|truncatechars:100 }}</td>
+          <td>{{ report.next_week_plan|default:"—"|truncatechars:100 }}</td>
+          <td>{{ report.supervisor_feedback|default:"—"|truncatechars:100 }}</td>
+        </tr>
+        {% empty %}<tr><td colspan="7" class="muted">No platform-intern reports have been submitted.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

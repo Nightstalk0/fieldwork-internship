@@ -6,11 +6,12 @@
 <section class="panel">
 	<div class="table-wrap">
 		<table>
-			<thead><tr><th>Intern</th><th>Date</th><th>Time in</th><th>Time out</th><th>Hours</th><th>Time in approval</th><th>Time out approval</th><th>Actions</th></tr></thead>
+			<thead><tr><th>Intern</th><th>Placement</th><th>Date</th><th>Time in</th><th>Time out</th><th>Hours</th><th>Time in approval</th><th>Time out approval</th><th>Actions</th></tr></thead>
 			<tbody>
 				{% for log in logs %}
 				<tr>
 					<td>{{ log.intern.user.get_full_name|default:log.intern.user.username }}</td>
+					<td>{% if log.intern.placement_type == 'external' %}External: {{ log.intern.external_host }}{% else %}{{ log.intern.get_placement_type_display }}{% endif %}</td>
 					<td>{{ log.work_date }}</td>
 					<td>{{ log.clock_in|date:"H:i"|default:"—" }}</td>
 					<td>{{ log.clock_out|date:"H:i"|default:"—" }}</td>
@@ -27,7 +28,7 @@
 					</td>
 				</tr>
 				{% empty %}
-				<tr><td colspan="8" class="muted">No attendance records yet.</td></tr>
+				<tr><td colspan="9" class="muted">No attendance records yet.</td></tr>
 				{% endfor %}
 			</tbody>
 		</table>

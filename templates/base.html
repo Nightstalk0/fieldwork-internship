@@ -15,8 +15,10 @@
     <nav class="main-nav" aria-label="Main navigation">
       {% if request.user.is_staff or request.user.role == 'coordinator' %}
         <a href="{% url 'portal:coordinator_dashboard' %}">Overview</a>
-        <a href="{% url 'portal:coordinator_ojt_requirements' %}">OJT requirements</a>
-        <a href="{% url 'portal:dtr_queue' %}">DTR queue{% if pending_review_count %}<span class="nav-count">{{ pending_review_count }}</span>{% endif %}</a>
+        <a href="{% url 'portal:coordinator_ojt_requirements' %}">OJT requirements{% if pending_requirement_count %}<span class="nav-count">{{ pending_requirement_count }}</span>{% endif %}</a>
+        <a href="{% url 'portal:dtr_queue' %}">DTR queue{% if pending_dtr_count %}<span class="nav-count">{{ pending_dtr_count }}</span>{% endif %}</a>
+        <a href="{% url 'portal:coordinator_daily_reports' %}">Daily reports{% if pending_daily_report_count %}<span class="nav-count">{{ pending_daily_report_count }}</span>{% endif %}</a>
+        <a href="{% url 'portal:coordinator_weekly_reports' %}">Weekly reports</a>
         <a href="{% url 'portal:scorecards' %}">Scorecards</a>
         <a href="{% url 'portal:analytics' %}">Analytics</a>
         {% if request.user.is_staff %}<a href="{% url 'admin:accounts_user_changelist' %}">User accounts</a>{% endif %}
@@ -35,7 +37,11 @@
         <a href="{% url 'portal:ojt_requirements' %}">OJT requirements</a>
         <a href="{% url 'portal:postings' %}">Opportunities</a>
         <a href="{% url 'portal:attendance' %}">Attendance</a>
-        <a href="{% url 'portal:reports' %}">Weekly reports</a>
+        {% if request.user.intern_profile.placement_type == 'external' %}
+          <a href="{% url 'portal:daily_report' %}">Daily reports</a>
+        {% else %}
+          <a href="{% url 'portal:reports' %}">Weekly reports</a>
+        {% endif %}
       {% endif %}
     </nav>
     <div class="user-menu"><span>{{ request.user.get_full_name|default:request.user.username }}</span><form method="post" action="{% url 'accounts:logout' %}">{% csrf_token %}<button class="text-button" type="submit">Sign out</button></form></div>
@@ -50,6 +56,7 @@
       {% if request.user.is_staff or request.user.role == 'coordinator' %}
         <a class="button button-primary" href="{% url 'portal:coordinator_ojt_requirements' %}">Review OJT documents</a>
         <a class="button button-primary" href="{% url 'portal:dtr_queue' %}">Approve pending logs</a>
+        <a class="button button-secondary" href="{% url 'portal:coordinator_daily_reports' %}">Review daily reports</a>
         <a class="button button-secondary" href="{% url 'portal:coordinator_attendance_export' %}">Export attendance CSV</a>
         <a class="button button-secondary" href="{% url 'portal:coordinator_dashboard' %}#intern-directory">Find an intern</a>
       {% elif request.user.role == 'company' %}
@@ -59,7 +66,11 @@
       {% else %}
         <a class="button button-primary" href="{% url 'portal:ojt_requirements' %}">Upload OJT documents</a>
         <a class="button button-secondary" href="{% url 'portal:attendance' %}">Log hours today</a>
-        <a class="button button-secondary" href="{% url 'portal:reports' %}">Submit weekly report</a>
+        {% if request.user.intern_profile.placement_type == 'external' %}
+          <a class="button button-secondary" href="{% url 'portal:daily_report' %}">Submit daily report</a>
+        {% else %}
+          <a class="button button-secondary" href="{% url 'portal:reports' %}">Submit weekly report</a>
+        {% endif %}
       {% endif %}
     </nav>
     {% endif %}

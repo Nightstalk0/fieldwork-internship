@@ -11,7 +11,8 @@ from django.urls import reverse
 from docx import Document as DocxDocument
 
 from accounts.models import User
-from .models import Application, AttendanceLog, CompanyProfile, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport
+from .forms import InternProfileForm
+from .models import Application, AttendanceLog, CompanyProfile, DailyReport, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport
 from .utils import haversine_distance_km
 from .validators import FileSizeAndTypeValidator
 
@@ -52,6 +53,150 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(reverse("portal:intern_dashboard"), "/intern/dashboard/")
         self.assertEqual(reverse("portal:company_dashboard"), "/supervisor/dashboard/")
         self.assertEqual(reverse("portal:coordinator_dashboard"), "/admin/dashboard/")
+
+    def test_intern_can_set_external_placement_and_must_name_host(self):
+        form = InternProfileForm(
+            {
+                "placement_type": InternProfile.PlacementType.EXTERNAL,
+                "external_host": "Northside Design Studio",
+                "student_id": "",
+                "university": "Example University",
+                "course": "Design",
+                "year_level": 4,
+                "bio": "",
+            },
+            instance=self.intern,
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        profile = form.save()
+        self.assertEqual(profile.placement_type, InternProfile.PlacementType.EXTERNAL)
+        self.assertEqual(profile.external_host, "Northside Design Studio")
+
+        invalid_form = InternProfileForm(
+            {
+                "placement_type": InternProfile.PlacementType.EXTERNAL,
+                "external_host": "",
+                "student_id": "",
+                "university": "Example University",
+                "course": "Design",
+                "year_level": 4,
+                "bio": "",
+            },
+            instance=profile,
+        )
+        self.assertFalse(invalid_form.is_valid())
+        self.assertIn("external_host", invalid_form.errors)
+
+    def test_coordinator_dashboard_shows_external_host_and_approved_progress(self):
+        self.intern.placement_type = InternProfile.PlacementType.EXTERNAL
+        self.intern.external_host = "Northside Design Studio"
+        self.intern.save(update_fields=("placement_type", "external_host"))
+        clock_in = datetime(2026, 10, 5, 8, tzinfo=datetime_timezone.utc)
+        AttendanceLog.objects.create(
+            intern=self.intern,
+            clock_in=clock_in,
+            clock_out=clock_in.replace(hour=16),
+            time_in_approved=True,
+            time_out_approved=True,
+        )
+        coordinator = User.objects.create_user(username="coordinator", role=User.Role.COORDINATOR)
+        self.client.force_login(coordinator)
+
+        response = self.client.get(reverse("portal:coordinator_dashboard"))
+
+        self.assertContains(response, "Northside Design Studio")
+        self.assertContains(response, "8.0 / 120 hrs (7%)")
+        self.assertContains(response, "Daily reports to review")
+
+    def test_external_intern_daily_report_is_reviewed_by_coordinator(self):
+        self.intern.placement_type = InternProfile.PlacementType.EXTERNAL
+        self.intern.external_host = "Northside Design Studio"
+        self.intern.save(update_fields=("placement_type", "external_host"))
+        self.client.force_login(self.intern_user)
+
+        response = self.client.post(
+            reverse("portal:daily_report"),
+            {
+                "accomplishments": "Prepared three design concepts.",
+                "challenges": "Waiting for access to the shared drive.",
+            },
+        )
+
+        self.assertRedirects(response, reverse("portal:daily_report"))
+        report = DailyReport.objects.get(intern=self.intern)
+        self.assertEqual(report.status, DailyReport.Status.SUBMITTED)
+
+        coordinator = User.objects.create_user(username="coordinator", role=User.Role.COORDINATOR)
+        self.client.force_login(coordinator)
+        queue = self.client.get(reverse("portal:coordinator_daily_reports"))
+        self.assertContains(queue, "Northside Design Studio")
+        reviewed = self.client.post(
+            reverse("portal:review_daily_report", args=(report.pk,)),
+            {"decision": "review", "supervisor_feedback": "Good progress."},
+        )
+
+        self.assertRedirects(reviewed, reverse("portal:coordinator_daily_reports"))
+        report.refresh_from_db()
+        self.assertEqual(report.status, DailyReport.Status.REVIEWED)
+        self.assertEqual(report.supervisor_feedback, "Good progress.")
+        self.assertEqual(report.reviewer, coordinator)
+
+    def test_coordinator_can_monitor_weekly_reports_from_platform_interns(self):
+        WeeklyReport.objects.create(
+            intern=self.intern,
+            week_start="2026-10-05",
+            accomplishments="Completed product testing.",
+            challenges="No blockers.",
+            next_week_plan="Prepare release notes.",
+        )
+        coordinator = User.objects.create_user(username="coordinator", role=User.Role.COORDINATOR)
+        self.client.force_login(coordinator)
+
+        response = self.client.get(reverse("portal:coordinator_weekly_reports"))
+
+        self.assertContains(response, "Completed product testing.")
+        self.assertContains(response, "Prepare release notes.")
+
+    def test_external_intern_attendance_appears_in_coordinator_dtr_queue(self):
+        self.intern.placement_type = InternProfile.PlacementType.EXTERNAL
+        self.intern.external_host = "Northside Design Studio"
+        self.intern.save(update_fields=("placement_type", "external_host"))
+        log = AttendanceLog.objects.create(intern=self.intern, work_date="2026-10-07", clock_in="2026-10-07T09:00:00Z")
+        coordinator = User.objects.create_user(username="coordinator", role=User.Role.COORDINATOR)
+        self.client.force_login(coordinator)
+
+        response = self.client.get(reverse("portal:dtr_queue"))
+
+        self.assertContains(response, "External: Northside Design Studio")
+        self.assertContains(response, "Approve time in")
+        approved = self.client.post(
+            reverse("portal:approve_dtr", args=(log.pk,)),
+            {"event": "time_in"},
+        )
+        self.assertRedirects(approved, reverse("portal:dtr_queue"))
+        log.refresh_from_db()
+        self.assertTrue(log.time_in_approved)
+
+    def test_company_dtr_queue_excludes_external_placements(self):
+        self.intern.placement_type = InternProfile.PlacementType.EXTERNAL
+        self.intern.external_host = "Northside Design Studio"
+        self.intern.save(update_fields=("placement_type", "external_host"))
+        Application.objects.create(
+            intern=self.intern,
+            posting=self.posting,
+            status=Application.Status.ACCEPTED,
+        )
+        AttendanceLog.objects.create(
+            intern=self.intern,
+            work_date="2026-10-07",
+            clock_in="2026-10-07T09:00:00Z",
+        )
+        self.client.force_login(self.company_user)
+
+        response = self.client.get(reverse("portal:company_dtr_queue"))
+
+        self.assertEqual(response.context["logs"].count(), 0)
 
     def test_intern_receives_default_ojt_requirements(self):
         requirements = self.intern.ojt_requirements.all()

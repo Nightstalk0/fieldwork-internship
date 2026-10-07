@@ -8,11 +8,21 @@ from .validators import FileSizeAndTypeValidator
 
 
 class InternProfile(models.Model):
+    class PlacementType(models.TextChoices):
+        PLATFORM = "platform", "Company using Fieldwork"
+        EXTERNAL = "external", "External company (not using Fieldwork)"
+
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="intern_profile")
     student_id = models.CharField(max_length=64, unique=True, null=True, blank=True)
     university = models.CharField(max_length=180, blank=True)
     course = models.CharField(max_length=180, blank=True)
     year_level = models.PositiveSmallIntegerField(null=True, blank=True)
+    placement_type = models.CharField(
+        max_length=12,
+        choices=PlacementType.choices,
+        default=PlacementType.PLATFORM,
+    )
+    external_host = models.CharField(max_length=180, blank=True)
     bio = models.TextField(blank=True)
     resume = models.FileField(upload_to="resumes/%Y/%m/", blank=True, validators=[FileSizeAndTypeValidator()])
     created_at = models.DateTimeField(auto_now_add=True)
@@ -254,6 +264,35 @@ class AttendanceLog(models.Model):
     @property
     def approved(self):
         return self.time_in_approved and self.time_out_approved
+
+
+class DailyReport(models.Model):
+    class Status(models.TextChoices):
+        SUBMITTED = "submitted", "Awaiting admin review"
+        REVIEWED = "reviewed", "Reviewed"
+        CHANGES_REQUESTED = "changes_requested", "Changes requested"
+
+    intern = models.ForeignKey(InternProfile, on_delete=models.CASCADE, related_name="daily_reports")
+    work_date = models.DateField(default=timezone.localdate)
+    accomplishments = models.TextField()
+    challenges = models.TextField(blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.SUBMITTED)
+    supervisor_feedback = models.TextField(blank=True)
+    reviewer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_daily_reports",
+    )
+    submitted_at = models.DateTimeField(default=timezone.now)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=("intern", "work_date"), name="uniq_daily_report_intern_day")
+        ]
+        ordering = ("-work_date",)
 
 
 class WeeklyReport(models.Model):

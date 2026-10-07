@@ -26,6 +26,8 @@ Set `USE_S3=true` with an AWS bucket and region to store uploads in S3. Sentry a
 
 Registered interns receive an OJT document checklist. Coordinators review uploaded documents; the required school/academic and baseline legal/health items must be approved before an intern can record their first time-in. Company- and role-specific items are listed as optional by default and do not block attendance. Exact requirements vary by school and host training establishment, so coordinators and interns should confirm which optional items apply. Uploads are limited to supported document formats and 5 MB, and document downloads require an authenticated intern owner or coordinator.
 
+Interns can set their placement type in their profile. For external companies that do not use Fieldwork, the intern enters the host name, records attendance in Fieldwork, and submits a daily progress report for coordinator review. Coordinators review external interns' attendance, daily reports, and OJT documents and can monitor approved OJT hours in the intern directory. Partner-company interns continue using company supervisor attendance and weekly report workflows; coordinators can monitor all interns and their progress.
+
 Run the project checks and tests with:
 
 ```powershell

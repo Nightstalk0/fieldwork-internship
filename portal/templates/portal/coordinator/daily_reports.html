@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Daily report review | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">PROGRAM OPERATIONS</p><h1>Daily report review</h1><p class="muted">Review daily progress submitted by interns, including external placements.</p></div></div>
+<section class="requirement-list" aria-label="Daily reports waiting for review">
+{% for report in reports %}
+<article class="panel requirement-item">
+  <div class="requirement-heading"><div><p class="eyebrow">{{ report.work_date|date:"l, F j, Y" }} · {{ report.intern.user.get_full_name|default:report.intern.user.username }}</p><h2>{{ report.intern.get_placement_type_display }}: {{ report.intern.external_host|default:"Fieldwork company placement" }}</h2><p><strong>Work completed</strong><br>{{ report.accomplishments|linebreaksbr }}</p>{% if report.challenges %}<p><strong>Challenges / support needed</strong><br>{{ report.challenges|linebreaksbr }}</p>{% endif %}</div>
+  <span class="status {% if report.status == 'changes_requested' %}status-risk{% endif %}">{{ report.get_status_display }}</span></div>
+  <form method="post" class="stack-form" action="{% url 'portal:review_daily_report' report.pk %}">
+    {% csrf_token %}
+    <label for="report-feedback-{{ report.pk }}">Feedback (required when requesting changes)<textarea id="report-feedback-{{ report.pk }}" name="supervisor_feedback" rows="3">{{ report.supervisor_feedback }}</textarea></label>
+    <div class="form-actions"><button class="button button-secondary" type="submit" name="decision" value="request_changes">Request changes</button><button class="button button-primary" type="submit" name="decision" value="review">Mark reviewed</button></div>
+  </form>
+</article>
+{% empty %}<section class="panel"><p class="muted">No daily reports need review.</p></section>{% endfor %}
+</section>
+{% endblock %}

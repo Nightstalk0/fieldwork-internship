@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Daily OJT reports | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">EXTERNAL PLACEMENT</p><h1>Daily OJT report</h1><p class="muted">Send today's progress directly to your OJT coordinator for review.</p></div></div>
+<section class="panel form-panel">
+  <div class="section-heading"><h2>Report for {{ today|date:"l, F j, Y" }}</h2>{% if report %}<span class="status {% if report.status == 'reviewed' %}status-good{% elif report.status == 'changes_requested' %}status-risk{% endif %}">{{ report.get_status_display }}</span>{% endif %}</div>
+  {% if report.supervisor_feedback %}<p class="requirement-feedback"><strong>Coordinator feedback:</strong> {{ report.supervisor_feedback }}</p>{% endif %}
+  {% if report.status == 'submitted' %}<p class="muted">Your report is awaiting coordinator review.</p>{% elif report.status == 'reviewed' %}<p class="muted">Your report has been reviewed and is read-only.</p>{% endif %}
+  {% if not report or report.status == 'changes_requested' %}<form method="post" class="stack-form">{% csrf_token %}{{ form.as_p }}<button class="button button-primary" type="submit">{% if report %}Resubmit daily report{% else %}Submit daily report{% endif %}</button></form>{% endif %}
+</section>
+<section class="panel"><div class="section-heading"><h2>Recent daily reports</h2><span class="muted">Latest 14 days</span></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Status</th><th>Work completed</th><th>Coordinator feedback</th></tr></thead><tbody>{% for entry in reports %}<tr><td>{{ entry.work_date }}</td><td>{{ entry.get_status_display }}</td><td>{{ entry.accomplishments|truncatechars:100 }}</td><td>{{ entry.supervisor_feedback|default:"—"|truncatechars:100 }}</td></tr>{% empty %}<tr><td colspan="4" class="muted">No daily reports submitted yet.</td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}

@@ -14,6 +14,7 @@ urlpatterns = [
     path("intern/attendance/", views.attendance, name="attendance"),
     path("intern/attendance/export/", views.attendance_export, name="attendance_export"),
     path("intern/reports/", views.reports, name="reports"),
+    path("intern/daily-report/", views.daily_report, name="daily_report"),
     path("intern/accreditation/", views.accreditation, name="accreditation"),
     path("supervisor/dashboard/", views.company_dashboard, name="company_dashboard"),
     path("supervisor/attendance/export.csv", views.company_attendance_export, name="company_attendance_export"),
@@ -37,5 +38,8 @@ urlpatterns = [
     path("coordinator/analytics/", views.analytics, name="analytics"),
     path("coordinator/requirements/", views.coordinator_ojt_requirements, name="coordinator_ojt_requirements"),
     path("coordinator/requirements/<int:requirement_id>/review/", views.review_ojt_requirement, name="review_ojt_requirement"),
+    path("coordinator/daily-reports/", views.coordinator_daily_reports, name="coordinator_daily_reports"),
+    path("coordinator/daily-reports/<int:report_id>/review/", views.review_daily_report, name="review_daily_report"),
+    path("coordinator/weekly-reports/", views.coordinator_weekly_reports, name="coordinator_weekly_reports"),
     path("ojt-requirements/<int:requirement_id>/document/", views.ojt_requirement_document, name="ojt_requirement_document"),
 ]
