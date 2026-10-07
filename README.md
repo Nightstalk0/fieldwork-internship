@@ -22,6 +22,10 @@ Set `USE_S3=true` with an AWS bucket and region to store uploads in S3. Sentry a
 
 `python manage.py seed_demo_data --password <temporary-password>` creates an example intern, company, and published opportunity. Without the option, the demo accounts are created with unusable passwords.
 
+## OJT document readiness
+
+Registered interns receive an OJT document checklist. Coordinators review uploaded documents; the required school/academic and baseline legal/health items must be approved before an intern can record their first time-in. Company- and role-specific items are listed as optional by default and do not block attendance. Exact requirements vary by school and host training establishment, so coordinators and interns should confirm which optional items apply. Uploads are limited to supported document formats and 5 MB, and document downloads require an authenticated intern owner or coordinator.
+
 Run the project checks and tests with:
 
 ```powershell

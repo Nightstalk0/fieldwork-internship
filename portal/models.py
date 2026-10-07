@@ -26,6 +26,146 @@ class InternProfile(models.Model):
         return f"Intern profile: {self.user}"
 
 
+class OJTRequirement(models.Model):
+    class Category(models.TextChoices):
+        SCHOOL = "school", "School and academic"
+        LEGAL = "legal", "Legal and health"
+        APPLICATION = "application", "Application"
+        ROLE_SPECIFIC = "role_specific", "Company or role-specific"
+
+    class Status(models.TextChoices):
+        NOT_SUBMITTED = "not_submitted", "Not submitted"
+        SUBMITTED = "submitted", "Awaiting review"
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Changes requested"
+
+    intern = models.ForeignKey(InternProfile, on_delete=models.CASCADE, related_name="ojt_requirements")
+    category = models.CharField(max_length=20, choices=Category.choices)
+    title = models.CharField(max_length=160)
+    description = models.TextField(blank=True)
+    is_required = models.BooleanField(default=False)
+    document = models.FileField(
+        upload_to="ojt_requirements/%Y/%m/",
+        blank=True,
+        validators=[FileSizeAndTypeValidator()],
+    )
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.NOT_SUBMITTED)
+    reviewer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="ojt_requirement_reviews",
+    )
+    review_note = models.TextField(blank=True)
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ("category", "title")
+        constraints = [
+            models.UniqueConstraint(fields=("intern", "title"), name="uniq_ojt_requirement_intern_title")
+        ]
+
+    def __str__(self):
+        return f"{self.title} — {self.intern}"
+
+
+OJT_REQUIREMENT_DEFAULTS = (
+    (
+        OJTRequirement.Category.SCHOOL,
+        "Endorsement / recommendation letter",
+        "A letter from your OJT coordinator or department head endorsing you for training.",
+        True,
+    ),
+    (
+        OJTRequirement.Category.SCHOOL,
+        "School–HTE Memorandum of Agreement (MOA)",
+        "The agreement between your school and host training establishment.",
+        True,
+    ),
+    (
+        OJTRequirement.Category.SCHOOL,
+        "Certificate of Enrollment / Registration (COR)",
+        "Proof of enrollment in the designated OJT or practicum subject.",
+        True,
+    ),
+    (
+        OJTRequirement.Category.SCHOOL,
+        "Transcript of Records / evaluation of grades",
+        "Your school record showing that you meet the program prerequisites.",
+        True,
+    ),
+    (
+        OJTRequirement.Category.SCHOOL,
+        "Student accident insurance",
+        "Proof of active student accident insurance for your training period.",
+        True,
+    ),
+    (
+        OJTRequirement.Category.LEGAL,
+        "Notarized parent / guardian consent and waiver",
+        "The notarized consent and waiver required by your school or host.",
+        True,
+    ),
+    (
+        OJTRequirement.Category.LEGAL,
+        "Medical certificate",
+        "A certificate from a licensed clinic or physician confirming fitness for training.",
+        True,
+    ),
+    (
+        OJTRequirement.Category.LEGAL,
+        "Barangay, police, or NBI clearance",
+        "Submit a clearance only if requested by your school or host.",
+        False,
+    ),
+    (
+        OJTRequirement.Category.LEGAL,
+        "Government-issued ID / tax or social-security document",
+        "Submit only the documents requested by your host; do not upload unrequested numbers.",
+        False,
+    ),
+    (
+        OJTRequirement.Category.APPLICATION,
+        "Resume / CV",
+        "Your current resume or curriculum vitae.",
+        False,
+    ),
+    (
+        OJTRequirement.Category.APPLICATION,
+        "Cover letter / letter of intent",
+        "A letter describing your interest in the placement.",
+        False,
+    ),
+    (
+        OJTRequirement.Category.APPLICATION,
+        "Portfolio",
+        "A portfolio of relevant work, if requested for your field.",
+        False,
+    ),
+    (
+        OJTRequirement.Category.ROLE_SPECIFIC,
+        "Drug test / laboratory exams",
+        "Required only for applicable roles or when requested by your host.",
+        False,
+    ),
+)
+
+
+def ensure_default_ojt_requirements(intern):
+    for category, title, description, is_required in OJT_REQUIREMENT_DEFAULTS:
+        OJTRequirement.objects.get_or_create(
+            intern=intern,
+            title=title,
+            defaults={
+                "category": category,
+                "description": description,
+                "is_required": is_required,
+            },
+        )
+
+
 class CompanyProfile(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="company_profile")
     organization = models.CharField(max_length=180)

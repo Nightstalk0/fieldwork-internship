@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}OJT document review | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">PROGRAM OPERATIONS</p><h1>OJT document review</h1><p class="muted">Review intern submissions and approve them or request a replacement with a clear note.</p></div></div>
+<section class="requirement-list" aria-label="Submitted OJT documents">
+{% for requirement in requirements %}
+<article class="panel requirement-item">
+  <div class="requirement-heading"><div><p class="eyebrow">{{ requirement.intern.user.get_full_name|default:requirement.intern.user.username }} · {{ requirement.get_category_display }}</p><h2>{{ requirement.title }}</h2><p class="muted">{{ requirement.intern.university|default:"School not provided" }} · {{ requirement.intern.course|default:"Course not provided" }}</p><p>{{ requirement.description }}</p></div>
+  <span class="status">{% if requirement.is_required %}Required{% else %}Optional{% endif %}</span></div>
+  <p><a href="{% url 'portal:ojt_requirement_document' requirement.pk %}">Download submitted document</a></p>
+  <form method="post" class="stack-form" action="{% url 'portal:review_ojt_requirement' requirement.pk %}">
+    {% csrf_token %}
+    <label for="review-note-{{ requirement.pk }}">Review note (required when requesting changes)<textarea id="review-note-{{ requirement.pk }}" name="review_note" rows="3"></textarea></label>
+    <div class="form-actions"><button class="button button-secondary" type="submit" name="decision" value="reject">Request changes</button><button class="button button-primary" type="submit" name="decision" value="approve">Approve document</button></div>
+  </form>
+</article>
+{% empty %}<section class="panel"><p class="muted">No OJT documents are waiting for review.</p></section>{% endfor %}
+</section>
+{% endblock %}

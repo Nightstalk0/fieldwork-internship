@@ -10,7 +10,7 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Avg, Count, Q
-from django.http import FileResponse, HttpResponse, HttpResponseBadRequest
+from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequest
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -24,8 +24,8 @@ from zipfile import BadZipFile
 
 from accounts.models import User
 
-from .forms import CompanyProfileForm, InternProfileForm, PostingForm, ScorecardForm, WeeklyReportForm
-from .models import Application, AttendanceLog, AuditLog, CompanyProfile, InternProfile, Posting, RiskAssessment, Scorecard, WeeklyReport
+from .forms import CompanyProfileForm, InternProfileForm, OJTRequirementUploadForm, PostingForm, ScorecardForm, WeeklyReportForm
+from .models import Application, AttendanceLog, AuditLog, CompanyProfile, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport
 from .utils import attendance_pdf, audit, certificate_pdf
 
 OJT_TARGET_HOURS = 120
@@ -58,6 +58,10 @@ def dashboard(request):
 @role_required(User.Role.INTERN)
 def intern_dashboard(request):
     intern = get_object_or_404(InternProfile, user=request.user)
+    required_requirements = intern.ojt_requirements.filter(is_required=True)
+    ojt_ready = required_requirements.exists() and not required_requirements.exclude(
+        status=OJTRequirement.Status.APPROVED
+    ).exists()
     completed_hours = round(sum(
         log.hours_worked
         for log in intern.attendance_logs.filter(time_in_approved=True, time_out_approved=True)
@@ -73,6 +77,10 @@ def intern_dashboard(request):
         "completed_hours": completed_hours,
         "target_hours": target_hours,
         "progress_percent": min(100, round(completed_hours / target_hours * 100)),
+        "ojt_ready": ojt_ready,
+        "ojt_requirements_remaining": required_requirements.exclude(
+            status=OJTRequirement.Status.APPROVED
+        ).count(),
     }
     return render(request, "portal/intern/dashboard.html", context)
 
@@ -141,11 +149,18 @@ def _coordinates(request, prefix):
 @role_required(User.Role.INTERN)
 def attendance(request):
     intern = get_object_or_404(InternProfile, user=request.user)
+    required_requirements = intern.ojt_requirements.filter(is_required=True)
+    ojt_ready = required_requirements.exists() and not required_requirements.exclude(
+        status=OJTRequirement.Status.APPROVED
+    ).exists()
     today = timezone.localdate()
     if request.method == "POST":
         action = request.POST.get("action")
         if action not in {"clock_in", "clock_out"}:
             return HttpResponseBadRequest("Unknown attendance action.")
+        if action == "clock_in" and not ojt_ready:
+            messages.error(request, "Your required OJT documents must be approved before you can start attendance.")
+            return redirect("portal:ojt_requirements")
         latitude, longitude = _coordinates(request, action)
         try:
             with transaction.atomic():
@@ -181,7 +196,131 @@ def attendance(request):
 
     today_log = AttendanceLog.objects.filter(intern=intern, work_date=today).first()
     logs = intern.attendance_logs.all()[:30]
-    return render(request, "portal/intern/attendance.html", {"today_log": today_log, "logs": logs, "today": today})
+    return render(request, "portal/intern/attendance.html", {
+        "today_log": today_log,
+        "logs": logs,
+        "today": today,
+        "ojt_ready": ojt_ready,
+    })
+
+
+def _ojt_requirements_context(intern, bound_requirement=None, bound_form=None):
+    requirements = intern.ojt_requirements.all()
+    rows = []
+    for requirement in requirements:
+        rows.append({
+            "requirement": requirement,
+            "form": bound_form if requirement.pk == getattr(bound_requirement, "pk", None) else OJTRequirementUploadForm(),
+        })
+    required = requirements.filter(is_required=True)
+    approved_required = required.filter(status=OJTRequirement.Status.APPROVED).count()
+    return {
+        "requirement_rows": rows,
+        "required_count": required.count(),
+        "approved_required_count": approved_required,
+        "ojt_ready": required.exists() and approved_required == required.count(),
+    }
+
+
+@role_required(User.Role.INTERN)
+def ojt_requirements(request):
+    intern = get_object_or_404(InternProfile, user=request.user)
+    return render(
+        request,
+        "portal/intern/requirements.html",
+        _ojt_requirements_context(intern),
+    )
+
+
+@role_required(User.Role.INTERN)
+@require_POST
+def ojt_requirement_upload(request, requirement_id):
+    intern = get_object_or_404(InternProfile, user=request.user)
+    requirement = get_object_or_404(intern.ojt_requirements, pk=requirement_id)
+    if requirement.status in {OJTRequirement.Status.SUBMITTED, OJTRequirement.Status.APPROVED}:
+        messages.info(request, "This document is already awaiting review or has been approved.")
+        return redirect("portal:ojt_requirements")
+
+    form = OJTRequirementUploadForm(request.POST, request.FILES, instance=requirement)
+    if form.is_valid():
+        requirement = form.save(commit=False)
+        requirement.status = OJTRequirement.Status.SUBMITTED
+        requirement.reviewer = None
+        requirement.review_note = ""
+        requirement.submitted_at = timezone.now()
+        requirement.reviewed_at = None
+        requirement.save()
+        audit(request.user, "ojt_requirement.submitted", requirement)
+        messages.success(request, f"{requirement.title} uploaded for coordinator review.")
+        return redirect("portal:ojt_requirements")
+
+    return render(
+        request,
+        "portal/intern/requirements.html",
+        _ojt_requirements_context(intern, requirement, form),
+    )
+
+
+@role_required(User.Role.COORDINATOR)
+def coordinator_ojt_requirements(request):
+    requirements = OJTRequirement.objects.filter(
+        status=OJTRequirement.Status.SUBMITTED
+    ).select_related("intern__user").order_by("submitted_at")
+    return render(request, "portal/coordinator/requirements.html", {
+        "requirements": requirements,
+    })
+
+
+@role_required(User.Role.COORDINATOR)
+@require_POST
+def review_ojt_requirement(request, requirement_id):
+    requirement = get_object_or_404(
+        OJTRequirement.objects.select_related("intern__user"),
+        pk=requirement_id,
+        status=OJTRequirement.Status.SUBMITTED,
+    )
+    decision = request.POST.get("decision")
+    if decision not in {"approve", "reject"}:
+        return HttpResponseBadRequest("Unknown document review decision.")
+    review_note = request.POST.get("review_note", "").strip()
+    if decision == "reject" and not review_note:
+        messages.error(request, "Add a note explaining what the intern needs to correct.")
+        return redirect("portal:coordinator_ojt_requirements")
+
+    requirement.status = (
+        OJTRequirement.Status.APPROVED if decision == "approve" else OJTRequirement.Status.REJECTED
+    )
+    requirement.reviewer = request.user
+    requirement.review_note = review_note
+    requirement.reviewed_at = timezone.now()
+    requirement.save(update_fields=("status", "reviewer", "review_note", "reviewed_at"))
+    outcome = "approved" if decision == "approve" else "rejected"
+    audit(request.user, f"ojt_requirement.{outcome}", requirement)
+    messages.success(request, f"{requirement.title} {outcome}.")
+    return redirect("portal:coordinator_ojt_requirements")
+
+
+@login_required
+def ojt_requirement_document(request, requirement_id):
+    requirement = get_object_or_404(OJTRequirement, pk=requirement_id)
+    can_review = request.user.is_staff or request.user.role == User.Role.COORDINATOR
+    is_owner = (
+        request.user.role == User.Role.INTERN
+        and requirement.intern.user_id == request.user.pk
+    )
+    if not (can_review or is_owner):
+        return render(request, "errors/403.html", status=403)
+    if not requirement.document:
+        raise Http404("No document has been uploaded.")
+
+    response = FileResponse(
+        requirement.document.open("rb"),
+        as_attachment=True,
+        filename=Path(requirement.document.name).name,
+        content_type="application/octet-stream",
+    )
+    response["Cache-Control"] = "private, no-store"
+    return response
 
 
 @role_required(User.Role.INTERN)
@@ -560,6 +699,9 @@ def coordinator_dashboard(request):
             | Q(clock_out__isnull=False, time_out_approved=False)
         ).count(),
         "pending_report_count": WeeklyReport.objects.filter(status=WeeklyReport.Status.SUBMITTED).count(),
+        "pending_ojt_requirement_count": OJTRequirement.objects.filter(
+            status=OJTRequirement.Status.SUBMITTED
+        ).count(),
         "high_risk_count": RiskAssessment.objects.filter(level=RiskAssessment.Level.HIGH).count(),
         "intern_rows": intern_rows,
     }

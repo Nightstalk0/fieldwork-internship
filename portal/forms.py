@@ -1,6 +1,6 @@
 from django import forms
 
-from .models import CompanyProfile, InternProfile, Posting, Scorecard, WeeklyReport
+from .models import CompanyProfile, InternProfile, OJTRequirement, Posting, Scorecard, WeeklyReport
 
 
 class CompanyProfileForm(forms.ModelForm):
@@ -19,6 +19,12 @@ class InternProfileForm(forms.ModelForm):
             "bio": "Summarize your skills, interests, and the type of placement you are seeking.",
             "resume": "Upload a PDF or DOCX resume within the listed file-size limit.",
         }
+
+
+class OJTRequirementUploadForm(forms.ModelForm):
+    class Meta:
+        model = OJTRequirement
+        fields = ("document",)
 
 
 class PostingForm(forms.ModelForm):

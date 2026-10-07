@@ -11,7 +11,7 @@ from django.urls import reverse
 from docx import Document as DocxDocument
 
 from accounts.models import User
-from .models import Application, AttendanceLog, CompanyProfile, InternProfile, Posting, RiskAssessment, Scorecard, WeeklyReport
+from .models import Application, AttendanceLog, CompanyProfile, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport
 from .utils import haversine_distance_km
 from .validators import FileSizeAndTypeValidator
 
@@ -52,6 +52,123 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(reverse("portal:intern_dashboard"), "/intern/dashboard/")
         self.assertEqual(reverse("portal:company_dashboard"), "/supervisor/dashboard/")
         self.assertEqual(reverse("portal:coordinator_dashboard"), "/admin/dashboard/")
+
+    def test_intern_receives_default_ojt_requirements(self):
+        requirements = self.intern.ojt_requirements.all()
+
+        self.assertEqual(requirements.count(), 13)
+        self.assertEqual(requirements.filter(is_required=True).count(), 7)
+        self.assertEqual(requirements.filter(is_required=False).count(), 6)
+        self.assertFalse(requirements.exclude(status=OJTRequirement.Status.NOT_SUBMITTED).exists())
+
+    def test_intern_dashboard_explains_ojt_document_gate(self):
+        self.client.force_login(self.intern_user)
+
+        response = self.client.get(reverse("portal:intern_dashboard"))
+        requirements_response = self.client.get(reverse("portal:ojt_requirements"))
+
+        self.assertContains(response, "Before you start OJT")
+        self.assertEqual(response.context["ojt_ready"], False)
+        self.assertEqual(response.context["ojt_requirements_remaining"], 7)
+        self.assertContains(requirements_response, "Endorsement / recommendation letter")
+        self.assertContains(requirements_response, "Drug test / laboratory exams")
+
+    def test_attendance_time_in_requires_approved_required_documents(self):
+        self.client.force_login(self.intern_user)
+
+        blocked_response = self.client.post(
+            reverse("portal:attendance"),
+            {"action": "clock_in"},
+        )
+
+        self.assertRedirects(blocked_response, reverse("portal:ojt_requirements"))
+        self.assertFalse(AttendanceLog.objects.filter(intern=self.intern).exists())
+
+        self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
+        allowed_response = self.client.post(
+            reverse("portal:attendance"),
+            {"action": "clock_in"},
+        )
+
+        self.assertRedirects(allowed_response, reverse("portal:attendance"))
+        self.assertTrue(AttendanceLog.objects.filter(intern=self.intern).exists())
+
+    def test_intern_can_upload_required_document_for_review(self):
+        requirement = self.intern.ojt_requirements.get(title="Medical certificate")
+        self.client.force_login(self.intern_user)
+
+        with tempfile.TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            response = self.client.post(
+                reverse("portal:ojt_requirement_upload", args=(requirement.pk,)),
+                {"document": SimpleUploadedFile("medical-certificate.pdf", b"%PDF-1.7\ncertificate")},
+            )
+
+            self.assertRedirects(response, reverse("portal:ojt_requirements"))
+            requirement.refresh_from_db()
+            self.assertEqual(requirement.status, OJTRequirement.Status.SUBMITTED)
+            self.assertTrue(requirement.document)
+            self.assertIsNone(requirement.reviewer_id)
+            self.assertTrue(requirement.submitted_at)
+
+    def test_intern_cannot_download_another_interns_ojt_document(self):
+        requirement = self.intern.ojt_requirements.get(title="Medical certificate")
+        other_user = User.objects.create_user(username="other-intern")
+        self.client.force_login(self.intern_user)
+        with tempfile.TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            self.client.post(
+                reverse("portal:ojt_requirement_upload", args=(requirement.pk,)),
+                {"document": SimpleUploadedFile("medical-certificate.pdf", b"%PDF-1.7\ncertificate")},
+            )
+            self.client.force_login(other_user)
+
+            response = self.client.get(
+                reverse("portal:ojt_requirement_document", args=(requirement.pk,))
+            )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_coordinator_can_request_changes_and_approve_ojt_document(self):
+        requirement = self.intern.ojt_requirements.get(title="Medical certificate")
+        coordinator = User.objects.create_user(
+            username="coordinator",
+            role=User.Role.COORDINATOR,
+        )
+        self.client.force_login(self.intern_user)
+
+        with tempfile.TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            self.client.post(
+                reverse("portal:ojt_requirement_upload", args=(requirement.pk,)),
+                {"document": SimpleUploadedFile("medical-certificate.pdf", b"%PDF-1.7\ncertificate")},
+            )
+            self.client.force_login(coordinator)
+            queue_response = self.client.get(reverse("portal:coordinator_ojt_requirements"))
+            self.assertContains(queue_response, "OJT document review")
+            self.assertContains(queue_response, self.intern_user.username)
+
+            rejected = self.client.post(
+                reverse("portal:review_ojt_requirement", args=(requirement.pk,)),
+                {"decision": "reject", "review_note": "Please upload a legible copy."},
+            )
+            self.assertRedirects(rejected, reverse("portal:coordinator_ojt_requirements"))
+            requirement.refresh_from_db()
+            self.assertEqual(requirement.status, OJTRequirement.Status.REJECTED)
+            self.assertEqual(requirement.reviewer, coordinator)
+
+            self.client.force_login(self.intern_user)
+            self.client.post(
+                reverse("portal:ojt_requirement_upload", args=(requirement.pk,)),
+                {"document": SimpleUploadedFile("medical-certificate.pdf", b"%PDF-1.7\nupdated certificate")},
+            )
+            self.client.force_login(coordinator)
+            approved = self.client.post(
+                reverse("portal:review_ojt_requirement", args=(requirement.pk,)),
+                {"decision": "approve"},
+            )
+
+        self.assertRedirects(approved, reverse("portal:coordinator_ojt_requirements"))
+        requirement.refresh_from_db()
+        self.assertEqual(requirement.status, OJTRequirement.Status.APPROVED)
+        self.assertEqual(requirement.reviewer, coordinator)
 
     def test_intern_dashboard_shows_approved_hour_progress(self):
         clock_in = datetime(2026, 10, 5, 8, tzinfo=datetime_timezone.utc)
@@ -439,6 +556,7 @@ class PortalWorkflowTests(TestCase):
 
     def test_clock_in_uses_server_time_and_saves_note_without_gps(self):
         fixed_now = datetime(2026, 1, 5, 9, 30, tzinfo=datetime_timezone.utc)
+        self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
         self.client.force_login(self.intern_user)
         with patch("portal.views.timezone.now", return_value=fixed_now):
             response = self.client.post(

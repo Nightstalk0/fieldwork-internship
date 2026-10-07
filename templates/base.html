@@ -15,6 +15,7 @@
     <nav class="main-nav" aria-label="Main navigation">
       {% if request.user.is_staff or request.user.role == 'coordinator' %}
         <a href="{% url 'portal:coordinator_dashboard' %}">Overview</a>
+        <a href="{% url 'portal:coordinator_ojt_requirements' %}">OJT requirements</a>
         <a href="{% url 'portal:dtr_queue' %}">DTR queue{% if pending_review_count %}<span class="nav-count">{{ pending_review_count }}</span>{% endif %}</a>
         <a href="{% url 'portal:scorecards' %}">Scorecards</a>
         <a href="{% url 'portal:analytics' %}">Analytics</a>
@@ -31,6 +32,7 @@
       {% else %}
         <a href="{% url 'portal:intern_dashboard' %}">Overview</a>
         <a href="{% url 'portal:profile' %}">Profile</a>
+        <a href="{% url 'portal:ojt_requirements' %}">OJT requirements</a>
         <a href="{% url 'portal:postings' %}">Opportunities</a>
         <a href="{% url 'portal:attendance' %}">Attendance</a>
         <a href="{% url 'portal:reports' %}">Weekly reports</a>
@@ -46,6 +48,7 @@
     <nav class="quick-actions" aria-label="Quick actions">
       <strong>Quick actions</strong>
       {% if request.user.is_staff or request.user.role == 'coordinator' %}
+        <a class="button button-primary" href="{% url 'portal:coordinator_ojt_requirements' %}">Review OJT documents</a>
         <a class="button button-primary" href="{% url 'portal:dtr_queue' %}">Approve pending logs</a>
         <a class="button button-secondary" href="{% url 'portal:coordinator_attendance_export' %}">Export attendance CSV</a>
         <a class="button button-secondary" href="{% url 'portal:coordinator_dashboard' %}#intern-directory">Find an intern</a>
@@ -54,7 +57,8 @@
         <a class="button button-secondary" href="{% url 'portal:company_attendance_export' %}">Export attendance CSV</a>
         <a class="button button-secondary" href="{% url 'portal:company_scorecards' %}">Open evaluations</a>
       {% else %}
-        <a class="button button-primary" href="{% url 'portal:attendance' %}">Log hours today</a>
+        <a class="button button-primary" href="{% url 'portal:ojt_requirements' %}">Upload OJT documents</a>
+        <a class="button button-secondary" href="{% url 'portal:attendance' %}">Log hours today</a>
         <a class="button button-secondary" href="{% url 'portal:reports' %}">Submit weekly report</a>
       {% endif %}
     </nav>

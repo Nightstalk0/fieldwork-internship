@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}OJT requirements | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">INTERN WORKSPACE</p><h1>OJT requirements</h1><p class="muted">Upload your documents for coordinator review before recording your first OJT attendance.</p></div></div>
+{% if ojt_ready %}<section class="panel requirement-notice requirement-notice-good"><strong>Required documents approved</strong><p>You are cleared to start recording attendance. Optional documents can still be submitted if your host requests them.</p><a href="{% url 'portal:attendance' %}">Open attendance</a></section>{% else %}<section class="panel requirement-notice"><strong>{{ approved_required_count }} of {{ required_count }} required documents approved</strong><p>Required school/academic and baseline legal/health documents must be approved. This checklist is a starting point; confirm your exact requirements with your school and host training establishment (HTE).</p></section>{% endif %}
+<section class="requirement-list" aria-label="OJT document checklist">
+{% for item in requirement_rows %}
+<article class="panel requirement-item">
+  <div class="requirement-heading"><div><p class="eyebrow">{{ item.requirement.get_category_display }} · {% if item.requirement.is_required %}Required{% else %}Optional{% endif %}</p><h2>{{ item.requirement.title }}</h2><p class="muted">{{ item.requirement.description }}</p></div>
+  <span class="status {% if item.requirement.status == 'approved' %}status-good{% elif item.requirement.status == 'rejected' %}status-risk{% endif %}">{{ item.requirement.get_status_display }}</span></div>
+  {% if item.requirement.document %}<p><a href="{% url 'portal:ojt_requirement_document' item.requirement.pk %}">Download submitted document</a></p>{% endif %}
+  {% if item.requirement.review_note %}<p class="requirement-feedback"><strong>Coordinator note:</strong> {{ item.requirement.review_note }}</p>{% endif %}
+  {% if item.requirement.status == 'not_submitted' or item.requirement.status == 'rejected' %}
+  <form method="post" enctype="multipart/form-data" class="requirement-upload" action="{% url 'portal:ojt_requirement_upload' item.requirement.pk %}">
+    {% csrf_token %}
+    <label for="document-{{ item.requirement.pk }}">Document (PDF, image, DOCX, ZIP, or text; max 5 MB)</label>
+    <input id="document-{{ item.requirement.pk }}" type="file" name="document" accept=".pdf,.jpg,.jpeg,.png,.webp,.docx,.zip,.txt" required>
+    {% if item.form.document.errors %}<ul class="errorlist">{% for error in item.form.document.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+    <button class="button button-secondary" type="submit">{% if item.requirement.status == 'rejected' %}Replace document{% else %}Upload document{% endif %}</button>
+  </form>
+  {% elif item.requirement.status == 'submitted' %}<p class="muted">Your document is waiting for coordinator review.</p>{% endif %}
+</article>
+{% empty %}<section class="panel"><p class="muted">No OJT requirements are assigned to your profile yet. Contact your coordinator.</p></section>{% endfor %}
+</section>
+{% endblock %}

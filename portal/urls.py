@@ -7,6 +7,8 @@ urlpatterns = [
     path("", views.dashboard, name="dashboard"),
     path("intern/dashboard/", views.intern_dashboard, name="intern_dashboard"),
     path("intern/profile/", views.profile, name="profile"),
+    path("intern/requirements/", views.ojt_requirements, name="ojt_requirements"),
+    path("intern/requirements/<int:requirement_id>/upload/", views.ojt_requirement_upload, name="ojt_requirement_upload"),
     path("intern/postings/", views.postings, name="postings"),
     path("intern/postings/<int:posting_id>/apply/", views.apply_to_posting, name="apply"),
     path("intern/attendance/", views.attendance, name="attendance"),
@@ -33,4 +35,7 @@ urlpatterns = [
     path("coordinator/dtr/<int:log_id>/approve/", views.approve_dtr, name="approve_dtr"),
     path("coordinator/scorecards/", views.scorecards, name="scorecards"),
     path("coordinator/analytics/", views.analytics, name="analytics"),
+    path("coordinator/requirements/", views.coordinator_ojt_requirements, name="coordinator_ojt_requirements"),
+    path("coordinator/requirements/<int:requirement_id>/review/", views.review_ojt_requirement, name="review_ojt_requirement"),
+    path("ojt-requirements/<int:requirement_id>/document/", views.ojt_requirement_document, name="ojt_requirement_document"),
 ]
