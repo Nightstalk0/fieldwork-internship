@@ -12,6 +12,25 @@ class AccountFlowTests(TestCase):
         self.assertContains(response, 'data-role="intern"')
         self.assertContains(response, 'data-role="company"')
         self.assertContains(response, '<input type="hidden" name="role"')
+        self.assertContains(response, 'value="intern"')
+
+    def test_registration_without_hidden_role_defaults_to_intern(self):
+        response = self.client.post(
+            reverse("accounts:register"),
+            {
+                "username": "new-intern",
+                "first_name": "New",
+                "last_name": "Intern",
+                "email": "new@example.test",
+                "password1": "Safe-example-Password-927!",
+                "password2": "Safe-example-Password-927!",
+            },
+        )
+
+        self.assertRedirects(response, reverse("accounts:login"))
+        user = User.objects.get(username="new-intern")
+        self.assertEqual(user.role, User.Role.INTERN)
+        self.assertTrue(hasattr(user, "intern_profile"))
 
     def test_admin_can_view_registered_accounts_without_password_data(self):
         User.objects.create_user(username="registered-intern", password="Safe-example-Password-927!")

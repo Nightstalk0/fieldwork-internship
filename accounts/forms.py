@@ -22,6 +22,8 @@ class RegistrationForm(UserCreationForm):
     role = forms.ChoiceField(
         choices=((User.Role.INTERN, "Intern"), (User.Role.COMPANY, "Company")),
         widget=forms.HiddenInput(),
+        initial=User.Role.INTERN,
+        required=False,
     )
     if settings.CAPTCHA_ENABLED:
         captcha = CaptchaField()
@@ -35,3 +37,6 @@ class RegistrationForm(UserCreationForm):
         if User.objects.filter(email__iexact=email).exists():
             raise forms.ValidationError("An account with this email address already exists.")
         return email
+
+    def clean_role(self):
+        return self.cleaned_data.get("role") or User.Role.INTERN

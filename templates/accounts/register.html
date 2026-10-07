@@ -15,8 +15,13 @@
 {% endblock %}
 {% block scripts %}<script>
   const roleSelect = document.getElementById("id_role");
-  document.querySelectorAll("[data-role]").forEach((tab) => tab.addEventListener("click", () => {
-    roleSelect.value = tab.dataset.role;
-    document.querySelectorAll("[data-role]").forEach((item) => item.setAttribute("aria-selected", String(item === tab)));
-  }));
+  const roleTabs = document.querySelectorAll("[data-role]");
+  if (!roleSelect.value) roleSelect.value = "intern";
+  roleTabs.forEach((tab) => {
+    tab.setAttribute("aria-selected", String(tab.dataset.role === roleSelect.value));
+    tab.addEventListener("click", () => {
+      roleSelect.value = tab.dataset.role;
+      roleTabs.forEach((item) => item.setAttribute("aria-selected", String(item === tab)));
+    });
+  });
 </script>{% endblock %}
