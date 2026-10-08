@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Intern documents | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">HOST ORGANIZATION</p><h1>Intern documents</h1><p class="muted">Submitted OJT documents for interns accepted into your placements. Documents are available to your company and the coordinator; the coordinator handles approval.</p></div></div>
+<section class="requirement-list" aria-label="Accepted interns' submitted documents">
+  {% for requirement in requirements %}
+  <article class="panel requirement-item">
+    <div class="requirement-heading"><div><p class="eyebrow">{{ requirement.intern.user.get_full_name|default:requirement.intern.user.username }} · {% if requirement.company %}{{ requirement.company.organization }}{% else %}Baseline OJT requirement{% endif %}</p><h2>{{ requirement.title }}</h2><p class="muted">{{ requirement.intern.university|default:"School not provided" }} · {{ requirement.intern.course|default:"Course not provided" }}</p></div><span class="status {% if requirement.status == 'approved' %}status-good{% elif requirement.status == 'rejected' %}status-risk{% endif %}">{{ requirement.get_status_display }}</span></div>
+    {% if requirement.description %}<p>{{ requirement.description }}</p>{% endif %}
+    {% if requirement.document_previewable %}<a href="{% url 'portal:ojt_requirement_document_mode' requirement.pk 'preview' %}" target="_blank" rel="noopener noreferrer">Preview document</a> · {% endif %}
+    <a href="{% url 'portal:ojt_requirement_document' requirement.pk %}">Download original</a>
+  </article>
+  {% empty %}
+  <section class="panel"><p class="muted">No accepted interns have submitted OJT documents to your company.</p></section>
+  {% endfor %}
+</section>
+{% endblock %}

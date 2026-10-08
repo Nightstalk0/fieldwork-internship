@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Company requirements | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">HOST ORGANIZATION</p><h1>Company requirements</h1><p class="muted">Accepted interns who have completed admin-approved baseline requirements will be asked for these documents. Admin reviews submissions; you can preview them after acceptance.</p></div></div>
+<div class="content-grid">
+  <section class="panel form-panel">
+    <h2>Add a required document</h2>
+    <form method="post" class="stack-form">
+      {% csrf_token %}
+      {{ form.as_p }}
+      <button class="button button-primary" type="submit">Add requirement</button>
+    </form>
+  </section>
+  <section class="panel">
+    <h2>Your company documents</h2>
+    <div class="requirement-list">
+      {% for requirement in requirements %}
+      <article class="requirement-item">
+        <div class="requirement-heading"><div><h3>{{ requirement.title }}</h3><p class="muted">{{ requirement.description|default:"No instructions provided." }}</p></div></div>
+        <form method="post">
+          {% csrf_token %}
+          <button class="button button-secondary" type="submit" name="delete_requirement" value="{{ requirement.pk }}">Remove requirement</button>
+        </form>
+      </article>
+      {% empty %}
+      <p class="muted">No company-specific requirements have been added.</p>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+{% endblock %}

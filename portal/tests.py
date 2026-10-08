@@ -2,6 +2,7 @@ import tempfile
 from datetime import datetime, timezone as datetime_timezone
 from io import BytesIO
 from unittest.mock import patch
+from zipfile import ZipFile
 
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -12,7 +13,7 @@ from docx import Document as DocxDocument
 
 from accounts.models import User
 from .forms import InternProfileForm
-from .models import Application, AttendanceLog, CompanyProfile, DailyReport, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport
+from .models import Application, AttendanceLog, CompanyProfile, CompanyRequirement, DailyReport, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport, assign_company_ojt_requirements
 from .utils import haversine_distance_km
 from .validators import FileSizeAndTypeValidator
 
@@ -49,10 +50,33 @@ class PortalWorkflowTests(TestCase):
         self.assertContains(response, self.posting.title)
         self.assertEqual(response.context["pending_application_count"], 1)
 
+    def test_company_can_manage_its_required_documents(self):
+        self.client.force_login(self.company_user)
+
+        page = self.client.get(reverse("portal:company_requirements"))
+        self.assertContains(page, "Company requirements")
+
+        response = self.client.post(
+            reverse("portal:company_requirements"),
+            {"title": "Safety certificate", "description": "Current safety training record."},
+        )
+
+        self.assertRedirects(response, reverse("portal:company_requirements"))
+        requirement = CompanyRequirement.objects.get(company=self.company)
+        self.assertEqual(requirement.title, "Safety certificate")
+        self.assertContains(self.client.get(reverse("portal:company_requirements")), "Safety certificate")
+
     def test_role_dashboard_routes_use_role_specific_paths(self):
         self.assertEqual(reverse("portal:intern_dashboard"), "/intern/dashboard/")
         self.assertEqual(reverse("portal:company_dashboard"), "/supervisor/dashboard/")
         self.assertEqual(reverse("portal:coordinator_dashboard"), "/admin/dashboard/")
+
+    def test_current_navigation_item_is_highlighted(self):
+        self.client.force_login(self.intern_user)
+
+        response = self.client.get(reverse("portal:intern_dashboard"))
+
+        self.assertContains(response, 'class="nav-link-active" aria-current="page">Overview</a>')
 
     def test_intern_can_set_external_placement_and_must_name_host(self):
         form = InternProfileForm(
@@ -142,6 +166,22 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(report.supervisor_feedback, "Good progress.")
         self.assertEqual(report.reviewer, coordinator)
 
+    def test_external_intern_uses_coordinator_workflow_instead_of_company_opportunities(self):
+        self.intern.placement_type = InternProfile.PlacementType.EXTERNAL
+        self.intern.external_host = "Northside Design Studio"
+        self.intern.save(update_fields=("placement_type", "external_host"))
+        self.client.force_login(self.intern_user)
+
+        page = self.client.get(reverse("portal:postings"))
+        self.assertContains(page, "Your external placement is managed directly with the OJT coordinator.")
+        self.assertNotContains(page, self.posting.title)
+        self.assertNotContains(page, ">Opportunities</a>")
+
+        response = self.client.post(reverse("portal:apply", args=(self.posting.pk,)))
+
+        self.assertRedirects(response, reverse("portal:postings"))
+        self.assertFalse(Application.objects.filter(intern=self.intern).exists())
+
     def test_coordinator_can_monitor_weekly_reports_from_platform_interns(self):
         WeeklyReport.objects.create(
             intern=self.intern,
@@ -201,9 +241,9 @@ class PortalWorkflowTests(TestCase):
     def test_intern_receives_default_ojt_requirements(self):
         requirements = self.intern.ojt_requirements.all()
 
-        self.assertEqual(requirements.count(), 13)
+        self.assertEqual(requirements.count(), 7)
         self.assertEqual(requirements.filter(is_required=True).count(), 7)
-        self.assertEqual(requirements.filter(is_required=False).count(), 6)
+        self.assertFalse(requirements.filter(is_required=False).exists())
         self.assertFalse(requirements.exclude(status=OJTRequirement.Status.NOT_SUBMITTED).exists())
 
     def test_intern_dashboard_explains_ojt_document_gate(self):
@@ -216,7 +256,164 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(response.context["ojt_ready"], False)
         self.assertEqual(response.context["ojt_requirements_remaining"], 7)
         self.assertContains(requirements_response, "Endorsement / recommendation letter")
-        self.assertContains(requirements_response, "Drug test / laboratory exams")
+        self.assertNotContains(requirements_response, "Drug test / laboratory exams")
+
+    def test_company_requirements_are_assigned_after_baseline_approval_and_acceptance(self):
+        CompanyRequirement.objects.create(
+            company=self.company,
+            title="Company safety orientation",
+            description="Complete the host safety orientation.",
+        )
+        baseline = self.intern.ojt_requirements.filter(company__isnull=True, is_required=True)
+        baseline.update(status=OJTRequirement.Status.APPROVED)
+        application = Application.objects.create(intern=self.intern, posting=self.posting)
+        self.client.force_login(self.company_user)
+
+        response = self.client.post(
+            reverse("portal:application_decide", args=(application.pk, "accept"))
+        )
+
+        self.assertRedirects(response, reverse("portal:applicant_screening"))
+        company_requirement = self.intern.ojt_requirements.get(
+            company=self.company,
+            title="Company safety orientation",
+        )
+        self.assertTrue(company_requirement.is_required)
+        self.assertEqual(company_requirement.status, OJTRequirement.Status.NOT_SUBMITTED)
+
+    def test_company_requirements_do_not_block_baseline_attendance_clearance(self):
+        baseline = self.intern.ojt_requirements.filter(company__isnull=True, is_required=True)
+        baseline.update(status=OJTRequirement.Status.APPROVED)
+        company_requirement = CompanyRequirement.objects.create(
+            company=self.company,
+            title="Company safety orientation",
+        )
+        Application.objects.create(
+            intern=self.intern,
+            posting=self.posting,
+            status=Application.Status.ACCEPTED,
+        )
+        assign_company_ojt_requirements(self.intern, self.company)
+        self.client.force_login(self.intern_user)
+
+        response = self.client.post(reverse("portal:attendance"), {"action": "clock_in"})
+
+        self.assertRedirects(response, reverse("portal:attendance"))
+        self.assertTrue(AttendanceLog.objects.filter(intern=self.intern).exists())
+        self.assertEqual(company_requirement.title, "Company safety orientation")
+
+    def test_accepted_intern_gets_company_requirements_when_baseline_is_later_approved(self):
+        CompanyRequirement.objects.create(
+            company=self.company,
+            title="Company safety orientation",
+        )
+        application = Application.objects.create(
+            intern=self.intern,
+            posting=self.posting,
+            status=Application.Status.ACCEPTED,
+        )
+        self.assertFalse(
+            self.intern.ojt_requirements.filter(company=self.company).exists()
+        )
+        baseline = self.intern.ojt_requirements.filter(company__isnull=True, is_required=True)
+        baseline.exclude(title="Medical certificate").update(status=OJTRequirement.Status.APPROVED)
+        pending = baseline.get(title="Medical certificate")
+        pending.status = OJTRequirement.Status.SUBMITTED
+        pending.save(update_fields=("status",))
+        coordinator = User.objects.create_user(username="coordinator", role=User.Role.COORDINATOR)
+        self.client.force_login(coordinator)
+
+        response = self.client.post(
+            reverse("portal:review_ojt_requirement", args=(pending.pk,)),
+            {"decision": "approve"},
+        )
+
+        self.assertRedirects(response, reverse("portal:coordinator_ojt_requirements"))
+        self.assertTrue(
+            self.intern.ojt_requirements.filter(
+                company=self.company,
+                title="Company safety orientation",
+                status=OJTRequirement.Status.NOT_SUBMITTED,
+            ).exists()
+        )
+        application.refresh_from_db()
+        self.assertEqual(application.status, Application.Status.ACCEPTED)
+
+    def test_accepted_company_and_admin_can_preview_intern_documents(self):
+        requirement = self.intern.ojt_requirements.get(title="Medical certificate")
+        with tempfile.TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            requirement.document = SimpleUploadedFile(
+                "medical-certificate.txt",
+                b"Medical certificate contents",
+                content_type="text/plain",
+            )
+            requirement.status = OJTRequirement.Status.SUBMITTED
+            requirement.save(update_fields=("document", "status"))
+            Application.objects.create(
+                intern=self.intern,
+                posting=self.posting,
+                status=Application.Status.ACCEPTED,
+            )
+            self.client.force_login(self.company_user)
+
+            listing = self.client.get(reverse("portal:company_intern_documents"))
+            self.assertContains(listing, "Medical certificate")
+            self.assertContains(listing, "Preview document")
+            preview = self.client.get(
+                reverse("portal:ojt_requirement_document_mode", args=(requirement.pk, "preview"))
+            )
+            self.assertEqual(preview.status_code, 200)
+            self.assertEqual(preview["Content-Type"], "text/plain")
+            self.assertIn("inline", preview["Content-Disposition"])
+            self.assertEqual(b"".join(preview.streaming_content), b"Medical certificate contents")
+
+            coordinator = User.objects.create_user(username="coordinator", role=User.Role.COORDINATOR)
+            self.client.force_login(coordinator)
+            admin_preview = self.client.get(
+                reverse("portal:ojt_requirement_document_mode", args=(requirement.pk, "preview"))
+            )
+            self.assertEqual(admin_preview.status_code, 200)
+            self.assertEqual(admin_preview["Content-Type"], "text/plain")
+            self.assertEqual(b"".join(admin_preview.streaming_content), b"Medical certificate contents")
+
+    def test_company_cannot_preview_documents_for_unaccepted_intern(self):
+        requirement = self.intern.ojt_requirements.get(title="Medical certificate")
+        self.client.force_login(self.company_user)
+
+        response = self.client.get(
+            reverse("portal:ojt_requirement_document_mode", args=(requirement.pk, "preview"))
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_company_can_preview_zip_document_contents(self):
+        archive_stream = BytesIO()
+        with ZipFile(archive_stream, "w") as archive:
+            archive.writestr("company-checklist.txt", "Complete orientation.")
+        requirement = self.intern.ojt_requirements.get(title="Medical certificate")
+        self.client.force_login(self.company_user)
+
+        with tempfile.TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            requirement.document = SimpleUploadedFile(
+                "medical-certificate.zip",
+                archive_stream.getvalue(),
+                content_type="application/zip",
+            )
+            requirement.status = OJTRequirement.Status.SUBMITTED
+            requirement.save(update_fields=("document", "status"))
+            Application.objects.create(
+                intern=self.intern,
+                posting=self.posting,
+                status=Application.Status.ACCEPTED,
+            )
+
+            response = self.client.get(
+                reverse("portal:ojt_requirement_document_mode", args=(requirement.pk, "preview"))
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertContains(response, "ZIP archive contents")
+            self.assertContains(response, "company-checklist.txt")
 
     def test_attendance_time_in_requires_approved_required_documents(self):
         self.client.force_login(self.intern_user)

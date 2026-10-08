@@ -59,6 +59,13 @@ class OJTRequirement(models.Model):
         blank=True,
         validators=[FileSizeAndTypeValidator()],
     )
+    company = models.ForeignKey(
+        "CompanyProfile",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="ojt_documents",
+    )
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.NOT_SUBMITTED)
     reviewer = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -74,7 +81,16 @@ class OJTRequirement(models.Model):
     class Meta:
         ordering = ("category", "title")
         constraints = [
-            models.UniqueConstraint(fields=("intern", "title"), name="uniq_ojt_requirement_intern_title")
+            models.UniqueConstraint(
+                fields=("intern", "title"),
+                condition=Q(company__isnull=True),
+                name="uniq_ojt_baseline_requirement_intern_title",
+            ),
+            models.UniqueConstraint(
+                fields=("intern", "company", "title"),
+                condition=Q(company__isnull=False),
+                name="uniq_ojt_company_requirement_intern_title",
+            ),
         ]
 
     def __str__(self):
@@ -124,42 +140,6 @@ OJT_REQUIREMENT_DEFAULTS = (
         "A certificate from a licensed clinic or physician confirming fitness for training.",
         True,
     ),
-    (
-        OJTRequirement.Category.LEGAL,
-        "Barangay, police, or NBI clearance",
-        "Submit a clearance only if requested by your school or host.",
-        False,
-    ),
-    (
-        OJTRequirement.Category.LEGAL,
-        "Government-issued ID / tax or social-security document",
-        "Submit only the documents requested by your host; do not upload unrequested numbers.",
-        False,
-    ),
-    (
-        OJTRequirement.Category.APPLICATION,
-        "Resume / CV",
-        "Your current resume or curriculum vitae.",
-        False,
-    ),
-    (
-        OJTRequirement.Category.APPLICATION,
-        "Cover letter / letter of intent",
-        "A letter describing your interest in the placement.",
-        False,
-    ),
-    (
-        OJTRequirement.Category.APPLICATION,
-        "Portfolio",
-        "A portfolio of relevant work, if requested for your field.",
-        False,
-    ),
-    (
-        OJTRequirement.Category.ROLE_SPECIFIC,
-        "Drug test / laboratory exams",
-        "Required only for applicable roles or when requested by your host.",
-        False,
-    ),
 )
 
 
@@ -185,6 +165,22 @@ class CompanyProfile(models.Model):
 
     def __str__(self):
         return self.organization
+
+
+class CompanyRequirement(models.Model):
+    company = models.ForeignKey(CompanyProfile, on_delete=models.CASCADE, related_name="requirements")
+    title = models.CharField(max_length=160)
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ("title",)
+        constraints = [
+            models.UniqueConstraint(fields=("company", "title"), name="uniq_company_requirement_title")
+        ]
+
+    def __str__(self):
+        return f"{self.title} — {self.company}"
 
 
 class Posting(models.Model):
@@ -230,6 +226,40 @@ class Application(models.Model):
     class Meta:
         constraints = [models.UniqueConstraint(fields=("intern", "posting"), name="uniq_application_intern_posting")]
         ordering = ("-submitted_at",)
+
+
+def baseline_ojt_requirements_approved(intern):
+    required = intern.ojt_requirements.filter(is_required=True, company__isnull=True)
+    return required.exists() and not required.exclude(status=OJTRequirement.Status.APPROVED).exists()
+
+
+def assign_company_ojt_requirements(intern, company):
+    if intern.placement_type != InternProfile.PlacementType.PLATFORM:
+        return
+    if not baseline_ojt_requirements_approved(intern):
+        return
+    for requirement in company.requirements.filter(is_active=True):
+        OJTRequirement.objects.get_or_create(
+            intern=intern,
+            company=company,
+            title=requirement.title,
+            defaults={
+                "category": OJTRequirement.Category.ROLE_SPECIFIC,
+                "description": requirement.description,
+                "is_required": True,
+            },
+        )
+
+
+def assign_accepted_company_ojt_requirements(intern):
+    if intern.placement_type != InternProfile.PlacementType.PLATFORM:
+        return
+    accepted_companies = CompanyProfile.objects.filter(
+        postings__applications__intern=intern,
+        postings__applications__status=Application.Status.ACCEPTED,
+    ).distinct()
+    for company in accepted_companies:
+        assign_company_ojt_requirements(intern, company)
 
 
 class AttendanceLog(models.Model):

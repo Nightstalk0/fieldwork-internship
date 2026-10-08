@@ -14,33 +14,35 @@
     {% if request.user.is_authenticated %}
     <nav class="main-nav" aria-label="Main navigation">
       {% if request.user.is_staff or request.user.role == 'coordinator' %}
-        <a href="{% url 'portal:coordinator_dashboard' %}">Overview</a>
-        <a href="{% url 'portal:coordinator_ojt_requirements' %}">OJT requirements{% if pending_requirement_count %}<span class="nav-count">{{ pending_requirement_count }}</span>{% endif %}</a>
-        <a href="{% url 'portal:dtr_queue' %}">DTR queue{% if pending_dtr_count %}<span class="nav-count">{{ pending_dtr_count }}</span>{% endif %}</a>
-        <a href="{% url 'portal:coordinator_daily_reports' %}">Daily reports{% if pending_daily_report_count %}<span class="nav-count">{{ pending_daily_report_count }}</span>{% endif %}</a>
-        <a href="{% url 'portal:coordinator_weekly_reports' %}">Weekly reports</a>
-        <a href="{% url 'portal:scorecards' %}">Scorecards</a>
-        <a href="{% url 'portal:analytics' %}">Analytics</a>
+        <a href="{% url 'portal:coordinator_dashboard' %}" {% if request.resolver_match.url_name == 'coordinator_dashboard' %}class="nav-link-active" aria-current="page"{% endif %}>Overview</a>
+        <a href="{% url 'portal:coordinator_ojt_requirements' %}" {% if request.resolver_match.url_name == 'coordinator_ojt_requirements' or request.resolver_match.url_name == 'ojt_requirement_document_mode' %}class="nav-link-active" aria-current="page"{% endif %}>OJT requirements{% if pending_requirement_count %}<span class="nav-count">{{ pending_requirement_count }}</span>{% endif %}</a>
+        <a href="{% url 'portal:dtr_queue' %}" {% if request.resolver_match.url_name == 'dtr_queue' %}class="nav-link-active" aria-current="page"{% endif %}>DTR queue{% if pending_dtr_count %}<span class="nav-count">{{ pending_dtr_count }}</span>{% endif %}</a>
+        <a href="{% url 'portal:coordinator_daily_reports' %}" {% if request.resolver_match.url_name == 'coordinator_daily_reports' %}class="nav-link-active" aria-current="page"{% endif %}>Daily reports{% if pending_daily_report_count %}<span class="nav-count">{{ pending_daily_report_count }}</span>{% endif %}</a>
+        <a href="{% url 'portal:coordinator_weekly_reports' %}" {% if request.resolver_match.url_name == 'coordinator_weekly_reports' %}class="nav-link-active" aria-current="page"{% endif %}>Weekly reports</a>
+        <a href="{% url 'portal:scorecards' %}" {% if request.resolver_match.url_name == 'scorecards' %}class="nav-link-active" aria-current="page"{% endif %}>Scorecards</a>
+        <a href="{% url 'portal:analytics' %}" {% if request.resolver_match.url_name == 'analytics' %}class="nav-link-active" aria-current="page"{% endif %}>Analytics</a>
         {% if request.user.is_staff %}<a href="{% url 'admin:accounts_user_changelist' %}">User accounts</a>{% endif %}
-        <a href="{% url 'portal:admin_verify' %}">Verify companies</a>
-        <a href="{% url 'portal:admin_audit' %}">Audit log</a>
+        <a href="{% url 'portal:admin_verify' %}" {% if request.resolver_match.url_name == 'admin_verify' %}class="nav-link-active" aria-current="page"{% endif %}>Verify companies</a>
+        <a href="{% url 'portal:admin_audit' %}" {% if request.resolver_match.url_name == 'admin_audit' %}class="nav-link-active" aria-current="page"{% endif %}>Audit log</a>
       {% elif request.user.role == 'company' %}
-        <a href="{% url 'portal:company_dashboard' %}">Overview</a>
-        <a href="{% url 'portal:applicant_screening' %}">Screening</a>
-        <a href="{% url 'portal:company_applications' %}">Applications</a>
-        <a href="{% url 'portal:company_dtr_queue' %}">DTR</a>
-        <a href="{% url 'portal:company_scorecards' %}">Scorecards</a>
-        <a href="{% url 'portal:company_profile' %}">Profile</a>
+        <a href="{% url 'portal:company_dashboard' %}" {% if request.resolver_match.url_name == 'company_dashboard' %}class="nav-link-active" aria-current="page"{% endif %}>Overview</a>
+        <a href="{% url 'portal:applicant_screening' %}" {% if request.resolver_match.url_name == 'applicant_screening' %}class="nav-link-active" aria-current="page"{% endif %}>Screening</a>
+        <a href="{% url 'portal:company_applications' %}" {% if request.resolver_match.url_name == 'company_applications' or request.resolver_match.url_name == 'company_application_resume' %}class="nav-link-active" aria-current="page"{% endif %}>Applications</a>
+        <a href="{% url 'portal:company_intern_documents' %}" {% if request.resolver_match.url_name == 'company_intern_documents' or request.resolver_match.url_name == 'ojt_requirement_document_mode' %}class="nav-link-active" aria-current="page"{% endif %}>Intern documents</a>
+        <a href="{% url 'portal:company_requirements' %}" {% if request.resolver_match.url_name == 'company_requirements' %}class="nav-link-active" aria-current="page"{% endif %}>Requirements</a>
+        <a href="{% url 'portal:company_dtr_queue' %}" {% if request.resolver_match.url_name == 'company_dtr_queue' %}class="nav-link-active" aria-current="page"{% endif %}>DTR</a>
+        <a href="{% url 'portal:company_scorecards' %}" {% if request.resolver_match.url_name == 'company_scorecards' %}class="nav-link-active" aria-current="page"{% endif %}>Scorecards</a>
+        <a href="{% url 'portal:company_profile' %}" {% if request.resolver_match.url_name == 'company_profile' %}class="nav-link-active" aria-current="page"{% endif %}>Profile</a>
       {% else %}
-        <a href="{% url 'portal:intern_dashboard' %}">Overview</a>
-        <a href="{% url 'portal:profile' %}">Profile</a>
-        <a href="{% url 'portal:ojt_requirements' %}">OJT requirements</a>
-        <a href="{% url 'portal:postings' %}">Opportunities</a>
-        <a href="{% url 'portal:attendance' %}">Attendance</a>
+        <a href="{% url 'portal:intern_dashboard' %}" {% if request.resolver_match.url_name == 'intern_dashboard' %}class="nav-link-active" aria-current="page"{% endif %}>Overview</a>
+        <a href="{% url 'portal:profile' %}" {% if request.resolver_match.url_name == 'profile' %}class="nav-link-active" aria-current="page"{% endif %}>Profile</a>
+        <a href="{% url 'portal:ojt_requirements' %}" {% if request.resolver_match.url_name == 'ojt_requirements' or request.resolver_match.url_name == 'ojt_requirement_document_mode' %}class="nav-link-active" aria-current="page"{% endif %}>OJT requirements</a>
+        {% if request.user.intern_profile.placement_type == 'platform' %}<a href="{% url 'portal:postings' %}" {% if request.resolver_match.url_name == 'postings' %}class="nav-link-active" aria-current="page"{% endif %}>Opportunities</a>{% endif %}
+        <a href="{% url 'portal:attendance' %}" {% if request.resolver_match.url_name == 'attendance' %}class="nav-link-active" aria-current="page"{% endif %}>Attendance</a>
         {% if request.user.intern_profile.placement_type == 'external' %}
-          <a href="{% url 'portal:daily_report' %}">Daily reports</a>
+          <a href="{% url 'portal:daily_report' %}" {% if request.resolver_match.url_name == 'daily_report' %}class="nav-link-active" aria-current="page"{% endif %}>Daily reports</a>
         {% else %}
-          <a href="{% url 'portal:reports' %}">Weekly reports</a>
+          <a href="{% url 'portal:reports' %}" {% if request.resolver_match.url_name == 'reports' %}class="nav-link-active" aria-current="page"{% endif %}>Weekly reports</a>
         {% endif %}
       {% endif %}
     </nav>
@@ -63,8 +65,10 @@
         <a class="button button-primary" href="{% url 'portal:company_dtr_queue' %}">Review attendance</a>
         <a class="button button-secondary" href="{% url 'portal:company_attendance_export' %}">Export attendance CSV</a>
         <a class="button button-secondary" href="{% url 'portal:company_scorecards' %}">Open evaluations</a>
+        <a class="button button-secondary" href="{% url 'portal:company_requirements' %}">Manage requirements</a>
+        <a class="button button-secondary" href="{% url 'portal:company_intern_documents' %}">View intern documents</a>
       {% else %}
-        <a class="button button-primary" href="{% url 'portal:ojt_requirements' %}">Upload OJT documents</a>
+        <a class="button button-primary" href="{% url 'portal:ojt_requirements' %}">Upload required documents</a>
         <a class="button button-secondary" href="{% url 'portal:attendance' %}">Log hours today</a>
         {% if request.user.intern_profile.placement_type == 'external' %}
           <a class="button button-secondary" href="{% url 'portal:daily_report' %}">Submit daily report</a>

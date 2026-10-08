@@ -20,12 +20,12 @@ from docx.opc.exceptions import PackageNotFoundError
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 from lxml.etree import XMLSyntaxError
-from zipfile import BadZipFile
+from zipfile import BadZipFile, LargeZipFile, ZipFile
 
 from accounts.models import User
 
-from .forms import CompanyProfileForm, DailyReportForm, InternProfileForm, OJTRequirementUploadForm, PostingForm, ScorecardForm, WeeklyReportForm
-from .models import Application, AttendanceLog, AuditLog, CompanyProfile, DailyReport, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport
+from .forms import CompanyProfileForm, CompanyRequirementForm, DailyReportForm, InternProfileForm, OJTRequirementUploadForm, PostingForm, ScorecardForm, WeeklyReportForm
+from .models import Application, AttendanceLog, AuditLog, CompanyProfile, CompanyRequirement, DailyReport, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport, assign_accepted_company_ojt_requirements, assign_company_ojt_requirements, baseline_ojt_requirements_approved
 from .utils import attendance_pdf, audit, certificate_pdf
 
 OJT_TARGET_HOURS = 120
@@ -58,10 +58,8 @@ def dashboard(request):
 @role_required(User.Role.INTERN)
 def intern_dashboard(request):
     intern = get_object_or_404(InternProfile, user=request.user)
-    required_requirements = intern.ojt_requirements.filter(is_required=True)
-    ojt_ready = required_requirements.exists() and not required_requirements.exclude(
-        status=OJTRequirement.Status.APPROVED
-    ).exists()
+    required_requirements = intern.ojt_requirements.filter(is_required=True, company__isnull=True)
+    ojt_ready = baseline_ojt_requirements_approved(intern)
     completed_hours = round(sum(
         log.hours_worked
         for log in intern.attendance_logs.filter(time_in_approved=True, time_out_approved=True)
@@ -92,6 +90,7 @@ def profile(request):
     form = InternProfileForm(request.POST or None, request.FILES or None, instance=intern)
     if request.method == "POST" and form.is_valid():
         profile_instance = form.save()
+        assign_accepted_company_ojt_requirements(profile_instance)
         audit(request.user, "profile.updated", profile_instance)
         messages.success(request, "Profile saved.")
         return redirect("portal:profile")
@@ -101,15 +100,28 @@ def profile(request):
 @role_required(User.Role.INTERN)
 def postings(request):
     intern = get_object_or_404(InternProfile, user=request.user)
+    if intern.placement_type == InternProfile.PlacementType.EXTERNAL:
+        return render(request, "portal/intern/postings.html", {
+            "postings": Posting.objects.none(),
+            "application_count": intern.applications.count(),
+            "external_placement": True,
+        })
     applied_ids = intern.applications.values_list("posting_id", flat=True)
     available = Posting.objects.filter(status=Posting.Status.PUBLISHED).exclude(pk__in=applied_ids).select_related("company")
-    return render(request, "portal/intern/postings.html", {"postings": available, "application_count": len(applied_ids)})
+    return render(request, "portal/intern/postings.html", {
+        "postings": available,
+        "application_count": len(applied_ids),
+        "external_placement": False,
+    })
 
 
 @role_required(User.Role.INTERN)
 @require_POST
 def apply_to_posting(request, posting_id):
     intern = get_object_or_404(InternProfile, user=request.user)
+    if intern.placement_type == InternProfile.PlacementType.EXTERNAL:
+        messages.error(request, "External placements work directly with the OJT coordinator and cannot apply to Fieldwork company opportunities.")
+        return redirect("portal:postings")
     posting = get_object_or_404(Posting, pk=posting_id, status=Posting.Status.PUBLISHED)
     application = Application(
         intern=intern,
@@ -150,10 +162,7 @@ def _coordinates(request, prefix):
 @role_required(User.Role.INTERN)
 def attendance(request):
     intern = get_object_or_404(InternProfile, user=request.user)
-    required_requirements = intern.ojt_requirements.filter(is_required=True)
-    ojt_ready = required_requirements.exists() and not required_requirements.exclude(
-        status=OJTRequirement.Status.APPROVED
-    ).exists()
+    ojt_ready = baseline_ojt_requirements_approved(intern)
     today = timezone.localdate()
     if request.method == "POST":
         action = request.POST.get("action")
@@ -213,13 +222,13 @@ def _ojt_requirements_context(intern, bound_requirement=None, bound_form=None):
             "requirement": requirement,
             "form": bound_form if requirement.pk == getattr(bound_requirement, "pk", None) else OJTRequirementUploadForm(),
         })
-    required = requirements.filter(is_required=True)
+    required = requirements.filter(is_required=True, company__isnull=True)
     approved_required = required.filter(status=OJTRequirement.Status.APPROVED).count()
     return {
         "requirement_rows": rows,
         "required_count": required.count(),
         "approved_required_count": approved_required,
-        "ojt_ready": required.exists() and approved_required == required.count(),
+        "ojt_ready": baseline_ojt_requirements_approved(intern),
     }
 
 
@@ -268,7 +277,7 @@ def coordinator_ojt_requirements(request):
         status=OJTRequirement.Status.SUBMITTED
     ).select_related("intern__user").order_by("submitted_at")
     return render(request, "portal/coordinator/requirements.html", {
-        "requirements": requirements,
+        "requirements": _mark_requirement_preview_support(requirements),
     })
 
 
@@ -295,6 +304,8 @@ def review_ojt_requirement(request, requirement_id):
     requirement.review_note = review_note
     requirement.reviewed_at = timezone.now()
     requirement.save(update_fields=("status", "reviewer", "review_note", "reviewed_at"))
+    if decision == "approve" and requirement.company_id is None:
+        assign_accepted_company_ojt_requirements(requirement.intern)
     outcome = "approved" if decision == "approve" else "rejected"
     audit(request.user, f"ojt_requirement.{outcome}", requirement)
     messages.success(request, f"{requirement.title} {outcome}.")
@@ -302,26 +313,111 @@ def review_ojt_requirement(request, requirement_id):
 
 
 @login_required
-def ojt_requirement_document(request, requirement_id):
+def ojt_requirement_document(request, requirement_id, mode="download"):
+    if mode not in {"preview", "download"}:
+        return HttpResponseBadRequest("Invalid document action.")
     requirement = get_object_or_404(OJTRequirement, pk=requirement_id)
     can_review = request.user.is_staff or request.user.role == User.Role.COORDINATOR
     is_owner = (
         request.user.role == User.Role.INTERN
         and requirement.intern.user_id == request.user.pk
     )
-    if not (can_review or is_owner):
+    can_view_as_company = False
+    if request.user.role == User.Role.COMPANY and requirement.intern.placement_type == InternProfile.PlacementType.PLATFORM:
+        company = get_object_or_404(CompanyProfile, user=request.user)
+        can_view_as_company = (
+            requirement.intern.applications.filter(
+                posting__company=company,
+                status=Application.Status.ACCEPTED,
+            ).exists()
+            and requirement.company_id in (None, company.pk)
+        )
+    if not (can_review or is_owner or can_view_as_company):
         return render(request, "errors/403.html", status=403)
     if not requirement.document:
         raise Http404("No document has been uploaded.")
 
+    content_type = mimetypes.guess_type(requirement.document.name)[0] or "application/octet-stream"
+    is_docx = Path(requirement.document.name).suffix.lower() == ".docx"
+    if mode == "preview" and is_docx:
+        try:
+            with requirement.document.open("rb") as document_file:
+                document = Document(document_file)
+        except (BadZipFile, PackageNotFoundError, XMLSyntaxError, KeyError, ValueError, OSError):
+            return HttpResponseBadRequest("This DOCX document could not be previewed. Download the original file instead.")
+
+        preview_blocks = _docx_preview_blocks(document)
+        response = render(request, "portal/company/document_preview.html", {
+            "title": requirement.title,
+            "intern": requirement.intern,
+            "filename": Path(requirement.document.name).name,
+            "preview_blocks": preview_blocks,
+            "archive_entries": None,
+            "download_url": reverse("portal:ojt_requirement_document", args=(requirement.pk,)),
+        })
+        response["Cache-Control"] = "private, no-store"
+        response["Content-Security-Policy"] = "default-src 'none'; style-src 'self'; sandbox"
+        return response
+
+    is_zip = Path(requirement.document.name).suffix.lower() == ".zip"
+    if mode == "preview" and is_zip:
+        try:
+            with requirement.document.open("rb") as document_file:
+                with ZipFile(document_file) as archive:
+                    entries = archive.infolist()
+                    archive_entries = [
+                        {"name": entry.filename, "size": entry.file_size}
+                        for entry in entries[:200]
+                        if not entry.is_dir()
+                    ]
+        except (BadZipFile, LargeZipFile, OSError):
+            return HttpResponseBadRequest("This ZIP document could not be previewed. Download the original file instead.")
+
+        response = render(request, "portal/company/document_preview.html", {
+            "title": requirement.title,
+            "intern": requirement.intern,
+            "filename": Path(requirement.document.name).name,
+            "preview_blocks": [],
+            "archive_entries": archive_entries,
+            "archive_entry_count": len(entries),
+            "archive_truncated": len(entries) > 200,
+            "download_url": reverse("portal:ojt_requirement_document", args=(requirement.pk,)),
+        })
+        response["Cache-Control"] = "private, no-store"
+        response["Content-Security-Policy"] = "default-src 'none'; style-src 'self'; sandbox"
+        return response
+
+    preview_content_types = {"application/pdf", "image/jpeg", "image/png", "image/webp", "text/plain"}
+    if mode == "preview" and content_type not in preview_content_types:
+        return HttpResponseBadRequest("This document type cannot be previewed in a browser. Download the original file instead.")
+
     response = FileResponse(
         requirement.document.open("rb"),
-        as_attachment=True,
+        as_attachment=mode == "download",
         filename=Path(requirement.document.name).name,
-        content_type="application/octet-stream",
+        content_type=content_type,
     )
     response["Cache-Control"] = "private, no-store"
+    response["X-Content-Type-Options"] = "nosniff"
+    response["Content-Security-Policy"] = "default-src 'none'; sandbox"
     return response
+
+
+def _docx_preview_blocks(document):
+    preview_blocks = []
+    for item in document.iter_inner_content():
+        if isinstance(item, Paragraph):
+            if item.text.strip():
+                preview_blocks.append({
+                    "kind": "paragraph",
+                    "text": item.text,
+                    "heading": item.style.name == "Title" or item.style.name.startswith("Heading"),
+                })
+        elif isinstance(item, Table):
+            rows = [[cell.text for cell in row.cells] for row in item.rows]
+            if any(text.strip() for row in rows for text in row):
+                preview_blocks.append({"kind": "table", "rows": rows})
+    return preview_blocks
 
 
 @role_required(User.Role.INTERN)
@@ -552,6 +648,48 @@ def company_profile(request):
 
 
 @role_required(User.Role.COMPANY)
+def company_requirements(request):
+    company = get_object_or_404(CompanyProfile, user=request.user)
+    if request.method == "POST" and "delete_requirement" in request.POST:
+        requirement = get_object_or_404(
+            CompanyRequirement,
+            pk=request.POST["delete_requirement"],
+            company=company,
+        )
+        audit(request.user, "company_requirement.deleted", requirement)
+        requirement.delete()
+        messages.success(request, "Company requirement removed.")
+        return redirect("portal:company_requirements")
+
+    form = CompanyRequirementForm(request.POST or None)
+    form.instance.company = company
+    if request.method == "POST" and form.is_valid():
+        requirement = form.save(commit=False)
+        requirement.company = company
+        try:
+            with transaction.atomic():
+                requirement.save()
+                accepted_interns = InternProfile.objects.filter(
+                    placement_type=InternProfile.PlacementType.PLATFORM,
+                    applications__posting__company=company,
+                    applications__status=Application.Status.ACCEPTED,
+                ).distinct()
+                for intern in accepted_interns:
+                    assign_company_ojt_requirements(intern, company)
+        except IntegrityError:
+            messages.error(request, "That requirement already exists. Refresh and try again.")
+        else:
+            audit(request.user, "company_requirement.created", requirement)
+            messages.success(request, "Company requirement saved.")
+            return redirect("portal:company_requirements")
+    return render(request, "portal/company/requirements.html", {
+        "company": company,
+        "requirements": company.requirements.all(),
+        "form": form,
+    })
+
+
+@role_required(User.Role.COMPANY)
 def posting_create(request):
     company = get_object_or_404(CompanyProfile, user=request.user)
     form = PostingForm(request.POST or None)
@@ -581,12 +719,50 @@ def _mark_resume_preview_support(applications):
         "image/png",
         "image/webp",
         "text/plain",
+        "application/zip",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     }
     for application in applications:
         content_type = mimetypes.guess_type(application.resume.name)[0] if application.resume else None
         application.resume_previewable = content_type in preview_content_types
     return applications
+
+
+def _mark_requirement_preview_support(requirements):
+    preview_content_types = {
+        "application/pdf",
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "text/plain",
+    }
+    for requirement in requirements:
+        content_type = mimetypes.guess_type(requirement.document.name)[0] if requirement.document else None
+        requirement.document_previewable = (
+            content_type in preview_content_types
+            or Path(requirement.document.name).suffix.lower() in {".docx", ".zip"}
+        ) if requirement.document else False
+    return requirements
+
+
+@role_required(User.Role.COMPANY)
+def company_intern_documents(request):
+    company = get_object_or_404(CompanyProfile, user=request.user)
+    requirements = OJTRequirement.objects.filter(
+        intern__placement_type=InternProfile.PlacementType.PLATFORM,
+        intern__applications__posting__company=company,
+        intern__applications__status=Application.Status.ACCEPTED,
+        document__gt="",
+    ).filter(
+        Q(company__isnull=True) | Q(company=company)
+    ).select_related("intern__user", "company").distinct().order_by(
+        "intern__user__last_name",
+        "intern__user__first_name",
+        "title",
+    )
+    return render(request, "portal/company/intern_documents.html", {
+        "requirements": _mark_requirement_preview_support(requirements[:200]),
+    })
 
 
 @role_required(User.Role.COMPANY)
@@ -774,6 +950,8 @@ def application_decide(request, application_id, decision):
 
     application.status = decisions[decision]
     application.save(update_fields=("status", "updated_at"))
+    if application.status == Application.Status.ACCEPTED:
+        assign_company_ojt_requirements(application.intern, company)
     audit(request.user, f"application.{application.status}", application)
     messages.success(request, f"Application {application.get_status_display().lower()}.")
     return redirect("portal:applicant_screening")

@@ -1,12 +1,23 @@
 from django import forms
 
-from .models import CompanyProfile, DailyReport, InternProfile, OJTRequirement, Posting, Scorecard, WeeklyReport
+from .models import CompanyProfile, CompanyRequirement, DailyReport, InternProfile, OJTRequirement, Posting, Scorecard, WeeklyReport
 
 
 class CompanyProfileForm(forms.ModelForm):
     class Meta:
         model = CompanyProfile
         fields = ("organization", "website", "address")
+
+
+class CompanyRequirementForm(forms.ModelForm):
+    class Meta:
+        model = CompanyRequirement
+        fields = ("title", "description")
+        widgets = {"description": forms.Textarea(attrs={"rows": 3})}
+        help_texts = {
+            "title": "Interns accepted into one of your placements will be asked to submit this document.",
+            "description": "Explain what the document should contain.",
+        }
 
 
 class InternProfileForm(forms.ModelForm):

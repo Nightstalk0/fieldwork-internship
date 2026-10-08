@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Document preview | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">SUBMITTED OJT DOCUMENT</p>
+    <h1>{{ title }}</h1>
+    <p class="muted">{{ intern.user.get_full_name|default:intern.user.username }} · {{ filename }}</p>
+  </div>
+  <a class="button button-secondary" href="{{ download_url }}">Download original</a>
+</div>
+<article class="panel resume-preview">
+  {% if archive_entries != None %}
+    <p class="muted">ZIP archive contents · {{ archive_entry_count }} entries{% if archive_truncated %} · showing the first 200{% endif %}</p>
+    <div class="table-wrap"><table><thead><tr><th>File</th><th>Size</th></tr></thead><tbody>{% for entry in archive_entries %}<tr><td>{{ entry.name }}</td><td>{{ entry.size }} bytes</td></tr>{% empty %}<tr><td colspan="2" class="muted">This archive contains no files.</td></tr>{% endfor %}</tbody></table></div>
+  {% else %}
+    {% for block in preview_blocks %}
+      {% if block.kind == "paragraph" %}
+        {% if block.heading %}<h2>{{ block.text }}</h2>{% else %}<p>{{ block.text }}</p>{% endif %}
+      {% elif block.kind == "table" %}
+        <div class="table-wrap"><table><tbody>{% for row in block.rows %}<tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>{% endfor %}</tbody></table></div>
+      {% endif %}
+    {% empty %}
+      <p class="muted">No readable text was found in this document.</p>
+    {% endfor %}
+  {% endif %}
+</article>
+{% endblock %}
