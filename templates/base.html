@@ -82,6 +82,18 @@
     {% block content %}{% endblock %}
   </main>
   <footer class="site-footer"><span>Fieldwork Internship Management</span><span>Secure placement records</span></footer>
+  <script>
+    document.querySelectorAll(".main-nav").forEach((nav) => {
+      nav.addEventListener("wheel", (event) => {
+        if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+        const maxScroll = nav.scrollWidth - nav.clientWidth;
+        const nextScroll = nav.scrollLeft + event.deltaY;
+        if (maxScroll <= 0 || nextScroll < 0 || nextScroll > maxScroll) return;
+        event.preventDefault();
+        nav.scrollLeft = nextScroll;
+      }, { passive: false });
+    });
+  </script>
   {% block scripts %}{% endblock %}
 </body>
 </html>
