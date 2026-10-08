@@ -8,7 +8,7 @@ def portal_context(request):
             "pending_daily_report_count": 0,
             "pending_requirement_count": 0,
         }
-    from .models import AttendanceLog, DailyReport, OJTRequirement, WeeklyReport
+    from .models import AttendanceLog, DailyReport, OJTRequirement
 
     if request.user.is_staff or request.user.role == "coordinator":
         return {

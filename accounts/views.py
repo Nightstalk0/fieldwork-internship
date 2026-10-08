@@ -19,7 +19,7 @@ def register(request):
         return redirect("portal:dashboard")
     form = RegistrationForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
-        user = form.save()
+        form.save()
         messages.success(request, "Account created. Sign in to continue.")
         return redirect("accounts:login")
     return render(request, "accounts/register.html", {"form": form})
