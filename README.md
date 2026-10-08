@@ -20,6 +20,20 @@ Public registration supports intern and company accounts. Coordinator accounts s
 
 Set `USE_S3=true` with an AWS bucket and region to store uploads in S3. Sentry activates when `SENTRY_DSN` is set. The ML predictors use optional joblib artifacts in `ml_engine/models/` and deterministic rule-based fallbacks otherwise.
 
+## Face detection
+
+The supplied YOLO11n face detector is stored at `ml_engine/models/best.pt` and runs directly with Ultralytics on CPU; no model conversion or retraining is needed. The inference stack is pinned to Ultralytics 8.4.174, PyTorch 2.14.1 CPU, Torchvision 0.29.1 CPU, and NumPy 2.5.3 in `requirements.txt`. The existing Pillow range (`>=10.4,<12`; currently 11.3.0) is compatible and is sufficient for in-memory image inputs.
+
+Run the detector against an image with:
+
+```powershell
+python manage.py detect_faces path\to\image.jpg
+```
+
+The command prints JSON containing `face_detected`, `face_count`, and a `detections` array. Each detection has a confidence score and an `[x1, y1, x2, y2]` pixel bounding box. The model is loaded once per process. Attendance and camera behavior are unchanged; application code can call `ml_engine.face_detector.detect_faces` with an image path or a PIL image.
+
+The `.pt` checkpoint must come from a trusted source because loading PyTorch checkpoints can execute serialized code. CPU inference adds PyTorch and Ultralytics to the web-service environment; verify the deployment's available disk and memory before enabling inference there.
+
 `python manage.py seed_demo_data --password <temporary-password>` creates an example intern, company, and published opportunity. Without the option, the demo accounts are created with unusable passwords.
 
 ## OJT document readiness

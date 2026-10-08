@@ -2,7 +2,6 @@ from django.contrib import admin
 from django.urls import include, path
 
 from portal import views as portal_views
-from . import views
 
 handler403 = "django_ims.views.permission_denied"
 handler404 = "django_ims.views.page_not_found"
