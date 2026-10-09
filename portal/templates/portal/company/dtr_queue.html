@@ -13,7 +13,7 @@
 <section class="panel">
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Intern</th><th>Date</th><th>Time in</th><th>Time out</th><th>Hours</th><th>Time in approval</th><th>Time out approval</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Intern</th><th>Date</th><th>Time in</th><th>Time out</th><th>Hours</th><th>Time in approval</th><th>Time out approval</th><th>Face captures / exceptions</th><th>Actions</th></tr></thead>
       <tbody>
         {% for log in logs %}
         <tr>
@@ -25,6 +25,25 @@
           <td>{% if not log.clock_in %}<span class="status">Not recorded</span>{% elif log.time_in_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
           <td>{% if not log.clock_out %}<span class="status">Not recorded</span>{% elif log.time_out_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
           <td>
+            {% for capture in log.face_captures.all %}
+            <div>
+              <strong>{{ capture.get_event_display }}</strong> at {{ capture.captured_at|date:"H:i:s" }} · {{ capture.get_face_status_display }}
+              {% if capture.face_score != None %}({{ capture.face_score|floatformat:3 }}){% endif %}
+              · {{ capture.get_review_status_display }}
+              {% if capture.encrypted_image and capture.image_expires_at > now %}
+              <a href="{% url 'portal:attendance_face_capture_image' capture.pk %}" target="_blank" rel="noopener noreferrer">View capture</a>
+              {% elif capture.image_expires_at <= now %}<span class="muted">Image expired</span>{% else %}<span class="muted">No valid image</span>{% endif %}
+              {% if capture.review_status == 'pending' %}
+              <form method="post" action="{% url 'portal:review_attendance_face_capture' capture.pk %}">
+                {% csrf_token %}
+                <button class="button button-small" type="submit" name="action" value="approve">Approve exception</button>
+                <button class="button button-small button-secondary" type="submit" name="action" value="reject">Reject exception</button>
+              </form>
+              {% elif capture.reviewed_by %}<small class="muted">Reviewed by {{ capture.reviewed_by.get_full_name|default:capture.reviewed_by.username }}</small>{% endif %}
+            </div>
+            {% empty %}<span class="muted">No captures</span>{% endfor %}
+          </td>
+          <td>
             <form method="post" action="{% url 'portal:company_approve_dtr' log.id %}">
               {% csrf_token %}
               {% if log.clock_in and not log.time_in_approved %}<button class="button button-small" type="submit" name="event" value="time_in">Approve time in</button>{% endif %}
@@ -34,7 +53,7 @@
           </td>
         </tr>
         {% empty %}
-        <tr><td colspan="8" class="muted">No attendance records for your accepted interns.</td></tr>
+        <tr><td colspan="9" class="muted">No attendance records for your accepted interns.</td></tr>
         {% endfor %}
       </tbody>
     </table>

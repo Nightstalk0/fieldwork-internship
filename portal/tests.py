@@ -7,6 +7,7 @@ from zipfile import ZipFile
 
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
 from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -18,7 +19,7 @@ from cryptography.fernet import Fernet
 from accounts.models import User
 from ml_engine.face_recognition import decrypt_embedding
 from .forms import InternProfileForm
-from .models import Application, AttendanceLog, CompanyProfile, CompanyRequirement, DailyReport, FaceEnrollment, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport, assign_company_ojt_requirements
+from .models import Application, AttendanceFaceCapture, AttendanceLog, CompanyProfile, CompanyRequirement, DailyReport, FaceEnrollment, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport, assign_company_ojt_requirements
 from .utils import haversine_distance_km
 from .validators import FileSizeAndTypeValidator
 
@@ -445,31 +446,132 @@ class PortalWorkflowTests(TestCase):
         self.assertRedirects(allowed_response, reverse("portal:attendance"))
         self.assertTrue(AttendanceLog.objects.filter(intern=self.intern).exists())
 
-    def test_face_match_result_is_recorded_without_blocking_attendance(self):
+    def test_face_mismatch_does_not_record_attendance_and_creates_review_request(self):
         self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
         self.client.force_login(self.intern_user)
 
         with patch(
             "portal.views._attendance_face_check",
-            return_value=(AttendanceLog.FaceCheckStatus.NOT_MATCHED, 0.21),
+            return_value=(AttendanceLog.FaceCheckStatus.NOT_MATCHED, 0.21, b"encrypted test capture"),
         ):
             response = self.client.post(reverse("portal:attendance"), {"action": "clock_in"})
 
         self.assertRedirects(response, reverse("portal:attendance"))
         log = AttendanceLog.objects.get(intern=self.intern)
-        self.assertIsNotNone(log.clock_in)
+        self.assertIsNone(log.clock_in)
         self.assertEqual(log.clock_in_face_status, AttendanceLog.FaceCheckStatus.NOT_MATCHED)
         self.assertEqual(log.clock_in_face_score, 0.21)
+        capture = log.face_captures.get(event=AttendanceFaceCapture.Event.TIME_IN)
+        self.assertEqual(capture.review_status, AttendanceFaceCapture.ReviewStatus.PENDING)
+        self.assertEqual(bytes(capture.encrypted_image), b"encrypted test capture")
 
-    def test_attendance_page_explains_nonblocking_face_pilot(self):
+    def test_attendance_page_explains_required_face_verification(self):
         self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
         self.client.force_login(self.intern_user)
 
         response = self.client.get(reverse("portal:attendance"))
 
-        self.assertContains(response, "Optional face-recognition pilot")
-        self.assertContains(response, "does not decide or block attendance")
+        self.assertContains(response, "Face verification required")
+        self.assertContains(response, "successful match")
+        self.assertContains(response, "retained for up to 30 days")
         self.assertContains(response, 'name="face_image"')
+
+    def test_successful_face_match_records_both_clock_events(self):
+        self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
+        self.client.force_login(self.intern_user)
+        with patch(
+            "portal.views._attendance_face_check",
+            side_effect=[
+                (AttendanceLog.FaceCheckStatus.MATCHED, 0.81, b"encrypted time-in"),
+                (AttendanceLog.FaceCheckStatus.MATCHED, 0.79, b"encrypted time-out"),
+            ],
+        ):
+            time_in_response = self.client.post(reverse("portal:attendance"), {"action": "clock_in"})
+            self.assertRedirects(time_in_response, reverse("portal:attendance"))
+            time_out_response = self.client.post(reverse("portal:attendance"), {"action": "clock_out"})
+
+        self.assertRedirects(time_out_response, reverse("portal:attendance"))
+        log = AttendanceLog.objects.get(intern=self.intern)
+        self.assertIsNotNone(log.clock_in)
+        self.assertIsNotNone(log.clock_out)
+        self.assertEqual(log.face_captures.count(), 2)
+        self.assertEqual(
+            set(log.face_captures.values_list("review_status", flat=True)),
+            {AttendanceFaceCapture.ReviewStatus.NOT_REQUIRED},
+        )
+
+    @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
+    def test_company_can_review_failure_and_view_only_its_attendance_capture(self):
+        from ml_engine.face_recognition import encrypt_face_capture
+
+        Application.objects.create(
+            intern=self.intern,
+            posting=self.posting,
+            status=Application.Status.ACCEPTED,
+        )
+        self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
+        self.client.force_login(self.intern_user)
+        encrypted_image = encrypt_face_capture(b"test attendance jpeg")
+        with patch(
+            "portal.views._attendance_face_check",
+            return_value=(AttendanceLog.FaceCheckStatus.NOT_MATCHED, 0.21, encrypted_image),
+        ):
+            self.client.post(reverse("portal:attendance"), {"action": "clock_in"})
+
+        log = AttendanceLog.objects.get(intern=self.intern)
+        capture = log.face_captures.get()
+        self.assertIsNone(log.clock_in)
+        self.client.force_login(self.company_user)
+        queue = self.client.get(reverse("portal:company_dtr_queue"))
+        self.assertContains(queue, "Approve exception")
+
+        image_response = self.client.get(
+            reverse("portal:attendance_face_capture_image", args=(capture.pk,))
+        )
+        self.assertEqual(image_response.status_code, 200)
+        self.assertEqual(image_response.content, b"test attendance jpeg")
+        self.assertEqual(image_response["Cache-Control"], "private, no-store")
+
+        other_user = User.objects.create_user(username="other-face-intern", role=User.Role.INTERN)
+        other_intern, _ = InternProfile.objects.get_or_create(user=other_user)
+        other_log = AttendanceLog.objects.create(intern=other_intern, work_date="2026-10-09")
+        other_capture = AttendanceFaceCapture.objects.create(
+            attendance_log=other_log,
+            event=AttendanceFaceCapture.Event.TIME_IN,
+            face_status=AttendanceLog.FaceCheckStatus.ERROR,
+            encrypted_image=encrypted_image,
+        )
+        forbidden_image = self.client.get(
+            reverse("portal:attendance_face_capture_image", args=(other_capture.pk,))
+        )
+        self.assertEqual(forbidden_image.status_code, 404)
+
+        reviewed = self.client.post(
+            reverse("portal:review_attendance_face_capture", args=(capture.pk,)),
+            {"action": "approve"},
+        )
+        self.assertRedirects(reviewed, reverse("portal:company_dtr_queue"))
+        log.refresh_from_db()
+        capture.refresh_from_db()
+        self.assertEqual(log.clock_in, capture.captured_at)
+        self.assertTrue(log.time_in_approved)
+        self.assertEqual(capture.review_status, AttendanceFaceCapture.ReviewStatus.APPROVED)
+
+    def test_expired_attendance_capture_image_is_deleted_by_retention_command(self):
+        log = AttendanceLog.objects.create(intern=self.intern, work_date="2026-10-09")
+        capture = AttendanceFaceCapture.objects.create(
+            attendance_log=log,
+            event=AttendanceFaceCapture.Event.TIME_IN,
+            face_status=AttendanceLog.FaceCheckStatus.ERROR,
+            encrypted_image=b"expired encrypted image",
+            image_expires_at=datetime(2020, 1, 1, tzinfo=datetime_timezone.utc),
+        )
+
+        call_command("purge_face_attendance_images", verbosity=0)
+
+        capture.refresh_from_db()
+        self.assertIsNone(capture.encrypted_image)
+        self.assertTrue(AttendanceFaceCapture.objects.filter(pk=capture.pk).exists())
 
     @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
     def test_coordinator_enrollment_requires_consent_and_stores_only_encrypted_embedding(self):
@@ -980,7 +1082,13 @@ class PortalWorkflowTests(TestCase):
         fixed_now = datetime(2026, 1, 5, 9, 30, tzinfo=datetime_timezone.utc)
         self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
         self.client.force_login(self.intern_user)
-        with patch("portal.views.timezone.now", return_value=fixed_now):
+        with (
+            patch("portal.views.timezone.now", return_value=fixed_now),
+            patch(
+                "portal.views._attendance_face_check",
+                return_value=(AttendanceLog.FaceCheckStatus.MATCHED, 0.82, b"encrypted frame"),
+            ),
+        ):
             response = self.client.post(
                 reverse("portal:attendance"),
                 {"action": "clock_in", "notes": "Started inventory review", "clock_in": "1999-01-01T00:00:00Z"},
@@ -990,7 +1098,7 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(log.clock_in, fixed_now)
         self.assertEqual(log.notes, "Started inventory review")
         self.assertIsNone(log.clock_in_latitude)
-        self.assertEqual(log.clock_in_face_status, AttendanceLog.FaceCheckStatus.NOT_CAPTURED)
+        self.assertEqual(log.clock_in_face_status, AttendanceLog.FaceCheckStatus.MATCHED)
 
     def test_clock_out_without_clock_in_does_not_create_empty_record(self):
         self.client.force_login(self.intern_user)

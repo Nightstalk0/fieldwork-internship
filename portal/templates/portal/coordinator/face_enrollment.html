@@ -9,7 +9,7 @@
   </div>
 </div>
 <section class="panel">
-  <p><strong>Pilot only:</strong> face match results are recorded for evaluation and do not block attendance approval. This is not liveness detection. Captured images are processed in memory and discarded; only an encrypted face embedding is stored.</p>
+  <p><strong>Attendance verification:</strong> each time-in and time-out requires a successful face match. Failed or unavailable checks are sent to the intern's company/admin for review. Attendance capture images are encrypted, available only to authorized company/admin reviewers, and automatically deleted after 30 days. Enrollment images are processed in memory and discarded; only an encrypted face embedding is stored. This is not liveness detection.</p>
   <label for="intern-choice">Intern to enroll</label>
   <select id="intern-choice" form="enroll-form" name="intern_id" required>
     <option value="">Choose an intern</option>
@@ -26,7 +26,7 @@
     {% csrf_token %}
     <input type="hidden" name="action" value="enroll">
     <input type="hidden" name="face_image" id="face-image">
-    <label><input type="checkbox" name="consent_confirmed" required> I confirm that this intern was informed about the face-recognition pilot and consented to enrollment. The face check is not used to block attendance.</label>
+    <label><input type="checkbox" name="consent_confirmed" required> I confirm that this intern was informed about face verification, understands it is required for time-in/time-out, and consents to encrypted attendance images being reviewed by authorized company/admin staff and deleted after 30 days.</label>
     <button class="button button-primary" id="enroll-button" type="submit" disabled>Capture and save enrollment</button>
   </form>
 </section>
@@ -47,7 +47,7 @@
               {% csrf_token %}
               <input type="hidden" name="action" value="delete">
               <input type="hidden" name="intern_id" value="{{ intern.pk }}">
-              <button class="button button-small" type="submit">Delete enrollment and pilot scores</button>
+              <button class="button button-small" type="submit">Delete enrollment and attendance captures</button>
             </form>
             {% else %}—{% endif %}
           </td>

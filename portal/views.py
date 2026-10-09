@@ -26,14 +26,16 @@ from zipfile import BadZipFile, LargeZipFile, ZipFile
 from accounts.models import User
 
 from .forms import CompanyProfileForm, CompanyRequirementForm, DailyReportForm, InternProfileForm, OJTRequirementUploadForm, PostingForm, ScorecardForm, WeeklyReportForm
-from .models import Application, AttendanceLog, AuditLog, CompanyProfile, CompanyRequirement, DailyReport, FaceEnrollment, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport, assign_accepted_company_ojt_requirements, assign_company_ojt_requirements, baseline_ojt_requirements_approved
+from .models import Application, AttendanceFaceCapture, AttendanceLog, AuditLog, CompanyProfile, CompanyRequirement, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport, assign_accepted_company_ojt_requirements, assign_company_ojt_requirements, baseline_ojt_requirements_approved
 from .utils import attendance_pdf, audit, certificate_pdf
-from ml_engine.face_capture import FaceCaptureError, decode_camera_image
+from ml_engine.face_capture import FaceCaptureError, decode_camera_image, encode_camera_image
 from ml_engine.face_recognition import (
     FaceImageError,
     FaceModelError,
     compare_face_embedding,
     create_face_embedding,
+    decrypt_face_capture,
+    encrypt_face_capture,
     encrypt_embedding,
 )
 
@@ -172,28 +174,36 @@ def _coordinates(request, prefix):
 def _attendance_face_check(request, intern):
     image_data = request.POST.get("face_image", "").strip()
     if not image_data:
-        return AttendanceLog.FaceCheckStatus.NOT_CAPTURED, None
+        return AttendanceLog.FaceCheckStatus.NOT_CAPTURED, None, None
 
     try:
         image = decode_camera_image(image_data)
     except FaceCaptureError as exc:
         LOGGER.warning("Could not read face image for intern %s: %s", intern.pk, exc)
-        return AttendanceLog.FaceCheckStatus.ERROR, None
+        return AttendanceLog.FaceCheckStatus.ERROR, None, None
 
     enrollment = FaceEnrollment.objects.filter(intern=intern).first()
     if enrollment is None:
-        return AttendanceLog.FaceCheckStatus.NOT_ENROLLED, None
+        return AttendanceLog.FaceCheckStatus.NOT_ENROLLED, None, None
+    if enrollment.consent_text_version != FACE_CONSENT_VERSION:
+        return AttendanceLog.FaceCheckStatus.CONSENT_REQUIRED, None, None
+
+    try:
+        encrypted_image = encrypt_face_capture(encode_camera_image(image))
+    except (FaceCaptureError, FaceModelError):
+        LOGGER.exception("Could not retain face capture for intern %s.", intern.pk)
+        return AttendanceLog.FaceCheckStatus.ERROR, None, None
 
     try:
         result = compare_face_embedding(image, enrollment.encrypted_embedding)
     except FaceImageError as exc:
         LOGGER.info("Face check unavailable for intern %s: %s", intern.pk, exc)
-        return AttendanceLog.FaceCheckStatus.UNAVAILABLE, None
+        return AttendanceLog.FaceCheckStatus.UNAVAILABLE, None, encrypted_image
     except FaceModelError:
         LOGGER.exception("Face check failed for intern %s.", intern.pk)
-        return AttendanceLog.FaceCheckStatus.ERROR, None
+        return AttendanceLog.FaceCheckStatus.ERROR, None, encrypted_image
 
-    return result["status"], result["similarity"]
+    return result["status"], result["similarity"], encrypted_image
 
 
 @role_required(User.Role.INTERN)
@@ -209,7 +219,16 @@ def attendance(request):
             messages.error(request, "Your required OJT documents must be approved before you can start attendance.")
             return redirect("portal:ojt_requirements")
         latitude, longitude = _coordinates(request, action)
-        face_status, face_score = _attendance_face_check(request, intern)
+        event = AttendanceFaceCapture.Event.TIME_IN if action == "clock_in" else AttendanceFaceCapture.Event.TIME_OUT
+        existing_log = AttendanceLog.objects.filter(intern=intern, work_date=today).first()
+        if existing_log and existing_log.face_captures.filter(
+            event=event,
+            review_status=AttendanceFaceCapture.ReviewStatus.PENDING,
+        ).exists():
+            messages.info(request, "This attendance event is already waiting for company/admin review.")
+            return redirect("portal:attendance")
+        face_status, face_score, encrypted_image = _attendance_face_check(request, intern)
+        captured_at = timezone.now()
         try:
             with transaction.atomic():
                 if action == "clock_out":
@@ -219,48 +238,69 @@ def attendance(request):
                         return redirect("portal:attendance")
                 else:
                     log, _ = AttendanceLog.objects.select_for_update().get_or_create(intern=intern, work_date=today)
+                timestamp_field, latitude_field, longitude_field, face_status_field, face_score_field = (
+                    ("clock_in", "clock_in_latitude", "clock_in_longitude", "clock_in_face_status", "clock_in_face_score")
+                    if action == "clock_in"
+                    else ("clock_out", "clock_out_latitude", "clock_out_longitude", "clock_out_face_status", "clock_out_face_score")
+                )
+                if log.face_captures.filter(
+                    event=event,
+                    review_status=AttendanceFaceCapture.ReviewStatus.PENDING,
+                ).exists():
+                    messages.info(request, "This attendance event is already waiting for company/admin review.")
+                    return redirect("portal:attendance")
+                if getattr(log, timestamp_field):
+                    messages.info(request, f"You have already recorded {event.replace('_', ' ')} today.")
+                    return redirect("portal:attendance")
+
+                capture = AttendanceFaceCapture.objects.create(
+                    attendance_log=log,
+                    event=event,
+                    face_status=face_status,
+                    face_score=face_score,
+                    encrypted_image=encrypted_image,
+                    captured_at=captured_at,
+                    latitude=latitude,
+                    longitude=longitude,
+                    review_status=(
+                        AttendanceFaceCapture.ReviewStatus.NOT_REQUIRED
+                        if face_status == AttendanceLog.FaceCheckStatus.MATCHED
+                        else AttendanceFaceCapture.ReviewStatus.PENDING
+                    ),
+                )
+                setattr(log, face_status_field, face_status)
+                setattr(log, face_score_field, face_score)
+                log.notes = request.POST.get("notes", "").strip()[:255] or log.notes
                 if action == "clock_in":
-                    if log.clock_in:
-                        messages.info(request, "You have already recorded time in today.")
-                    else:
-                        log.clock_in = timezone.now()
-                        log.clock_in_latitude, log.clock_in_longitude = latitude, longitude
-                        log.clock_in_face_status = face_status
-                        log.clock_in_face_score = face_score
-                        log.notes = request.POST.get("notes", "").strip()[:255]
-                        log.save(update_fields=(
-                            "clock_in",
-                            "clock_in_latitude",
-                            "clock_in_longitude",
-                            "clock_in_face_status",
-                            "clock_in_face_score",
-                            "notes",
-                        ))
-                        audit(request.user, "attendance.clocked_in", log)
-                        messages.success(
-                            request,
-                            f"Time in recorded using server time. Face check (pilot): {log.get_clock_in_face_status_display()}.",
-                        )
-                elif log.clock_out:
-                    messages.info(request, "You have already recorded time out today.")
+                    if face_status == AttendanceLog.FaceCheckStatus.MATCHED:
+                        log.clock_in = captured_at
+                        setattr(log, latitude_field, latitude)
+                        setattr(log, longitude_field, longitude)
                 else:
-                    log.clock_out = timezone.now()
-                    log.clock_out_latitude, log.clock_out_longitude = latitude, longitude
-                    log.clock_out_face_status = face_status
-                    log.clock_out_face_score = face_score
-                    log.notes = request.POST.get("notes", "").strip()[:255] or log.notes
-                    log.save(update_fields=(
-                        "clock_out",
-                        "clock_out_latitude",
-                        "clock_out_longitude",
-                        "clock_out_face_status",
-                        "clock_out_face_score",
-                        "notes",
-                    ))
-                    audit(request.user, "attendance.clocked_out", log)
+                    if face_status == AttendanceLog.FaceCheckStatus.MATCHED:
+                        log.clock_out = captured_at
+                        setattr(log, latitude_field, latitude)
+                        setattr(log, longitude_field, longitude)
+                update_fields = [face_status_field, face_score_field, "notes"]
+                if face_status == AttendanceLog.FaceCheckStatus.MATCHED:
+                    update_fields.extend((timestamp_field, latitude_field, longitude_field))
+                log.save(update_fields=update_fields)
+                if face_status == AttendanceLog.FaceCheckStatus.MATCHED:
+                    audit(
+                        request.user,
+                        "attendance.clocked_in" if action == "clock_in" else "attendance.clocked_out",
+                        log,
+                        capture_id=capture.pk,
+                    )
                     messages.success(
                         request,
-                        f"Time out recorded using server time. Face check (pilot): {log.get_clock_out_face_status_display()}.",
+                        f"{event.replace('_', ' ').title()} recorded using server time after a face match.",
+                    )
+                else:
+                    audit(request.user, "attendance.face_review_requested", log, event=event, capture_id=capture.pk)
+                    messages.warning(
+                        request,
+                        "Face verification did not pass. Attendance was not recorded; the company/admin must review this request.",
                     )
         except IntegrityError:
             messages.info(request, "Today's attendance record was already created. Refresh and try again.")
@@ -268,11 +308,19 @@ def attendance(request):
 
     today_log = AttendanceLog.objects.filter(intern=intern, work_date=today).first()
     logs = intern.attendance_logs.all()[:30]
+    pending_face_events = set()
+    if today_log:
+        pending_face_events = set(
+            today_log.face_captures.filter(
+                review_status=AttendanceFaceCapture.ReviewStatus.PENDING,
+            ).values_list("event", flat=True)
+        )
     return render(request, "portal/intern/attendance.html", {
         "today_log": today_log,
         "logs": logs,
         "today": today,
         "ojt_ready": ojt_ready,
+        "pending_face_events": pending_face_events,
     })
 
 
@@ -285,6 +333,7 @@ def coordinator_face_enrollment(request):
             enrollment = FaceEnrollment.objects.filter(intern=intern).first()
             if enrollment:
                 with transaction.atomic():
+                    AttendanceFaceCapture.objects.filter(attendance_log__intern=intern).delete()
                     enrollment.delete()
                     AttendanceLog.objects.filter(intern=intern).update(
                         clock_in_face_status=AttendanceLog.FaceCheckStatus.NOT_ATTEMPTED,
@@ -293,7 +342,7 @@ def coordinator_face_enrollment(request):
                         clock_out_face_score=None,
                     )
                 audit(request.user, "face_enrollment.deleted", intern)
-                messages.success(request, "Face enrollment and its recorded pilot scores were deleted.")
+                messages.success(request, "Face enrollment and its associated attendance captures were deleted.")
             else:
                 messages.info(request, "This intern has no face enrollment.")
             return redirect("portal:coordinator_face_enrollment")
@@ -320,11 +369,11 @@ def coordinator_face_enrollment(request):
                 "encrypted_embedding": embedding,
                 "enrolled_by": request.user,
                 "consent_confirmed_at": timezone.now(),
-                "consent_text_version": "v1",
+                "consent_text_version": FACE_CONSENT_VERSION,
             },
         )
         audit(request.user, "face_enrollment.created" if created else "face_enrollment.updated", intern)
-        messages.success(request, "Encrypted face embedding saved; the camera image was not stored.")
+        messages.success(request, "Encrypted face embedding saved with your updated attendance-capture consent.")
         return redirect("portal:coordinator_face_enrollment")
 
     interns = InternProfile.objects.select_related("user").prefetch_related("face_enrollment").order_by(
@@ -949,13 +998,18 @@ def company_application_resume(request, application_id, mode):
 @role_required(User.Role.COMPANY)
 def company_dtr_queue(request):
     company = get_object_or_404(CompanyProfile, user=request.user)
-    logs = company_attendance_logs(company)
+    logs = company_attendance_logs(company).prefetch_related("face_captures", "face_captures__reviewed_by")
+    pending_review_count = AttendanceFaceCapture.objects.filter(
+        attendance_log__in=logs,
+        review_status=AttendanceFaceCapture.ReviewStatus.PENDING,
+    ).count()
     return render(request, "portal/company/dtr_queue.html", {
         "logs": logs[:100],
         "pending_dtr_count": logs.filter(
             Q(clock_in__isnull=False, time_in_approved=False)
             | Q(clock_out__isnull=False, time_out_approved=False)
-        ).count(),
+        ).count() + pending_review_count,
+        "now": timezone.now(),
     })
 
 
@@ -965,6 +1019,111 @@ def company_approve_dtr(request, log_id):
     company = get_object_or_404(CompanyProfile, user=request.user)
     log = get_object_or_404(company_attendance_logs(company), pk=log_id)
     return _approve_attendance_time(request, log, "portal:company_dtr_queue", "attendance.approved_by_company")
+
+
+def _reviewable_face_captures(request):
+    captures = AttendanceFaceCapture.objects.select_related(
+        "attendance_log__intern__user",
+        "reviewed_by",
+    )
+    if request.user.role == User.Role.COMPANY and not request.user.is_staff:
+        company = get_object_or_404(CompanyProfile, user=request.user)
+        captures = captures.filter(attendance_log__in=company_attendance_logs(company))
+    return captures
+
+
+def _review_face_capture(request, capture_id, queue_name, audit_action):
+    action = request.POST.get("action")
+    if action not in {"approve", "reject"}:
+        messages.error(request, "Choose whether to approve or reject this attendance exception.")
+        return redirect(queue_name)
+
+    with transaction.atomic():
+        capture = get_object_or_404(
+            _reviewable_face_captures(request).select_for_update(),
+            pk=capture_id,
+        )
+        log = AttendanceLog.objects.select_for_update().get(pk=capture.attendance_log_id)
+        if capture.review_status != AttendanceFaceCapture.ReviewStatus.PENDING:
+            messages.info(request, "This attendance exception has already been reviewed.")
+            return redirect(queue_name)
+
+        reviewed_at = timezone.now()
+        capture.reviewed_by = request.user
+        capture.reviewed_at = reviewed_at
+        if action == "reject":
+            capture.review_status = AttendanceFaceCapture.ReviewStatus.REJECTED
+            capture.save(update_fields=("review_status", "reviewed_by", "reviewed_at"))
+            audit(request.user, f"{audit_action}.face_exception_rejected", log, capture_id=capture.pk)
+            messages.success(request, "Attendance exception rejected; no time was recorded.")
+            return redirect(queue_name)
+
+        timestamp_field, approval_field, latitude_field, longitude_field, face_status_field, face_score_field = (
+            ("clock_in", "time_in_approved", "clock_in_latitude", "clock_in_longitude", "clock_in_face_status", "clock_in_face_score")
+            if capture.event == AttendanceFaceCapture.Event.TIME_IN
+            else ("clock_out", "time_out_approved", "clock_out_latitude", "clock_out_longitude", "clock_out_face_status", "clock_out_face_score")
+        )
+        if getattr(log, timestamp_field):
+            capture.review_status = AttendanceFaceCapture.ReviewStatus.REJECTED
+            capture.save(update_fields=("review_status", "reviewed_by", "reviewed_at"))
+            messages.error(request, "This time event has already been recorded; the exception was closed without changing attendance.")
+            return redirect(queue_name)
+
+        capture.review_status = AttendanceFaceCapture.ReviewStatus.APPROVED
+        capture.save(update_fields=("review_status", "reviewed_by", "reviewed_at"))
+        setattr(log, timestamp_field, capture.captured_at)
+        setattr(log, approval_field, True)
+        setattr(log, latitude_field, capture.latitude)
+        setattr(log, longitude_field, capture.longitude)
+        setattr(log, face_status_field, capture.face_status)
+        setattr(log, face_score_field, capture.face_score)
+        log.save(update_fields=(
+            timestamp_field,
+            approval_field,
+            latitude_field,
+            longitude_field,
+            face_status_field,
+            face_score_field,
+        ))
+        audit(request.user, f"{audit_action}.face_exception_approved", log, capture_id=capture.pk)
+        messages.success(request, f"{capture.get_event_display()} recorded at the captured time and approved.")
+    return redirect(queue_name)
+
+
+@role_required(User.Role.COORDINATOR, User.Role.COMPANY)
+@require_POST
+def review_attendance_face_capture(request, capture_id):
+    queue_name = (
+        "portal:dtr_queue"
+        if request.user.is_staff or request.user.role == User.Role.COORDINATOR
+        else "portal:company_dtr_queue"
+    )
+    return _review_face_capture(
+        request,
+        capture_id,
+        queue_name,
+        "attendance.approved_by_company" if queue_name == "portal:company_dtr_queue" else "attendance.approved",
+    )
+
+
+@role_required(User.Role.COORDINATOR, User.Role.COMPANY)
+def attendance_face_capture_image(request, capture_id):
+    capture = get_object_or_404(
+        _reviewable_face_captures(request),
+        pk=capture_id,
+    )
+    if not capture.encrypted_image or capture.image_expires_at <= timezone.now():
+        raise Http404("This attendance image has expired or is unavailable.")
+    try:
+        image_bytes = decrypt_face_capture(capture.encrypted_image)
+    except FaceModelError:
+        LOGGER.exception("Could not decrypt attendance face capture %s.", capture.pk)
+        return HttpResponse("Attendance capture could not be decrypted.", status=500)
+    response = HttpResponse(image_bytes, content_type="image/jpeg")
+    response["Cache-Control"] = "private, no-store"
+    response["X-Content-Type-Options"] = "nosniff"
+    response["Content-Security-Policy"] = "default-src 'none'; sandbox"
+    return response
 
 
 def _approve_attendance_time(request, log, queue_name, audit_action):
@@ -1168,8 +1327,14 @@ def verify_company(request, company_id, decision):
 
 @role_required(User.Role.COORDINATOR)
 def dtr_queue(request):
-    logs = AttendanceLog.objects.select_related("intern__user").order_by("-work_date")
-    return render(request, "portal/coordinator/dtr_queue.html", {"logs": logs[:100]})
+    logs = AttendanceLog.objects.select_related("intern__user").prefetch_related(
+        "face_captures",
+        "face_captures__reviewed_by",
+    ).order_by("-work_date")
+    return render(request, "portal/coordinator/dtr_queue.html", {
+        "logs": logs[:100],
+        "now": timezone.now(),
+    })
 
 
 @role_required(User.Role.COORDINATOR)

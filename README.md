@@ -32,15 +32,17 @@ python manage.py detect_faces path\to\image.jpg
 
 The command prints JSON containing `face_detected`, `face_count`, and a `detections` array. Each detection has a confidence score and an `[x1, y1, x2, y2]` pixel bounding box. The model is loaded once per process. Attendance and camera behavior are unchanged; application code can call `ml_engine.face_detector.detect_faces` with an image path or a PIL image.
 
-## Face-recognition attendance pilot
+## Face-verified attendance
 
-The attendance page has an optional webcam capture and one-to-one comparison against a coordinator-enrolled reference for the signed-in intern. YOLO still detects faces; OpenCV Zoo's SFace model generates embeddings, and its YuNet model supplies alignment landmarks. The ONNX weights and their Apache 2.0/MIT licenses are in `ml_engine/models/` (`SFACE_LICENSE` and `YUNET_LICENSE`). No image is written to disk; captured images are processed in memory. Face embeddings are encrypted in the database. Coordinators can delete an enrollment, which also clears the stored pilot scores.
+Both time-in and time-out require a successful one-to-one comparison against a coordinator-enrolled reference for the signed-in intern. YOLO still detects faces; OpenCV Zoo's SFace model generates embeddings, and its YuNet model supplies alignment landmarks. The ONNX weights and their Apache 2.0/MIT licenses are in `ml_engine/models/` (`SFACE_LICENSE` and `YUNET_LICENSE`). Face embeddings and valid attendance camera captures are encrypted in the database.
 
-The pilot records match status and similarity for time-in and time-out but **does not block attendance**. The SFace example cosine threshold (0.363) is only a starting point, not calibrated for this intern population. The flow has no liveness/anti-spoof check, so a displayed photo may pass. Do not use pilot results to deny, approve, discipline, or otherwise make consequential attendance decisions. Collect informed consent, assess applicable privacy requirements, and validate false-match and false-reject rates before considering any policy change.
+If a capture is missing, the match fails, or the face models are unavailable, no attendance time is recorded. A company supervisor can review exceptions for their accepted interns; coordinators/admins can review all exceptions. They can view the encrypted capture while retained and either approve the exception (recording its original capture time) or reject it. Company and coordinator attendance review pages also show successful-match captures. Images are automatically deleted after 30 days; a scheduled daily invocation of `python manage.py purge_face_attendance_images` is required in each production environment. The command removes expired image bytes but leaves the attendance and review metadata. Configure this command in the host's scheduler (for example, a daily cron job).
 
-Coordinators can manage enrollments at `/coordinator/face-enrollment/`. Enrollment requires an explicit staff confirmation that the intern gave informed consent; have the intern present while capturing the reference. Interns may withdraw by asking a coordinator to delete the enrollment.
+Coordinators manage enrollment at `/coordinator/face-enrollment/`. Enrollment requires informed consent; recapture/update the enrollment for interns who consented under the previous pilot text. The new consent covers required face verification and encrypted attendance-image retention/viewing. Deleting an enrollment also deletes its attendance captures.
 
-For production, configure a stable `FACE_EMBEDDING_ENCRYPTION_KEY` secret. Generate a Fernet key locally with:
+The SFace example cosine threshold (0.363) is provisional and is not calibrated for this intern population. This flow has no liveness/anti-spoof check, so a displayed photo may pass; positive face scores and review approvals must not be treated as proof of liveness or identity certainty. Obtain informed consent, assess applicable privacy requirements, and validate false-match and false-reject rates before relying on face verification for consequential decisions.
+
+For production, configure a stable `FACE_EMBEDDING_ENCRYPTION_KEY` secret. It encrypts both embeddings and attendance images. Generate a Fernet key locally with:
 
 ```powershell
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"

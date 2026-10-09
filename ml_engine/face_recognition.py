@@ -92,6 +92,22 @@ def decrypt_embedding(encrypted_embedding: bytes) -> bytes:
         ) from exc
 
 
+def encrypt_face_capture(image_bytes: bytes) -> bytes:
+    try:
+        return Fernet(_encryption_key()).encrypt(image_bytes)
+    except (TypeError, ValueError, UnicodeEncodeError) as exc:
+        raise FaceModelError("Face-capture encryption is not configured correctly.") from exc
+
+
+def decrypt_face_capture(encrypted_image: bytes) -> bytes:
+    try:
+        return Fernet(_encryption_key()).decrypt(bytes(encrypted_image))
+    except (InvalidToken, TypeError, ValueError, UnicodeEncodeError) as exc:
+        raise FaceModelError(
+            "Could not decrypt the attendance capture; check the encryption key."
+        ) from exc
+
+
 def _image_to_bgr(image: Image.Image) -> np.ndarray:
     return cv2.cvtColor(np.asarray(image.convert("RGB")), cv2.COLOR_RGB2BGR)
 

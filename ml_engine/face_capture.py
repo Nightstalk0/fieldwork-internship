@@ -35,3 +35,12 @@ def decode_camera_image(data_url: str) -> Image.Image:
         if isinstance(exc, FaceCaptureError):
             raise
         raise FaceCaptureError("Could not read the camera image.") from exc
+
+
+def encode_camera_image(image: Image.Image) -> bytes:
+    output = BytesIO()
+    image.convert("RGB").save(output, format="JPEG", quality=85, optimize=True)
+    image_bytes = output.getvalue()
+    if not image_bytes or len(image_bytes) > MAX_CAPTURE_BYTES:
+        raise FaceCaptureError("Camera image is empty or too large to retain.")
+    return image_bytes

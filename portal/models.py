@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
@@ -5,6 +7,13 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .validators import FileSizeAndTypeValidator
+
+
+def face_capture_image_expiry():
+    return timezone.now() + timedelta(days=30)
+
+
+FACE_CONSENT_VERSION = "v2"
 
 
 class InternProfile(models.Model):
@@ -50,7 +59,7 @@ class FaceEnrollment(models.Model):
         related_name="face_enrollments_created",
     )
     consent_confirmed_at = models.DateTimeField()
-    consent_text_version = models.CharField(max_length=16, default="v1")
+    consent_text_version = models.CharField(max_length=16, default=FACE_CONSENT_VERSION)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -294,6 +303,7 @@ class AttendanceLog(models.Model):
         NOT_ATTEMPTED = "not_attempted", "Not attempted"
         NOT_CAPTURED = "not_captured", "No camera image"
         NOT_ENROLLED = "not_enrolled", "No face enrollment"
+        CONSENT_REQUIRED = "consent_required", "Updated consent required"
         MATCHED = "matched", "Match candidate"
         NOT_MATCHED = "not_matched", "No match candidate"
         UNAVAILABLE = "unavailable", "Could not check"
@@ -337,6 +347,51 @@ class AttendanceLog(models.Model):
     @property
     def approved(self):
         return self.time_in_approved and self.time_out_approved
+
+
+class AttendanceFaceCapture(models.Model):
+    class Event(models.TextChoices):
+        TIME_IN = "time_in", "Time in"
+        TIME_OUT = "time_out", "Time out"
+
+    class ReviewStatus(models.TextChoices):
+        NOT_REQUIRED = "not_required", "No exception review required"
+        PENDING = "pending", "Awaiting company/admin review"
+        APPROVED = "approved", "Exception approved"
+        REJECTED = "rejected", "Exception rejected"
+
+    attendance_log = models.ForeignKey(
+        AttendanceLog,
+        on_delete=models.CASCADE,
+        related_name="face_captures",
+    )
+    event = models.CharField(max_length=8, choices=Event.choices)
+    face_status = models.CharField(max_length=16, choices=AttendanceLog.FaceCheckStatus.choices)
+    face_score = models.FloatField(null=True, blank=True)
+    encrypted_image = models.BinaryField(null=True, blank=True)
+    image_expires_at = models.DateTimeField(default=face_capture_image_expiry)
+    captured_at = models.DateTimeField(default=timezone.now)
+    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    review_status = models.CharField(
+        max_length=12,
+        choices=ReviewStatus.choices,
+        default=ReviewStatus.PENDING,
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_attendance_face_captures",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ("-captured_at",)
+
+    def __str__(self):
+        return f"{self.get_event_display()} face capture: {self.attendance_log}"
 
 
 class DailyReport(models.Model):
