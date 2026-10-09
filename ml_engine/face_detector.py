@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from threading import Lock
 from typing import TypedDict
 
 from PIL import Image
@@ -7,6 +8,7 @@ from PIL import Image
 
 MODEL_PATH = Path(__file__).resolve().parent / "models" / "best.pt"
 ImageSource = str | Path | Image.Image
+_PREDICTION_LOCK = Lock()
 
 
 class FaceDetection(TypedDict):
@@ -42,12 +44,13 @@ def detect_faces(image: ImageSource) -> FaceDetectionResponse:
         raise TypeError("image must be a filesystem path or a PIL image")
 
     detections: list[FaceDetection] = []
-    results = load_face_model().predict(
-        source=source,
-        imgsz=640,
-        device="cpu",
-        verbose=False,
-    )
+    with _PREDICTION_LOCK:
+        results = load_face_model().predict(
+            source=source,
+            imgsz=640,
+            device="cpu",
+            verbose=False,
+        )
     for result in results:
         if result.boxes is None:
             continue

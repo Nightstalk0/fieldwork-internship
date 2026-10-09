@@ -10,6 +10,7 @@ load_dotenv(BASE_DIR / ".env")
 
 DEBUG = os.getenv("DEBUG", "true").lower() in {"1", "true", "yes"}
 SECRET_KEY = os.getenv("SECRET_KEY")
+FACE_EMBEDDING_ENCRYPTION_KEY = os.getenv("FACE_EMBEDDING_ENCRYPTION_KEY", "")
 if not SECRET_KEY:
     if not DEBUG:
         raise ImproperlyConfigured("Set SECRET_KEY when DEBUG is disabled.")

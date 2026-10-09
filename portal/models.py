@@ -36,6 +36,28 @@ class InternProfile(models.Model):
         return f"Intern profile: {self.user}"
 
 
+class FaceEnrollment(models.Model):
+    intern = models.OneToOneField(
+        InternProfile,
+        on_delete=models.CASCADE,
+        related_name="face_enrollment",
+    )
+    encrypted_embedding = models.BinaryField()
+    enrolled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="face_enrollments_created",
+    )
+    consent_confirmed_at = models.DateTimeField()
+    consent_text_version = models.CharField(max_length=16, default="v1")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Face enrollment: {self.intern}"
+
+
 class OJTRequirement(models.Model):
     class Category(models.TextChoices):
         SCHOOL = "school", "School and academic"
@@ -268,10 +290,31 @@ class AttendanceLog(models.Model):
         LATE = "late", "Late"
         EXCUSED = "excused", "Excused"
 
+    class FaceCheckStatus(models.TextChoices):
+        NOT_ATTEMPTED = "not_attempted", "Not attempted"
+        NOT_CAPTURED = "not_captured", "No camera image"
+        NOT_ENROLLED = "not_enrolled", "No face enrollment"
+        MATCHED = "matched", "Match candidate"
+        NOT_MATCHED = "not_matched", "No match candidate"
+        UNAVAILABLE = "unavailable", "Could not check"
+        ERROR = "error", "Check error"
+
     intern = models.ForeignKey(InternProfile, on_delete=models.CASCADE, related_name="attendance_logs")
     work_date = models.DateField(default=timezone.localdate)
     clock_in = models.DateTimeField(null=True, blank=True)
     clock_out = models.DateTimeField(null=True, blank=True)
+    clock_in_face_status = models.CharField(
+        max_length=16,
+        choices=FaceCheckStatus.choices,
+        default=FaceCheckStatus.NOT_ATTEMPTED,
+    )
+    clock_in_face_score = models.FloatField(null=True, blank=True)
+    clock_out_face_status = models.CharField(
+        max_length=16,
+        choices=FaceCheckStatus.choices,
+        default=FaceCheckStatus.NOT_ATTEMPTED,
+    )
+    clock_out_face_score = models.FloatField(null=True, blank=True)
     clock_in_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     clock_in_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     clock_out_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)

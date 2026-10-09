@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Face enrollment | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">PROGRAM OPERATIONS</p>
+    <h1>Face-recognition pilot enrollment</h1>
+    <p class="muted">Enroll an intern only while they are present and after obtaining their informed consent.</p>
+  </div>
+</div>
+<section class="panel">
+  <p><strong>Pilot only:</strong> face match results are recorded for evaluation and do not block attendance approval. This is not liveness detection. Captured images are processed in memory and discarded; only an encrypted face embedding is stored.</p>
+  <label for="intern-choice">Intern to enroll</label>
+  <select id="intern-choice" form="enroll-form" name="intern_id" required>
+    <option value="">Choose an intern</option>
+    {% for intern in interns %}
+    <option value="{{ intern.pk }}">{{ intern.user.get_full_name|default:intern.user.username }} · {{ intern.user.username }}</option>
+    {% endfor %}
+  </select>
+  <div class="clock-actions">
+    <button class="button button-secondary" id="start-camera" type="button">Start camera</button>
+    <span id="camera-status" class="muted" aria-live="polite">Use a secure browser connection and ensure the intern is present.</span>
+  </div>
+  <video id="camera-preview" aria-label="Intern camera preview" autoplay muted playsinline width="480" height="360" style="max-width: 100%; height: auto;" hidden></video>
+  <form method="post" id="enroll-form">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="enroll">
+    <input type="hidden" name="face_image" id="face-image">
+    <label><input type="checkbox" name="consent_confirmed" required> I confirm that this intern was informed about the face-recognition pilot and consented to enrollment. The face check is not used to block attendance.</label>
+    <button class="button button-primary" id="enroll-button" type="submit" disabled>Capture and save enrollment</button>
+  </form>
+</section>
+<section class="panel">
+  <h2>Enrollment records</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Intern</th><th>Status</th><th>Consent recorded</th><th>Action</th></tr></thead>
+      <tbody>
+        {% for intern in interns %}
+        <tr>
+          <td>{{ intern.user.get_full_name|default:intern.user.username }}</td>
+          <td>{% if intern.face_enrollment %}Enrolled{% else %}Not enrolled{% endif %}</td>
+          <td>{% if intern.face_enrollment %}{{ intern.face_enrollment.consent_confirmed_at|date:"Y-m-d H:i" }}{% else %}—{% endif %}</td>
+          <td>
+            {% if intern.face_enrollment %}
+            <form method="post">
+              {% csrf_token %}
+              <input type="hidden" name="action" value="delete">
+              <input type="hidden" name="intern_id" value="{{ intern.pk }}">
+              <button class="button button-small" type="submit">Delete enrollment and pilot scores</button>
+            </form>
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="4" class="muted">No intern profiles are available.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+  const video = document.getElementById("camera-preview");
+  const status = document.getElementById("camera-status");
+  const enrollButton = document.getElementById("enroll-button");
+  const form = document.getElementById("enroll-form");
+  let cameraStream = null;
+
+  document.getElementById("start-camera").addEventListener("click", async () => {
+    try {
+      cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+      video.srcObject = cameraStream;
+      video.hidden = false;
+      enrollButton.disabled = false;
+      status.textContent = "Camera ready. Confirm consent, select the intern, then capture.";
+    } catch {
+      status.textContent = "Camera unavailable or permission denied.";
+    }
+  });
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!video.videoWidth || !video.videoHeight) {
+      status.textContent = "The camera is not ready yet.";
+      return;
+    }
+    const scale = Math.min(1, 1280 / video.videoWidth);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(video.videoWidth * scale);
+    canvas.height = Math.round(video.videoHeight * scale);
+    canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+    document.getElementById("face-image").value = canvas.toDataURL("image/jpeg", 0.82);
+    form.submit();
+  });
+
+  window.addEventListener("pagehide", () => cameraStream?.getTracks().forEach((track) => track.stop()));
+</script>
+{% endblock %}

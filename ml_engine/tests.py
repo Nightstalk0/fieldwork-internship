@@ -1,10 +1,22 @@
+import base64
+from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.test import SimpleTestCase
+import numpy as np
 from PIL import Image
+from cryptography.fernet import Fernet
+from django.test import override_settings
 
+from .face_capture import FaceCaptureError, decode_camera_image
 from .face_detector import detect_faces
+from .face_recognition import (
+    compare_face_embedding,
+    create_face_embedding,
+    decrypt_embedding,
+    encrypt_embedding,
+)
 from .predictors import Model1CompletionPredictor, Model2RiskPredictor, Model3MatchPredictor, Model4PerformancePredictor
 
 
@@ -47,6 +59,72 @@ class FaceDetectorTests(SimpleTestCase):
             "face_count": 0,
             "detections": [],
         })
+
+
+class FaceRecognitionTests(SimpleTestCase):
+    def _camera_data_url(self):
+        image = BytesIO()
+        Image.new("RGB", (32, 32), "white").save(image, format="JPEG")
+        return "data:image/jpeg;base64," + base64.b64encode(image.getvalue()).decode("ascii")
+
+    def test_camera_image_is_decoded_without_saving_it(self):
+        image = decode_camera_image(self._camera_data_url())
+
+        self.assertEqual(image.size, (32, 32))
+        self.assertEqual(image.mode, "RGB")
+
+    def test_camera_decoder_rejects_non_jpeg_input(self):
+        with self.assertRaises(FaceCaptureError):
+            decode_camera_image("data:image/png;base64,AAAA")
+
+    @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
+    def test_encrypted_embedding_round_trips(self):
+        embedding = b"embedding bytes"
+
+        self.assertNotEqual(encrypt_embedding(embedding), embedding)
+        self.assertEqual(decrypt_embedding(encrypt_embedding(embedding)), embedding)
+
+    @patch("ml_engine.face_recognition._image_to_bgr")
+    @patch("ml_engine.face_recognition._load_models")
+    @patch("ml_engine.face_recognition.detect_faces")
+    def test_embedding_requires_one_detected_face_and_returns_128_values(
+        self,
+        detect_faces_mock,
+        load_models_mock,
+        image_to_bgr_mock,
+    ):
+        detect_faces_mock.return_value = {
+            "face_detected": True,
+            "face_count": 1,
+            "detections": [{"confidence": 0.95, "bbox": [10, 10, 100, 100]}],
+        }
+        yunet = SimpleNamespace(
+            setInputSize=lambda _size: None,
+            detect=lambda _image: (None, [[10, 10, 90, 90, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.99]]),
+        )
+        sface = SimpleNamespace(
+            alignCrop=lambda _image, _face: np.zeros((112, 112, 3), dtype=np.uint8),
+            feature=lambda _image: [[0.0] * 128],
+        )
+        load_models_mock.return_value = (yunet, sface)
+        image_to_bgr_mock.return_value = np.zeros((120, 120, 3), dtype=np.uint8)
+
+        embedding = create_face_embedding(Image.new("RGB", (120, 120)))
+
+        self.assertEqual(len(embedding), 128 * 4)
+
+    @patch("ml_engine.face_recognition._load_models")
+    @patch("ml_engine.face_recognition.decrypt_embedding", return_value=b"\x00" * (128 * 4))
+    @patch("ml_engine.face_recognition.create_face_embedding", return_value=b"\x00" * (128 * 4))
+    def test_match_returns_similarity_and_pilot_label(self, create_embedding_mock, decrypt_mock, load_models_mock):
+        recognizer = SimpleNamespace(match=lambda _current, _reference, _mode: 0.55)
+        load_models_mock.return_value = (None, recognizer)
+
+        result = compare_face_embedding(Image.new("RGB", (10, 10)), b"encrypted")
+
+        self.assertEqual(result, {"status": "matched", "similarity": 0.55})
+        create_embedding_mock.assert_called_once()
+        decrypt_mock.assert_called_once_with(b"encrypted")
 
 
 class PredictorFallbackTests(SimpleTestCase):

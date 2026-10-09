@@ -17,6 +17,7 @@
         <a href="{% url 'portal:coordinator_dashboard' %}" {% if request.resolver_match.url_name == 'coordinator_dashboard' %}class="nav-link-active" aria-current="page"{% endif %}>Overview</a>
         <a href="{% url 'portal:coordinator_ojt_requirements' %}" {% if request.resolver_match.url_name == 'coordinator_ojt_requirements' or request.resolver_match.url_name == 'ojt_requirement_document_mode' %}class="nav-link-active" aria-current="page"{% endif %}>OJT requirements{% if pending_requirement_count %}<span class="nav-count">{{ pending_requirement_count }}</span>{% endif %}</a>
         <a href="{% url 'portal:dtr_queue' %}" {% if request.resolver_match.url_name == 'dtr_queue' %}class="nav-link-active" aria-current="page"{% endif %}>DTR queue{% if pending_dtr_count %}<span class="nav-count">{{ pending_dtr_count }}</span>{% endif %}</a>
+        <a href="{% url 'portal:coordinator_face_enrollment' %}" {% if request.resolver_match.url_name == 'coordinator_face_enrollment' %}class="nav-link-active" aria-current="page"{% endif %}>Face enrollment</a>
         <a href="{% url 'portal:coordinator_daily_reports' %}" {% if request.resolver_match.url_name == 'coordinator_daily_reports' %}class="nav-link-active" aria-current="page"{% endif %}>Daily reports{% if pending_daily_report_count %}<span class="nav-count">{{ pending_daily_report_count }}</span>{% endif %}</a>
         <a href="{% url 'portal:coordinator_weekly_reports' %}" {% if request.resolver_match.url_name == 'coordinator_weekly_reports' %}class="nav-link-active" aria-current="page"{% endif %}>Weekly reports</a>
         <a href="{% url 'portal:scorecards' %}" {% if request.resolver_match.url_name == 'scorecards' %}class="nav-link-active" aria-current="page"{% endif %}>Scorecards</a>
@@ -57,6 +58,7 @@
       <strong>Quick actions</strong>
       {% if request.user.is_staff or request.user.role == 'coordinator' %}
         <a class="button button-primary" href="{% url 'portal:coordinator_ojt_requirements' %}">Review OJT documents</a>
+        <a class="button button-secondary" href="{% url 'portal:coordinator_face_enrollment' %}">Manage face enrollment</a>
         <a class="button button-primary" href="{% url 'portal:dtr_queue' %}">Approve pending logs</a>
         <a class="button button-secondary" href="{% url 'portal:coordinator_daily_reports' %}">Review daily reports</a>
         <a class="button button-secondary" href="{% url 'portal:coordinator_attendance_export' %}">Export attendance CSV</a>

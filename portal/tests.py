@@ -1,3 +1,4 @@
+import base64
 import tempfile
 from datetime import datetime, timezone as datetime_timezone
 from io import BytesIO
@@ -9,11 +10,15 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.test import override_settings
 from docx import Document as DocxDocument
+from PIL import Image
+from cryptography.fernet import Fernet
 
 from accounts.models import User
+from ml_engine.face_recognition import decrypt_embedding
 from .forms import InternProfileForm
-from .models import Application, AttendanceLog, CompanyProfile, CompanyRequirement, DailyReport, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport, assign_company_ojt_requirements
+from .models import Application, AttendanceLog, CompanyProfile, CompanyRequirement, DailyReport, FaceEnrollment, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport, assign_company_ojt_requirements
 from .utils import haversine_distance_km
 from .validators import FileSizeAndTypeValidator
 
@@ -37,6 +42,11 @@ class PortalWorkflowTests(TestCase):
             location="Remote",
             status=Posting.Status.PUBLISHED,
         )
+
+    def _camera_data_url(self):
+        image = BytesIO()
+        Image.new("RGB", (100, 100), "white").save(image, format="JPEG")
+        return "data:image/jpeg;base64," + base64.b64encode(image.getvalue()).decode("ascii")
 
     def test_company_dashboard_shows_pending_applicants(self):
         Application.objects.create(intern=self.intern, posting=self.posting)
@@ -434,6 +444,76 @@ class PortalWorkflowTests(TestCase):
 
         self.assertRedirects(allowed_response, reverse("portal:attendance"))
         self.assertTrue(AttendanceLog.objects.filter(intern=self.intern).exists())
+
+    def test_face_match_result_is_recorded_without_blocking_attendance(self):
+        self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
+        self.client.force_login(self.intern_user)
+
+        with patch(
+            "portal.views._attendance_face_check",
+            return_value=(AttendanceLog.FaceCheckStatus.NOT_MATCHED, 0.21),
+        ):
+            response = self.client.post(reverse("portal:attendance"), {"action": "clock_in"})
+
+        self.assertRedirects(response, reverse("portal:attendance"))
+        log = AttendanceLog.objects.get(intern=self.intern)
+        self.assertIsNotNone(log.clock_in)
+        self.assertEqual(log.clock_in_face_status, AttendanceLog.FaceCheckStatus.NOT_MATCHED)
+        self.assertEqual(log.clock_in_face_score, 0.21)
+
+    def test_attendance_page_explains_nonblocking_face_pilot(self):
+        self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
+        self.client.force_login(self.intern_user)
+
+        response = self.client.get(reverse("portal:attendance"))
+
+        self.assertContains(response, "Optional face-recognition pilot")
+        self.assertContains(response, "does not decide or block attendance")
+        self.assertContains(response, 'name="face_image"')
+
+    @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
+    def test_coordinator_enrollment_requires_consent_and_stores_only_encrypted_embedding(self):
+        coordinator = User.objects.create_user(username="face-coordinator", role=User.Role.COORDINATOR)
+        self.client.force_login(coordinator)
+        url = reverse("portal:coordinator_face_enrollment")
+        self.assertContains(self.client.get(url), "Face-recognition pilot enrollment")
+        payload = {
+            "action": "enroll",
+            "intern_id": self.intern.pk,
+            "face_image": self._camera_data_url(),
+        }
+
+        missing_consent = self.client.post(url, payload)
+        self.assertRedirects(missing_consent, url)
+        self.assertFalse(FaceEnrollment.objects.filter(intern=self.intern).exists())
+
+        payload["consent_confirmed"] = "on"
+        with patch("portal.views.create_face_embedding", return_value=b"test embedding"):
+            enrolled = self.client.post(url, payload)
+
+        self.assertRedirects(enrolled, url)
+        record = FaceEnrollment.objects.get(intern=self.intern)
+        self.assertNotEqual(bytes(record.encrypted_embedding), b"test embedding")
+        self.assertEqual(decrypt_embedding(record.encrypted_embedding), b"test embedding")
+        self.assertEqual(record.enrolled_by, coordinator)
+        self.assertIsNotNone(record.consent_confirmed_at)
+        AttendanceLog.objects.create(
+            intern=self.intern,
+            work_date="2026-10-09",
+            clock_in_face_status=AttendanceLog.FaceCheckStatus.MATCHED,
+            clock_in_face_score=0.8,
+        )
+
+        deleted = self.client.post(url, {
+            "action": "delete",
+            "intern_id": self.intern.pk,
+        })
+        self.assertRedirects(deleted, url)
+        self.assertFalse(FaceEnrollment.objects.filter(intern=self.intern).exists())
+        self.assertEqual(
+            AttendanceLog.objects.get(intern=self.intern).clock_in_face_status,
+            AttendanceLog.FaceCheckStatus.NOT_ATTEMPTED,
+        )
 
     def test_intern_can_upload_required_document_for_review(self):
         requirement = self.intern.ojt_requirements.get(title="Medical certificate")
@@ -910,6 +990,7 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(log.clock_in, fixed_now)
         self.assertEqual(log.notes, "Started inventory review")
         self.assertIsNone(log.clock_in_latitude)
+        self.assertEqual(log.clock_in_face_status, AttendanceLog.FaceCheckStatus.NOT_CAPTURED)
 
     def test_clock_out_without_clock_in_does_not_create_empty_record(self):
         self.client.force_login(self.intern_user)

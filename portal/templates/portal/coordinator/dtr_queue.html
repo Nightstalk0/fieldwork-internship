@@ -6,7 +6,7 @@
 <section class="panel">
 	<div class="table-wrap">
 		<table>
-			<thead><tr><th>Intern</th><th>Placement</th><th>Date</th><th>Time in</th><th>Time out</th><th>Hours</th><th>Time in approval</th><th>Time out approval</th><th>Actions</th></tr></thead>
+			<thead><tr><th>Intern</th><th>Placement</th><th>Date</th><th>Time in</th><th>Face pilot (in)</th><th>Time out</th><th>Face pilot (out)</th><th>Hours</th><th>Time in approval</th><th>Time out approval</th><th>Actions</th></tr></thead>
 			<tbody>
 				{% for log in logs %}
 				<tr>
@@ -14,7 +14,9 @@
 					<td>{% if log.intern.placement_type == 'external' %}External: {{ log.intern.external_host }}{% else %}{{ log.intern.get_placement_type_display }}{% endif %}</td>
 					<td>{{ log.work_date }}</td>
 					<td>{{ log.clock_in|date:"H:i"|default:"—" }}</td>
+					<td>{{ log.get_clock_in_face_status_display }}{% if log.clock_in_face_score != None %} ({{ log.clock_in_face_score|floatformat:3 }}){% endif %}</td>
 					<td>{{ log.clock_out|date:"H:i"|default:"—" }}</td>
+					<td>{{ log.get_clock_out_face_status_display }}{% if log.clock_out_face_score != None %} ({{ log.clock_out_face_score|floatformat:3 }}){% endif %}</td>
 					<td>{{ log.hours_worked }}</td>
 					<td>{% if not log.clock_in %}<span class="status">Not recorded</span>{% elif log.time_in_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
 					<td>{% if not log.clock_out %}<span class="status">Not recorded</span>{% elif log.time_out_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
@@ -28,7 +30,7 @@
 					</td>
 				</tr>
 				{% empty %}
-				<tr><td colspan="9" class="muted">No attendance records yet.</td></tr>
+				<tr><td colspan="11" class="muted">No attendance records yet.</td></tr>
 				{% endfor %}
 			</tbody>
 		</table>

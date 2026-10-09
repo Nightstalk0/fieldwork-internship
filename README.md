@@ -22,7 +22,7 @@ Set `USE_S3=true` with an AWS bucket and region to store uploads in S3. Sentry a
 
 ## Face detection
 
-The supplied YOLO11n face detector is stored at `ml_engine/models/best.pt` and runs directly with Ultralytics on CPU; no model conversion or retraining is needed. The inference stack is pinned to Ultralytics 8.4.174, PyTorch 2.14.1 CPU, Torchvision 0.29.1 CPU, and NumPy 2.5.3 in `requirements.txt`. The existing Pillow range (`>=10.4,<12`; currently 11.3.0) is compatible and is sufficient for in-memory image inputs.
+The supplied YOLO11n face detector is stored at `ml_engine/models/best.pt` and runs directly with Ultralytics on CPU; it has not been converted or modified. The inference stack is pinned to Ultralytics 8.4.174, PyTorch 2.14.1 CPU, Torchvision 0.29.1 CPU, and NumPy 2.5.3 in `requirements.txt`. The existing Pillow range (`>=10.4,<12`; currently 11.3.0) is compatible and is sufficient for in-memory image inputs.
 
 Run the detector against an image with:
 
@@ -32,7 +32,21 @@ python manage.py detect_faces path\to\image.jpg
 
 The command prints JSON containing `face_detected`, `face_count`, and a `detections` array. Each detection has a confidence score and an `[x1, y1, x2, y2]` pixel bounding box. The model is loaded once per process. Attendance and camera behavior are unchanged; application code can call `ml_engine.face_detector.detect_faces` with an image path or a PIL image.
 
-The `.pt` checkpoint must come from a trusted source because loading PyTorch checkpoints can execute serialized code. CPU inference adds PyTorch and Ultralytics to the web-service environment; verify the deployment's available disk and memory before enabling inference there.
+## Face-recognition attendance pilot
+
+The attendance page has an optional webcam capture and one-to-one comparison against a coordinator-enrolled reference for the signed-in intern. YOLO still detects faces; OpenCV Zoo's SFace model generates embeddings, and its YuNet model supplies alignment landmarks. The ONNX weights and their Apache 2.0/MIT licenses are in `ml_engine/models/` (`SFACE_LICENSE` and `YUNET_LICENSE`). No image is written to disk; captured images are processed in memory. Face embeddings are encrypted in the database. Coordinators can delete an enrollment, which also clears the stored pilot scores.
+
+The pilot records match status and similarity for time-in and time-out but **does not block attendance**. The SFace example cosine threshold (0.363) is only a starting point, not calibrated for this intern population. The flow has no liveness/anti-spoof check, so a displayed photo may pass. Do not use pilot results to deny, approve, discipline, or otherwise make consequential attendance decisions. Collect informed consent, assess applicable privacy requirements, and validate false-match and false-reject rates before considering any policy change.
+
+Coordinators can manage enrollments at `/coordinator/face-enrollment/`. Enrollment requires an explicit staff confirmation that the intern gave informed consent; have the intern present while capturing the reference. Interns may withdraw by asking a coordinator to delete the enrollment.
+
+For production, configure a stable `FACE_EMBEDDING_ENCRYPTION_KEY` secret. Generate a Fernet key locally with:
+
+```powershell
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Set it in the deployment's secret environment variables; do not commit the key. When `DEBUG=true`, local development can derive a key from `SECRET_KEY`; otherwise the explicit Fernet key is required. Rotating either key requires deleting and recreating face enrollments. Camera capture requires browser permission and HTTPS except on localhost. The `.pt` checkpoint must come from a trusted source because loading PyTorch checkpoints can execute serialized code.
 
 `python manage.py seed_demo_data --password <temporary-password>` creates an example intern, company, and published opportunity. Without the option, the demo accounts are created with unusable passwords.
 

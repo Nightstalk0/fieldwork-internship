@@ -13,6 +13,7 @@ urlpatterns = [
     path("intern/postings/<int:posting_id>/apply/", views.apply_to_posting, name="apply"),
     path("intern/attendance/", views.attendance, name="attendance"),
     path("intern/attendance/export/", views.attendance_export, name="attendance_export"),
+    path("coordinator/face-enrollment/", views.coordinator_face_enrollment, name="coordinator_face_enrollment"),
     path("intern/reports/", views.reports, name="reports"),
     path("intern/daily-report/", views.daily_report, name="daily_report"),
     path("intern/accreditation/", views.accreditation, name="accreditation"),

@@ -1,4 +1,5 @@
 import csv
+import logging
 import mimetypes
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
@@ -25,10 +26,19 @@ from zipfile import BadZipFile, LargeZipFile, ZipFile
 from accounts.models import User
 
 from .forms import CompanyProfileForm, CompanyRequirementForm, DailyReportForm, InternProfileForm, OJTRequirementUploadForm, PostingForm, ScorecardForm, WeeklyReportForm
-from .models import Application, AttendanceLog, AuditLog, CompanyProfile, CompanyRequirement, DailyReport, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport, assign_accepted_company_ojt_requirements, assign_company_ojt_requirements, baseline_ojt_requirements_approved
+from .models import Application, AttendanceLog, AuditLog, CompanyProfile, CompanyRequirement, DailyReport, FaceEnrollment, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport, assign_accepted_company_ojt_requirements, assign_company_ojt_requirements, baseline_ojt_requirements_approved
 from .utils import attendance_pdf, audit, certificate_pdf
+from ml_engine.face_capture import FaceCaptureError, decode_camera_image
+from ml_engine.face_recognition import (
+    FaceImageError,
+    FaceModelError,
+    compare_face_embedding,
+    create_face_embedding,
+    encrypt_embedding,
+)
 
 OJT_TARGET_HOURS = 120
+LOGGER = logging.getLogger(__name__)
 
 
 def role_required(*roles):
@@ -159,6 +169,33 @@ def _coordinates(request, prefix):
     return latitude_value, longitude_value
 
 
+def _attendance_face_check(request, intern):
+    image_data = request.POST.get("face_image", "").strip()
+    if not image_data:
+        return AttendanceLog.FaceCheckStatus.NOT_CAPTURED, None
+
+    try:
+        image = decode_camera_image(image_data)
+    except FaceCaptureError as exc:
+        LOGGER.warning("Could not read face image for intern %s: %s", intern.pk, exc)
+        return AttendanceLog.FaceCheckStatus.ERROR, None
+
+    enrollment = FaceEnrollment.objects.filter(intern=intern).first()
+    if enrollment is None:
+        return AttendanceLog.FaceCheckStatus.NOT_ENROLLED, None
+
+    try:
+        result = compare_face_embedding(image, enrollment.encrypted_embedding)
+    except FaceImageError as exc:
+        LOGGER.info("Face check unavailable for intern %s: %s", intern.pk, exc)
+        return AttendanceLog.FaceCheckStatus.UNAVAILABLE, None
+    except FaceModelError:
+        LOGGER.exception("Face check failed for intern %s.", intern.pk)
+        return AttendanceLog.FaceCheckStatus.ERROR, None
+
+    return result["status"], result["similarity"]
+
+
 @role_required(User.Role.INTERN)
 def attendance(request):
     intern = get_object_or_404(InternProfile, user=request.user)
@@ -172,6 +209,7 @@ def attendance(request):
             messages.error(request, "Your required OJT documents must be approved before you can start attendance.")
             return redirect("portal:ojt_requirements")
         latitude, longitude = _coordinates(request, action)
+        face_status, face_score = _attendance_face_check(request, intern)
         try:
             with transaction.atomic():
                 if action == "clock_out":
@@ -187,19 +225,43 @@ def attendance(request):
                     else:
                         log.clock_in = timezone.now()
                         log.clock_in_latitude, log.clock_in_longitude = latitude, longitude
+                        log.clock_in_face_status = face_status
+                        log.clock_in_face_score = face_score
                         log.notes = request.POST.get("notes", "").strip()[:255]
-                        log.save(update_fields=("clock_in", "clock_in_latitude", "clock_in_longitude", "notes"))
+                        log.save(update_fields=(
+                            "clock_in",
+                            "clock_in_latitude",
+                            "clock_in_longitude",
+                            "clock_in_face_status",
+                            "clock_in_face_score",
+                            "notes",
+                        ))
                         audit(request.user, "attendance.clocked_in", log)
-                        messages.success(request, "Time in recorded using server time.")
+                        messages.success(
+                            request,
+                            f"Time in recorded using server time. Face check (pilot): {log.get_clock_in_face_status_display()}.",
+                        )
                 elif log.clock_out:
                     messages.info(request, "You have already recorded time out today.")
                 else:
                     log.clock_out = timezone.now()
                     log.clock_out_latitude, log.clock_out_longitude = latitude, longitude
+                    log.clock_out_face_status = face_status
+                    log.clock_out_face_score = face_score
                     log.notes = request.POST.get("notes", "").strip()[:255] or log.notes
-                    log.save(update_fields=("clock_out", "clock_out_latitude", "clock_out_longitude", "notes"))
+                    log.save(update_fields=(
+                        "clock_out",
+                        "clock_out_latitude",
+                        "clock_out_longitude",
+                        "clock_out_face_status",
+                        "clock_out_face_score",
+                        "notes",
+                    ))
                     audit(request.user, "attendance.clocked_out", log)
-                    messages.success(request, "Time out recorded using server time.")
+                    messages.success(
+                        request,
+                        f"Time out recorded using server time. Face check (pilot): {log.get_clock_out_face_status_display()}.",
+                    )
         except IntegrityError:
             messages.info(request, "Today's attendance record was already created. Refresh and try again.")
         return redirect("portal:attendance")
@@ -212,6 +274,65 @@ def attendance(request):
         "today": today,
         "ojt_ready": ojt_ready,
     })
+
+
+@role_required(User.Role.COORDINATOR)
+def coordinator_face_enrollment(request):
+    if request.method == "POST":
+        action = request.POST.get("action")
+        intern = get_object_or_404(InternProfile.objects.select_related("user"), pk=request.POST.get("intern_id"))
+        if action == "delete":
+            enrollment = FaceEnrollment.objects.filter(intern=intern).first()
+            if enrollment:
+                with transaction.atomic():
+                    enrollment.delete()
+                    AttendanceLog.objects.filter(intern=intern).update(
+                        clock_in_face_status=AttendanceLog.FaceCheckStatus.NOT_ATTEMPTED,
+                        clock_in_face_score=None,
+                        clock_out_face_status=AttendanceLog.FaceCheckStatus.NOT_ATTEMPTED,
+                        clock_out_face_score=None,
+                    )
+                audit(request.user, "face_enrollment.deleted", intern)
+                messages.success(request, "Face enrollment and its recorded pilot scores were deleted.")
+            else:
+                messages.info(request, "This intern has no face enrollment.")
+            return redirect("portal:coordinator_face_enrollment")
+        if action != "enroll":
+            return HttpResponseBadRequest("Unknown face-enrollment action.")
+        if request.POST.get("consent_confirmed") != "on":
+            messages.error(request, "Confirm that the intern gave informed consent before enrolling.")
+            return redirect("portal:coordinator_face_enrollment")
+
+        try:
+            image = decode_camera_image(request.POST.get("face_image", ""))
+            embedding = encrypt_embedding(create_face_embedding(image))
+        except (FaceCaptureError, FaceImageError) as exc:
+            messages.error(request, str(exc))
+            return redirect("portal:coordinator_face_enrollment")
+        except FaceModelError:
+            LOGGER.exception("Face enrollment failed for intern %s.", intern.pk)
+            messages.error(request, "Face enrollment could not be completed because the models are unavailable.")
+            return redirect("portal:coordinator_face_enrollment")
+
+        enrollment, created = FaceEnrollment.objects.update_or_create(
+            intern=intern,
+            defaults={
+                "encrypted_embedding": embedding,
+                "enrolled_by": request.user,
+                "consent_confirmed_at": timezone.now(),
+                "consent_text_version": "v1",
+            },
+        )
+        audit(request.user, "face_enrollment.created" if created else "face_enrollment.updated", intern)
+        messages.success(request, "Encrypted face embedding saved; the camera image was not stored.")
+        return redirect("portal:coordinator_face_enrollment")
+
+    interns = InternProfile.objects.select_related("user").prefetch_related("face_enrollment").order_by(
+        "user__last_name",
+        "user__first_name",
+        "user__username",
+    )
+    return render(request, "portal/coordinator/face_enrollment.html", {"interns": interns})
 
 
 def _ojt_requirements_context(intern, bound_requirement=None, bound_form=None):
