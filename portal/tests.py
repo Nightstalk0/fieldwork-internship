@@ -12,12 +12,13 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.test import override_settings
+from django.utils import timezone
 from docx import Document as DocxDocument
 from PIL import Image
 from cryptography.fernet import Fernet
 
 from accounts.models import User
-from ml_engine.face_recognition import decrypt_embedding
+from ml_engine.face_recognition import FaceImageError, decrypt_embedding
 from .forms import InternProfileForm
 from .models import Application, AttendanceFaceCapture, AttendanceLog, CompanyProfile, CompanyRequirement, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport, assign_company_ojt_requirements
 from .utils import haversine_distance_km
@@ -48,6 +49,31 @@ class PortalWorkflowTests(TestCase):
         image = BytesIO()
         Image.new("RGB", (100, 100), "white").save(image, format="JPEG")
         return "data:image/jpeg;base64," + base64.b64encode(image.getvalue()).decode("ascii")
+
+    def _complete_intern_profile(self, *, external=False, approve_requirements=False):
+        self.intern.student_id = "TEST-STUDENT-001"
+        self.intern.university = "Example University"
+        self.intern.course = "Information Technology"
+        self.intern.year_level = 3
+        self.intern.placement_type = (
+            InternProfile.PlacementType.EXTERNAL if external else InternProfile.PlacementType.PLATFORM
+        )
+        self.intern.external_host = "External Host" if external else ""
+        self.intern.save()
+        FaceEnrollment.objects.update_or_create(
+            intern=self.intern,
+            defaults={
+                "encrypted_embedding": b"encrypted test embedding",
+                "enrolled_by": self.intern_user,
+                "consent_confirmed_at": timezone.now(),
+                "consent_text_version": FACE_CONSENT_VERSION,
+            },
+        )
+        if approve_requirements:
+            self.intern.ojt_requirements.filter(
+                is_required=True,
+                company__isnull=True,
+            ).update(status=OJTRequirement.Status.APPROVED)
 
     def test_company_dashboard_shows_pending_applicants(self):
         Application.objects.create(intern=self.intern, posting=self.posting)
@@ -83,6 +109,7 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(reverse("portal:coordinator_dashboard"), "/admin/dashboard/")
 
     def test_current_navigation_item_is_highlighted(self):
+        self._complete_intern_profile(approve_requirements=True)
         self.client.force_login(self.intern_user)
 
         response = self.client.get(reverse("portal:intern_dashboard"))
@@ -94,7 +121,7 @@ class PortalWorkflowTests(TestCase):
             {
                 "placement_type": InternProfile.PlacementType.EXTERNAL,
                 "external_host": "Northside Design Studio",
-                "student_id": "",
+                "student_id": "STUDENT-201",
                 "university": "Example University",
                 "course": "Design",
                 "year_level": 4,
@@ -112,7 +139,7 @@ class PortalWorkflowTests(TestCase):
             {
                 "placement_type": InternProfile.PlacementType.EXTERNAL,
                 "external_host": "",
-                "student_id": "",
+                "student_id": "STUDENT-202",
                 "university": "Example University",
                 "course": "Design",
                 "year_level": 4,
@@ -145,9 +172,9 @@ class PortalWorkflowTests(TestCase):
         self.assertContains(response, "Daily reports to review")
 
     def test_external_intern_daily_report_is_reviewed_by_coordinator(self):
-        self.intern.placement_type = InternProfile.PlacementType.EXTERNAL
+        self._complete_intern_profile(external=True, approve_requirements=True)
         self.intern.external_host = "Northside Design Studio"
-        self.intern.save(update_fields=("placement_type", "external_host"))
+        self.intern.save(update_fields=("external_host",))
         self.client.force_login(self.intern_user)
 
         response = self.client.post(
@@ -178,9 +205,9 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(report.reviewer, coordinator)
 
     def test_external_intern_uses_coordinator_workflow_instead_of_company_opportunities(self):
-        self.intern.placement_type = InternProfile.PlacementType.EXTERNAL
+        self._complete_intern_profile(external=True, approve_requirements=True)
         self.intern.external_host = "Northside Design Studio"
-        self.intern.save(update_fields=("placement_type", "external_host"))
+        self.intern.save(update_fields=("external_host",))
         self.client.force_login(self.intern_user)
 
         page = self.client.get(reverse("portal:postings"))
@@ -258,14 +285,15 @@ class PortalWorkflowTests(TestCase):
         self.assertFalse(requirements.exclude(status=OJTRequirement.Status.NOT_SUBMITTED).exists())
 
     def test_intern_dashboard_explains_ojt_document_gate(self):
+        self._complete_intern_profile()
         self.client.force_login(self.intern_user)
 
         response = self.client.get(reverse("portal:intern_dashboard"))
         requirements_response = self.client.get(reverse("portal:ojt_requirements"))
 
-        self.assertContains(response, "Before you start OJT")
-        self.assertEqual(response.context["ojt_ready"], False)
-        self.assertEqual(response.context["ojt_requirements_remaining"], 7)
+        self.assertRedirects(response, reverse("portal:ojt_requirements"))
+        self.assertEqual(requirements_response.context["ojt_ready"], False)
+        self.assertEqual(requirements_response.context["required_count"], 7)
         self.assertContains(requirements_response, "Endorsement / recommendation letter")
         self.assertNotContains(requirements_response, "Drug test / laboratory exams")
 
@@ -305,6 +333,7 @@ class PortalWorkflowTests(TestCase):
             status=Application.Status.ACCEPTED,
         )
         assign_company_ojt_requirements(self.intern, self.company)
+        self._complete_intern_profile(approve_requirements=True)
         self.client.force_login(self.intern_user)
 
         response = self.client.post(reverse("portal:attendance"), {"action": "clock_in"})
@@ -427,6 +456,7 @@ class PortalWorkflowTests(TestCase):
             self.assertContains(response, "company-checklist.txt")
 
     def test_attendance_time_in_requires_approved_required_documents(self):
+        self._complete_intern_profile()
         self.client.force_login(self.intern_user)
 
         blocked_response = self.client.post(
@@ -447,7 +477,7 @@ class PortalWorkflowTests(TestCase):
         self.assertTrue(AttendanceLog.objects.filter(intern=self.intern).exists())
 
     def test_attendance_face_preview_classifies_capture_without_recording_attendance(self):
-        self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
+        self._complete_intern_profile(approve_requirements=True)
         self.client.force_login(self.intern_user)
         cases = (
             (AttendanceLog.FaceCheckStatus.MATCHED, "good"),
@@ -508,21 +538,97 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(decrypt_embedding(record.encrypted_embedding), b"intern embedding")
         self.assertContains(self.client.get(profile_url), "Last updated")
 
+    @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
+    def test_intern_face_enrollment_preview_requires_detectable_single_face(self):
+        self.client.force_login(self.intern_user)
+        with patch("portal.views.create_face_embedding", return_value=b"preview embedding") as create_embedding:
+            response = self.client.post(
+                reverse("portal:face_enrollment_preview"),
+                {"face_image": self._camera_data_url()},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["quality"], "good")
+        self.assertTrue(response.json()["label"])
+        create_embedding.assert_called_once()
+        self.assertFalse(FaceEnrollment.objects.filter(intern=self.intern).exists())
+
+        with patch(
+            "portal.views.create_face_embedding",
+            side_effect=FaceImageError("Capture must contain exactly one clearly visible face."),
+        ):
+            poor_capture = self.client.post(
+                reverse("portal:face_enrollment_preview"),
+                {"face_image": self._camera_data_url()},
+            )
+        self.assertEqual(poor_capture.status_code, 200)
+        self.assertEqual(poor_capture.json()["quality"], "poor")
+
+    def test_live_face_detection_preview_returns_face_count_without_enrollment(self):
+        self.client.force_login(self.intern_user)
+        with patch(
+            "portal.views.detect_faces",
+            return_value={"face_detected": True, "face_count": 1, "detections": []},
+        ) as detector:
+            response = self.client.post(
+                reverse("portal:face_detection_preview"),
+                {"face_image": self._camera_data_url()},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"face_count": 1, "face_detected": True})
+        detector.assert_called_once()
+
+    def test_intern_onboarding_requires_profile_and_face_before_requirements(self):
+        self.client.force_login(self.intern_user)
+
+        dashboard = self.client.get(reverse("portal:intern_dashboard"))
+        self.assertRedirects(dashboard, reverse("portal:profile"))
+        requirements = self.client.get(reverse("portal:ojt_requirements"))
+        self.assertRedirects(requirements, reverse("portal:profile"))
+
+        self.intern.student_id = "STUDENT-101"
+        self.intern.university = "Example University"
+        self.intern.course = "Information Technology"
+        self.intern.year_level = 3
+        self.intern.save()
+        profile_complete_but_not_enrolled = self.client.get(reverse("portal:ojt_requirements"))
+        self.assertRedirects(profile_complete_but_not_enrolled, reverse("portal:profile"))
+
+        FaceEnrollment.objects.create(
+            intern=self.intern,
+            encrypted_embedding=b"encrypted-test-embedding",
+            enrolled_by=self.intern_user,
+            consent_confirmed_at=timezone.now(),
+            consent_text_version=FACE_CONSENT_VERSION,
+        )
+        requirements_after_profile = self.client.get(reverse("portal:ojt_requirements"))
+        self.assertEqual(requirements_after_profile.status_code, 200)
+
+        attendance_before_approval = self.client.get(reverse("portal:attendance"))
+        self.assertRedirects(attendance_before_approval, reverse("portal:ojt_requirements"))
+        self.intern.ojt_requirements.filter(
+            is_required=True,
+            company__isnull=True,
+        ).update(status=OJTRequirement.Status.APPROVED)
+        dashboard_after_approval = self.client.get(reverse("portal:intern_dashboard"))
+        self.assertEqual(dashboard_after_approval.status_code, 200)
+
     def test_attendance_page_has_face_guide_and_capture_decision_controls(self):
-        self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
+        self._complete_intern_profile(approve_requirements=True)
         self.client.force_login(self.intern_user)
 
         response = self.client.get(reverse("portal:attendance"))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "face-guide")
-        self.assertContains(response, "Enroll your face in Profile")
+        self.assertContains(response, "face-detection-guide.js")
         self.assertContains(response, "Capture and check")
         self.assertContains(response, "Retake face")
         self.assertContains(response, "Submit for approval")
 
     def test_face_mismatch_does_not_record_attendance_and_creates_review_request(self):
-        self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
+        self._complete_intern_profile(approve_requirements=True)
         self.client.force_login(self.intern_user)
 
         with patch(
@@ -546,7 +652,7 @@ class PortalWorkflowTests(TestCase):
             posting=self.posting,
             status=Application.Status.ACCEPTED,
         )
-        self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
+        self._complete_intern_profile(approve_requirements=True)
         self.client.force_login(self.intern_user)
         submitted = self.client.post(
             reverse("portal:attendance"),
@@ -576,7 +682,7 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(capture.review_status, AttendanceFaceCapture.ReviewStatus.APPROVED)
 
     def test_attendance_page_explains_required_face_verification(self):
-        self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
+        self._complete_intern_profile(approve_requirements=True)
         self.client.force_login(self.intern_user)
 
         response = self.client.get(reverse("portal:attendance"))
@@ -590,7 +696,7 @@ class PortalWorkflowTests(TestCase):
         self.assertContains(response, 'name="face_image"')
 
     def test_successful_face_match_waits_for_approval_before_each_clock_event(self):
-        self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
+        self._complete_intern_profile(approve_requirements=True)
         self.client.force_login(self.intern_user)
         with patch(
             "portal.views._attendance_face_check",
@@ -663,7 +769,7 @@ class PortalWorkflowTests(TestCase):
             posting=self.posting,
             status=Application.Status.ACCEPTED,
         )
-        self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
+        self._complete_intern_profile(approve_requirements=True)
         self.client.force_login(self.intern_user)
         encrypted_image = encrypt_face_capture(b"test attendance jpeg")
         with patch(
@@ -782,6 +888,7 @@ class PortalWorkflowTests(TestCase):
         )
 
     def test_intern_can_upload_required_document_for_review(self):
+        self._complete_intern_profile()
         requirement = self.intern.ojt_requirements.get(title="Medical certificate")
         self.client.force_login(self.intern_user)
 
@@ -799,6 +906,7 @@ class PortalWorkflowTests(TestCase):
             self.assertTrue(requirement.submitted_at)
 
     def test_intern_cannot_download_another_interns_ojt_document(self):
+        self._complete_intern_profile()
         requirement = self.intern.ojt_requirements.get(title="Medical certificate")
         other_user = User.objects.create_user(username="other-intern")
         self.client.force_login(self.intern_user)
@@ -816,6 +924,7 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(response.status_code, 403)
 
     def test_coordinator_can_request_changes_and_approve_ojt_document(self):
+        self._complete_intern_profile()
         requirement = self.intern.ojt_requirements.get(title="Medical certificate")
         coordinator = User.objects.create_user(
             username="coordinator",
@@ -859,6 +968,7 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(requirement.reviewer, coordinator)
 
     def test_intern_dashboard_shows_approved_hour_progress(self):
+        self._complete_intern_profile(approve_requirements=True)
         clock_in = datetime(2026, 10, 5, 8, tzinfo=datetime_timezone.utc)
         AttendanceLog.objects.create(
             intern=self.intern,
@@ -876,6 +986,7 @@ class PortalWorkflowTests(TestCase):
         self.assertContains(response, "OJT hour progress")
 
     def test_intern_progress_requires_both_time_approvals(self):
+        self._complete_intern_profile(approve_requirements=True)
         clock_in = datetime(2026, 10, 5, 8, tzinfo=datetime_timezone.utc)
         log = AttendanceLog.objects.create(
             intern=self.intern,
@@ -1244,7 +1355,7 @@ class PortalWorkflowTests(TestCase):
 
     def test_clock_in_uses_server_time_and_saves_note_without_gps(self):
         fixed_now = datetime(2026, 1, 5, 9, 30, tzinfo=datetime_timezone.utc)
-        self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
+        self._complete_intern_profile(approve_requirements=True)
         self.client.force_login(self.intern_user)
         with (
             patch("portal.views.timezone.now", return_value=fixed_now),
@@ -1265,6 +1376,7 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(log.clock_in_face_status, AttendanceLog.FaceCheckStatus.MATCHED)
 
     def test_clock_out_without_clock_in_does_not_create_empty_record(self):
+        self._complete_intern_profile(approve_requirements=True)
         self.client.force_login(self.intern_user)
         response = self.client.post(reverse("portal:attendance"), {"action": "clock_out"})
         self.assertEqual(response.status_code, 302)
@@ -1341,6 +1453,7 @@ class PortalWorkflowTests(TestCase):
             validator(SimpleUploadedFile("fake.pdf", b"plain text disguised as a PDF"))
 
     def test_application_view_rejects_disguised_upload(self):
+        self._complete_intern_profile(approve_requirements=True)
         self.client.force_login(self.intern_user)
         response = self.client.post(
             reverse("portal:apply", args=(self.posting.pk,)),

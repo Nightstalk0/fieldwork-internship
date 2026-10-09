@@ -21,6 +21,20 @@ class CompanyRequirementForm(forms.ModelForm):
 
 
 class InternProfileForm(forms.ModelForm):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for field_name in ("student_id", "university", "course", "year_level", "placement_type"):
+            self.fields[field_name].required = True
+
+    def clean(self):
+        cleaned_data = super().clean()
+        if (
+            cleaned_data.get("placement_type") == InternProfile.PlacementType.EXTERNAL
+            and not cleaned_data.get("external_host")
+        ):
+            self.add_error("external_host", "Enter the name of your external host organization.")
+        return cleaned_data
+
     class Meta:
         model = InternProfile
         fields = (

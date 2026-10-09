@@ -29,6 +29,7 @@ from .forms import CompanyProfileForm, CompanyRequirementForm, DailyReportForm, 
 from .models import Application, AttendanceFaceCapture, AttendanceLog, AuditLog, CompanyProfile, CompanyRequirement, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport, assign_accepted_company_ojt_requirements, assign_company_ojt_requirements, baseline_ojt_requirements_approved, pending_attendance_approval_count
 from .utils import attendance_pdf, audit, certificate_pdf
 from ml_engine.face_capture import FaceCaptureError, decode_camera_image, encode_camera_image
+from ml_engine.face_detector import detect_faces
 from ml_engine.face_recognition import (
     FaceImageError,
     FaceModelError,
@@ -57,6 +58,44 @@ def role_required(*roles):
     return decorate
 
 
+def intern_profile_details_complete(intern):
+    return bool(
+        intern.student_id
+        and intern.university
+        and intern.course
+        and intern.year_level
+        and (
+            intern.placement_type != InternProfile.PlacementType.EXTERNAL
+            or intern.external_host
+        )
+    )
+
+
+def intern_profile_is_complete(intern):
+    return intern_profile_details_complete(intern) and FaceEnrollment.objects.filter(
+        intern=intern,
+        consent_text_version=FACE_CONSENT_VERSION,
+    ).exists()
+
+
+def intern_onboarding_required(*, requirements_approved=False):
+    def decorate(view):
+        @wraps(view)
+        def wrapped(request, *args, **kwargs):
+            intern = get_object_or_404(InternProfile, user=request.user)
+            if not intern_profile_is_complete(intern):
+                messages.info(request, "Complete your intern profile and face enrollment before continuing.")
+                return redirect("portal:profile")
+            if requirements_approved and not baseline_ojt_requirements_approved(intern):
+                messages.info(request, "Submit your required documents and wait for coordinator approval before continuing.")
+                return redirect("portal:ojt_requirements")
+            return view(request, *args, **kwargs)
+
+        return wrapped
+
+    return decorate
+
+
 def dashboard(request):
     if not request.user.is_authenticated:
         return redirect("accounts:login")
@@ -68,6 +107,7 @@ def dashboard(request):
 
 
 @role_required(User.Role.INTERN)
+@intern_onboarding_required(requirements_approved=True)
 def intern_dashboard(request):
     intern = get_object_or_404(InternProfile, user=request.user)
     required_requirements = intern.ojt_requirements.filter(is_required=True, company__isnull=True)
@@ -111,6 +151,7 @@ def profile(request):
         "form": form,
         "intern": intern,
         "face_enrollment": enrollment,
+        "profile_details_complete": intern_profile_details_complete(intern),
         "face_enrollment_current": enrollment is not None and enrollment.consent_text_version == FACE_CONSENT_VERSION,
     })
 
@@ -149,6 +190,7 @@ def intern_face_enrollment(request):
 
 
 @role_required(User.Role.INTERN)
+@intern_onboarding_required(requirements_approved=True)
 def postings(request):
     intern = get_object_or_404(InternProfile, user=request.user)
     if intern.placement_type == InternProfile.PlacementType.EXTERNAL:
@@ -167,6 +209,7 @@ def postings(request):
 
 
 @role_required(User.Role.INTERN)
+@intern_onboarding_required(requirements_approved=True)
 @require_POST
 def apply_to_posting(request, posting_id):
     intern = get_object_or_404(InternProfile, user=request.user)
@@ -278,6 +321,7 @@ def _face_check_feedback(face_status):
 
 
 @role_required(User.Role.INTERN)
+@intern_onboarding_required(requirements_approved=True)
 @require_POST
 def attendance_face_preview(request):
     action = request.POST.get("action")
@@ -312,10 +356,57 @@ def attendance_face_preview(request):
 
 
 @role_required(User.Role.INTERN)
+@require_POST
+def face_detection_preview(request):
+    try:
+        image = decode_camera_image(request.POST.get("face_image", ""))
+    except FaceCaptureError as exc:
+        return JsonResponse({"face_count": 0, "error": str(exc)}, status=400)
+    try:
+        detection = detect_faces(image)
+    except (FileNotFoundError, ImportError, OSError, RuntimeError, TypeError, ValueError):
+        LOGGER.exception("Live face detection failed for intern %s.", request.user.pk)
+        return JsonResponse(
+            {"face_count": 0, "error": "The face-detection model is unavailable. Try again shortly."},
+            status=503,
+        )
+    return JsonResponse({
+        "face_count": detection["face_count"],
+        "face_detected": detection["face_detected"],
+    })
+
+
+@role_required(User.Role.INTERN)
+@require_POST
+def face_enrollment_preview(request):
+    try:
+        image = decode_camera_image(request.POST.get("face_image", ""))
+        create_face_embedding(image)
+    except (FaceCaptureError, FaceImageError) as exc:
+        return JsonResponse({
+            "quality": "poor",
+            "label": "Poor enrollment capture",
+            "message": str(exc),
+        })
+    except FaceModelError:
+        LOGGER.exception("Face enrollment preview failed for intern %s.", request.user.pk)
+        return JsonResponse({
+            "quality": "poor",
+            "label": "Face recognition unavailable",
+            "message": "The face-recognition models could not process this image. Retake it or try again later.",
+        }, status=503)
+    return JsonResponse({
+        "quality": "good",
+        "label": "Face detected and ready",
+        "message": "One face was detected and can be used for enrollment. Submit to save the encrypted face template.",
+    })
+
+
+@role_required(User.Role.INTERN)
+@intern_onboarding_required(requirements_approved=True)
 def attendance(request):
     intern = get_object_or_404(InternProfile, user=request.user)
     ojt_ready = baseline_ojt_requirements_approved(intern)
-    face_enrollment = FaceEnrollment.objects.filter(intern=intern).first()
     today = timezone.localdate()
     if request.method == "POST":
         action = request.POST.get("action")
@@ -433,10 +524,6 @@ def attendance(request):
         "logs": logs,
         "today": today,
         "ojt_ready": ojt_ready,
-        "face_enrollment_current": (
-            face_enrollment is not None
-            and face_enrollment.consent_text_version == FACE_CONSENT_VERSION
-        ),
         "pending_face_events": pending_face_events,
     })
 
@@ -520,6 +607,7 @@ def _ojt_requirements_context(intern, bound_requirement=None, bound_form=None):
 
 
 @role_required(User.Role.INTERN)
+@intern_onboarding_required()
 def ojt_requirements(request):
     intern = get_object_or_404(InternProfile, user=request.user)
     return render(
@@ -530,6 +618,7 @@ def ojt_requirements(request):
 
 
 @role_required(User.Role.INTERN)
+@intern_onboarding_required()
 @require_POST
 def ojt_requirement_upload(request, requirement_id):
     intern = get_object_or_404(InternProfile, user=request.user)
@@ -708,6 +797,7 @@ def _docx_preview_blocks(document):
 
 
 @role_required(User.Role.INTERN)
+@intern_onboarding_required(requirements_approved=True)
 def attendance_export(request):
     intern = get_object_or_404(InternProfile, user=request.user)
     document = attendance_pdf(intern, intern.attendance_logs.all()[:90])
@@ -715,6 +805,7 @@ def attendance_export(request):
 
 
 @role_required(User.Role.INTERN)
+@intern_onboarding_required(requirements_approved=True)
 def reports(request):
     intern = get_object_or_404(InternProfile, user=request.user)
     if intern.placement_type == InternProfile.PlacementType.EXTERNAL:
@@ -743,6 +834,7 @@ def reports(request):
 
 
 @role_required(User.Role.INTERN)
+@intern_onboarding_required(requirements_approved=True)
 def daily_report(request):
     intern = get_object_or_404(InternProfile, user=request.user)
     if intern.placement_type != InternProfile.PlacementType.EXTERNAL:
@@ -846,6 +938,7 @@ def review_daily_report(request, report_id):
 
 
 @role_required(User.Role.INTERN)
+@intern_onboarding_required(requirements_approved=True)
 def accreditation(request):
     intern = get_object_or_404(InternProfile, user=request.user)
     completed_hours = sum(

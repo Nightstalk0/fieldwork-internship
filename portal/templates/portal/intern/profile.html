@@ -1,4 +1,4 @@
-{% extends "base.html" %}{% block title %}My profile | Fieldwork{% endblock %}
+{% extends "base.html" %}{% load static %}{% block title %}My profile | Fieldwork{% endblock %}
 {% block content %}
 <div class="page-heading"><div><p class="eyebrow">INTERN WORKSPACE</p><h1>Profile</h1><p class="muted">Keep your placement details and resume current.</p></div></div>
 <section class="panel form-panel"><form method="post" enctype="multipart/form-data" class="stack-form">{% csrf_token %}{{ form.as_p }}<button class="button button-primary" type="submit">Save profile</button></form></section>
@@ -18,6 +18,7 @@
   <div class="face-camera-frame face-enrollment-frame">
     <video id="enrollment-camera" aria-label="Camera preview. Position your face inside the oval guide." autoplay muted playsinline hidden></video>
     <div class="face-guide" aria-hidden="true"><span>Fit your face in the oval</span></div>
+    <span id="enrollment-detection-status" class="face-detection-status" aria-live="polite">Live face guide starts with your camera.</span>
   </div>
   <p id="enrollment-camera-status" class="muted" aria-live="polite">Start the camera to capture your enrollment image.</p>
   <div class="clock-actions">
@@ -27,8 +28,22 @@
     {% csrf_token %}
     <input type="hidden" name="face_image" id="enrollment-face-image">
     <label class="consent-checkbox"><input type="checkbox" name="consent_confirmed" required> I understand that face verification is required for time-in and time-out, that submitted attendance images may be reviewed by authorized company/admin staff, and that those images are deleted after 30 days. I consent to storing an encrypted face template for matching.</label>
-    <button class="button button-primary" id="save-face-enrollment" type="submit" disabled>Capture and save face enrollment</button>
+    <button class="button button-primary" id="capture-face-enrollment" type="button" disabled>Capture and check</button>
+    <section id="enrollment-check-result" class="face-check-result" aria-live="polite" hidden>
+      <h3 id="enrollment-check-label"></h3>
+      <p id="enrollment-check-message"></p>
+      <div class="clock-actions">
+        <button class="button button-secondary" id="retake-face-enrollment" type="button">Retake face</button>
+        <button class="button button-primary" id="submit-face-enrollment" type="submit" hidden>Save enrollment and continue to requirements</button>
+      </div>
+    </section>
   </form>
+  {% if profile_details_complete and face_enrollment_current %}
+  <p class="form-footnote">Profile and face enrollment are complete.</p>
+  <a class="button button-primary" href="{% url 'portal:ojt_requirements' %}">Continue to requirements</a>
+  {% else %}
+  <p class="form-footnote">Complete and save the required profile details and a good face enrollment to continue to OJT requirements.</p>
+  {% endif %}
 </section>
 {% endblock %}
 {% block scripts %}<script>
@@ -45,20 +60,30 @@
 
   const enrollmentVideo = document.getElementById("enrollment-camera");
   const enrollmentStatus = document.getElementById("enrollment-camera-status");
-  const saveEnrollmentButton = document.getElementById("save-face-enrollment");
+  const captureEnrollmentButton = document.getElementById("capture-face-enrollment");
   const enrollmentForm = document.getElementById("intern-face-enrollment-form");
+  const enrollmentResult = document.getElementById("enrollment-check-result");
+  const enrollmentResultLabel = document.getElementById("enrollment-check-label");
+  const enrollmentResultMessage = document.getElementById("enrollment-check-message");
+  const saveEnrollmentButton = document.getElementById("submit-face-enrollment");
+  const enrollmentDetectionStatus = document.getElementById("enrollment-detection-status");
+  const enrollmentCameraFrame = document.querySelector(".face-enrollment-frame");
   let enrollmentStream = null;
+  let stopEnrollmentDetection = null;
 
   const stopEnrollmentCamera = () => {
+    stopEnrollmentDetection?.();
+    stopEnrollmentDetection = null;
     enrollmentStream?.getTracks().forEach((track) => track.stop());
     enrollmentStream = null;
     enrollmentVideo.srcObject = null;
     enrollmentVideo.hidden = true;
-    saveEnrollmentButton.disabled = true;
+    captureEnrollmentButton.disabled = true;
   };
 
   document.getElementById("start-enrollment-camera").addEventListener("click", async () => {
     stopEnrollmentCamera();
+    enrollmentResult.hidden = true;
     try {
       enrollmentStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
       enrollmentVideo.srcObject = enrollmentStream;
@@ -76,7 +101,13 @@
       if (!enrollmentVideo.videoWidth || !enrollmentVideo.videoHeight) {
         throw new Error("Camera preview did not become ready.");
       }
-      saveEnrollmentButton.disabled = false;
+      captureEnrollmentButton.disabled = false;
+      stopEnrollmentDetection = window.startFaceDetectionGuide({
+        video: enrollmentVideo,
+        frame: enrollmentCameraFrame,
+        status: enrollmentDetectionStatus,
+        endpoint: "{% url 'portal:face_detection_preview' %}",
+      });
       enrollmentStatus.textContent = "Camera ready. Center your face in the oval, then confirm consent and capture.";
     } catch {
       stopEnrollmentCamera();
@@ -84,8 +115,7 @@
     }
   });
 
-  enrollmentForm.addEventListener("submit", (event) => {
-    event.preventDefault();
+  captureEnrollmentButton.addEventListener("click", async () => {
     if (!enrollmentVideo.videoWidth || !enrollmentVideo.videoHeight) {
       enrollmentStatus.textContent = "Start the camera and wait for the preview before capturing.";
       return;
@@ -100,10 +130,78 @@
       return;
     }
     context.drawImage(enrollmentVideo, 0, 0, canvas.width, canvas.height);
-    document.getElementById("enrollment-face-image").value = canvas.toDataURL("image/jpeg", 0.82);
+    const faceImage = canvas.toDataURL("image/jpeg", 0.82);
+    enrollmentVideo.pause();
+    stopEnrollmentDetection?.();
+    const previewData = new FormData(enrollmentForm);
+    previewData.set("face_image", faceImage);
+    enrollmentStatus.textContent = "Checking that the face can be enrolled…";
+    captureEnrollmentButton.disabled = true;
+    try {
+      const response = await fetch("{% url 'portal:face_enrollment_preview' %}", {
+        method: "POST",
+        body: previewData,
+        credentials: "same-origin",
+        headers: { "X-Requested-With": "XMLHttpRequest" },
+      });
+      const result = await response.json();
+      enrollmentResult.className = `face-check-result face-check-${result.quality || "poor"}`;
+      enrollmentResultLabel.textContent = result.label || "Unable to check this capture";
+      enrollmentResultMessage.textContent = result.message || "Retake the frame and try again.";
+      document.getElementById("enrollment-face-image").value = result.quality === "good" ? faceImage : "";
+      saveEnrollmentButton.hidden = result.quality !== "good";
+      enrollmentResult.hidden = false;
+      enrollmentStatus.textContent = result.quality === "good"
+        ? "This face is ready to enroll. Save it or retake the frame."
+        : "This face cannot be enrolled yet. Retake the frame and follow the guide.";
+    } catch {
+      enrollmentResult.className = "face-check-result face-check-poor";
+      enrollmentResultLabel.textContent = "Face check unavailable";
+      enrollmentResultMessage.textContent = "The system could not check this frame. Retake it or try again later.";
+      document.getElementById("enrollment-face-image").value = "";
+      saveEnrollmentButton.hidden = true;
+      enrollmentResult.hidden = false;
+      enrollmentStatus.textContent = "The capture was not saved. Retake the frame or try again later.";
+    }
+  });
+
+  document.getElementById("retake-face-enrollment").addEventListener("click", async () => {
+    enrollmentResult.hidden = true;
+    document.getElementById("enrollment-face-image").value = "";
+    try {
+      await enrollmentVideo.play();
+      captureEnrollmentButton.disabled = false;
+      stopEnrollmentDetection = window.startFaceDetectionGuide({
+        video: enrollmentVideo,
+        frame: enrollmentCameraFrame,
+        status: enrollmentDetectionStatus,
+        endpoint: "{% url 'portal:face_detection_preview' %}",
+      });
+      enrollmentStatus.textContent = "Center one face in the oval and capture again.";
+    } catch {
+      stopEnrollmentCamera();
+      enrollmentStatus.textContent = "Camera unavailable. Start the camera again to retake.";
+    }
+  });
+
+  enrollmentForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!document.getElementById("enrollment-face-image").value) {
+      enrollmentStatus.textContent = "Capture and check a good face image before saving enrollment.";
+      return;
+    }
     stopEnrollmentCamera();
     enrollmentForm.submit();
   });
 
+  const enrollmentSubmitButton = document.getElementById("submit-face-enrollment");
+  enrollmentSubmitButton.addEventListener("click", (event) => {
+    if (!enrollmentForm.reportValidity()) {
+      event.preventDefault();
+      return;
+    }
+    stopEnrollmentCamera();
+  });
+
   window.addEventListener("pagehide", stopEnrollmentCamera);
-</script>{% endblock %}
+</script><script src="{% static 'js/face-detection-guide.js' %}"></script>{% endblock %}

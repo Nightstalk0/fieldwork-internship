@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block title %}OJT requirements | Fieldwork{% endblock %}
 {% block content %}
-<div class="page-heading"><div><p class="eyebrow">INTERN WORKSPACE</p><h1>OJT requirements</h1><p class="muted">Upload your documents for coordinator review before recording your first OJT attendance.</p></div></div>
-{% if ojt_ready %}<section class="panel requirement-notice requirement-notice-good"><strong>Baseline documents approved</strong><p>You are cleared to start recording attendance. If your Fieldwork company has additional requirements, submit those separately; they do not affect baseline clearance.</p><a href="{% url 'portal:attendance' %}">Open attendance</a></section>{% else %}<section class="panel requirement-notice"><strong>{{ approved_required_count }} of {{ required_count }} baseline documents approved</strong><p>Required school/academic and baseline legal/health documents must be approved by the coordinator before attendance. Company-specific requirements are assigned separately after a company accepts your application.</p></section>{% endif %}
+<div class="page-heading"><div><p class="eyebrow">INTERN WORKSPACE</p><h1>OJT requirements</h1><p class="muted">After completing your profile and face enrollment, upload your credentials here for admin/coordinator approval.</p></div></div>
+{% if ojt_ready %}<section class="panel requirement-notice requirement-notice-good"><strong>Baseline documents approved</strong><p>You are cleared to start recording attendance. If your Fieldwork company has additional requirements, submit those separately; they do not affect baseline clearance.</p><a href="{% url 'portal:attendance' %}">Open attendance</a></section>{% else %}<section class="panel requirement-notice"><strong>{{ approved_required_count }} of {{ required_count }} baseline documents approved</strong><p>Required school/academic and baseline legal/health credentials are reviewed by the admin/coordinator. They must be approved before attendance and other internship activities are available. Company-specific requirements are assigned separately after a company accepts your application.</p></section>{% endif %}
 <section class="requirement-list" aria-label="OJT document checklist">
 {% for item in requirement_rows %}
 <article class="panel requirement-item">
@@ -18,7 +18,7 @@
     {% if item.form.document.errors %}<ul class="errorlist">{% for error in item.form.document.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
     <button class="button button-secondary" type="submit">{% if item.requirement.status == 'rejected' %}Replace document{% else %}Upload document{% endif %}</button>
   </form>
-  {% elif item.requirement.status == 'submitted' %}<p class="muted">Your document is waiting for coordinator review.</p>{% endif %}
+  {% elif item.requirement.status == 'submitted' %}<p class="muted">Your document is waiting for admin/coordinator review.</p>{% endif %}
 </article>
 {% empty %}<section class="panel"><p class="muted">No OJT requirements are assigned to your profile yet. Contact your coordinator.</p></section>{% endfor %}
 </section>

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load static %}
 {% block title %}Attendance | Fieldwork{% endblock %}
 {% block content %}
 <div class="page-heading">
@@ -18,17 +19,15 @@
 {% endif %}
 <section class="panel">
   <h2>Face verification required</h2>
-  {% if not face_enrollment_current %}
-  <p class="requirement-notice">Set up or update your face enrollment before using face recognition. <a href="{% url 'portal:profile' %}">Enroll your face in Profile</a>.</p>
-  {% endif %}
   <p class="muted">Click Time in or Time out to open the camera. Fit your face inside the guide, then capture it. You can retake a poor or uncertain frame, or submit it for company/admin review. Every submitted time event waits for company/admin approval. Submitted camera images are encrypted and retained for up to 30 days. Face matching is not liveness detection.</p>
   <div class="clock-actions">
     <span id="camera-status" class="muted" aria-live="polite">Camera starts when you choose Time in or Time out.</span>
   </div>
   <div id="face-capture-panel" hidden>
-    <div class="face-camera-frame">
+    <div class="face-camera-frame" id="attendance-camera-frame">
       <video id="camera-preview" aria-label="Camera preview. Position your face inside the oval guide." autoplay muted playsinline></video>
       <div class="face-guide" aria-hidden="true"><span>Fit your face in the oval</span></div>
+      <span id="attendance-detection-status" class="face-detection-status" aria-live="polite">Live face guide starts with your camera.</span>
     </div>
     <p id="face-capture-status" class="muted" aria-live="polite">Center your face and look toward the camera.</p>
     <div id="face-capture-actions" class="clock-actions">
@@ -136,6 +135,7 @@
   let currentForm = null;
   let pendingFaceImage = "";
   let attendanceSubmitting = false;
+  let stopFaceDetection = null;
 
   const startCamera = async () => {
     cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
@@ -154,9 +154,18 @@
     if (!video.videoWidth || !video.videoHeight) {
       throw new Error("Camera preview did not become ready.");
     }
+    stopFaceDetection?.();
+    stopFaceDetection = window.startFaceDetectionGuide({
+      video,
+      frame: document.getElementById("attendance-camera-frame"),
+      status: document.getElementById("attendance-detection-status"),
+      endpoint: "{% url 'portal:face_detection_preview' %}",
+    });
   };
 
   const stopCamera = () => {
+    stopFaceDetection?.();
+    stopFaceDetection = null;
     cameraStream?.getTracks().forEach((track) => track.stop());
     cameraStream = null;
     video.srcObject = null;
@@ -289,6 +298,7 @@
     try {
       const faceImage = captureCurrentFrame();
       video.pause();
+      stopFaceDetection?.();
       checkCapturedFrame(faceImage);
     } catch {
       captureStatus.textContent = "Could not capture this frame. Retake or submit without an image for review.";
@@ -342,4 +352,5 @@
 
   window.addEventListener("pagehide", stopCamera);
 </script>
+<script src="{% static 'js/face-detection-guide.js' %}"></script>
 {% endblock %}

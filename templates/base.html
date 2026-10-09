@@ -70,7 +70,8 @@
         <a class="button button-secondary" href="{% url 'portal:company_requirements' %}">Manage requirements</a>
         <a class="button button-secondary" href="{% url 'portal:company_intern_documents' %}">View intern documents</a>
       {% else %}
-        <a class="button button-primary" href="{% url 'portal:ojt_requirements' %}">Upload required documents</a>
+        <a class="button button-primary" href="{% url 'portal:profile' %}">Complete intern profile</a>
+        <a class="button button-secondary" href="{% url 'portal:ojt_requirements' %}">Upload required documents</a>
         <a class="button button-secondary" href="{% url 'portal:attendance' %}">Log hours today</a>
         {% if request.user.intern_profile.placement_type == 'external' %}
           <a class="button button-secondary" href="{% url 'portal:daily_report' %}">Submit daily report</a>
