@@ -26,7 +26,7 @@ from zipfile import BadZipFile, LargeZipFile, ZipFile
 from accounts.models import User
 
 from .forms import CompanyProfileForm, CompanyRequirementForm, DailyReportForm, InternProfileForm, OJTRequirementUploadForm, PostingForm, ScorecardForm, WeeklyReportForm
-from .models import Application, AttendanceFaceCapture, AttendanceLog, AuditLog, CompanyProfile, CompanyRequirement, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport, assign_accepted_company_ojt_requirements, assign_company_ojt_requirements, baseline_ojt_requirements_approved
+from .models import Application, AttendanceFaceCapture, AttendanceLog, AuditLog, CompanyProfile, CompanyRequirement, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport, assign_accepted_company_ojt_requirements, assign_company_ojt_requirements, baseline_ojt_requirements_approved, pending_attendance_approval_count
 from .utils import attendance_pdf, audit, certificate_pdf
 from ml_engine.face_capture import FaceCaptureError, decode_camera_image, encode_camera_image
 from ml_engine.face_recognition import (
@@ -218,6 +218,14 @@ def attendance(request):
         if action == "clock_in" and not ojt_ready:
             messages.error(request, "Your required OJT documents must be approved before you can start attendance.")
             return redirect("portal:ojt_requirements")
+        if action == "clock_out":
+            existing_log = AttendanceLog.objects.filter(intern=intern, work_date=today).first()
+            if not existing_log or not existing_log.clock_in:
+                messages.error(request, "Record time in before recording time out.")
+                return redirect("portal:attendance")
+            if not existing_log.time_in_approved:
+                messages.error(request, "Your time-in must be approved by the company/admin before you can time out.")
+                return redirect("portal:attendance")
         latitude, longitude = _coordinates(request, action)
         event = AttendanceFaceCapture.Event.TIME_IN if action == "clock_in" else AttendanceFaceCapture.Event.TIME_OUT
         existing_log = AttendanceLog.objects.filter(intern=intern, work_date=today).first()
@@ -235,6 +243,9 @@ def attendance(request):
                     log = AttendanceLog.objects.select_for_update().filter(intern=intern, work_date=today).first()
                     if not log or not log.clock_in:
                         messages.error(request, "Record time in before recording time out.")
+                        return redirect("portal:attendance")
+                    if not log.time_in_approved:
+                        messages.error(request, "Your time-in must be approved by the company/admin before you can time out.")
                         return redirect("portal:attendance")
                 else:
                     log, _ = AttendanceLog.objects.select_for_update().get_or_create(intern=intern, work_date=today)
@@ -262,11 +273,7 @@ def attendance(request):
                     captured_at=captured_at,
                     latitude=latitude,
                     longitude=longitude,
-                    review_status=(
-                        AttendanceFaceCapture.ReviewStatus.NOT_REQUIRED
-                        if face_status == AttendanceLog.FaceCheckStatus.MATCHED
-                        else AttendanceFaceCapture.ReviewStatus.PENDING
-                    ),
+                    review_status=AttendanceFaceCapture.ReviewStatus.PENDING,
                 )
                 setattr(log, face_status_field, face_status)
                 setattr(log, face_score_field, face_score)
@@ -294,7 +301,7 @@ def attendance(request):
                     )
                     messages.success(
                         request,
-                        f"{event.replace('_', ' ').title()} recorded using server time after a face match.",
+                        f"Face verified. {event.replace('_', ' ').title()} is waiting for company/admin approval.",
                     )
                 else:
                     audit(request.user, "attendance.face_review_requested", log, event=event, capture_id=capture.pk)
@@ -798,10 +805,7 @@ def company_dashboard(request):
         "application_count": company_applications.count(),
         "pending_application_count": pending_applications.count(),
         "pending_applications": pending_applications.select_related("intern__user", "posting")[:8],
-        "pending_dtr_count": company_attendance_logs(company).filter(
-            Q(clock_in__isnull=False, time_in_approved=False)
-            | Q(clock_out__isnull=False, time_out_approved=False)
-        ).count(),
+        "pending_dtr_count": pending_attendance_approval_count(company_attendance_logs(company)),
     })
 
 
@@ -999,16 +1003,9 @@ def company_application_resume(request, application_id, mode):
 def company_dtr_queue(request):
     company = get_object_or_404(CompanyProfile, user=request.user)
     logs = company_attendance_logs(company).prefetch_related("face_captures", "face_captures__reviewed_by")
-    pending_review_count = AttendanceFaceCapture.objects.filter(
-        attendance_log__in=logs,
-        review_status=AttendanceFaceCapture.ReviewStatus.PENDING,
-    ).count()
     return render(request, "portal/company/dtr_queue.html", {
         "logs": logs[:100],
-        "pending_dtr_count": logs.filter(
-            Q(clock_in__isnull=False, time_in_approved=False)
-            | Q(clock_out__isnull=False, time_out_approved=False)
-        ).count() + pending_review_count,
+        "pending_dtr_count": pending_attendance_approval_count(logs),
         "now": timezone.now(),
     })
 
@@ -1051,19 +1048,25 @@ def _review_face_capture(request, capture_id, queue_name, audit_action):
         reviewed_at = timezone.now()
         capture.reviewed_by = request.user
         capture.reviewed_at = reviewed_at
+        timestamp_field, approval_field, latitude_field, longitude_field, face_status_field, face_score_field = (
+            ("clock_in", "time_in_approved", "clock_in_latitude", "clock_in_longitude", "clock_in_face_status", "clock_in_face_score")
+            if capture.event == AttendanceFaceCapture.Event.TIME_IN
+            else ("clock_out", "time_out_approved", "clock_out_latitude", "clock_out_longitude", "clock_out_face_status", "clock_out_face_score")
+        )
         if action == "reject":
+            if getattr(log, timestamp_field) == capture.captured_at and not getattr(log, approval_field):
+                setattr(log, timestamp_field, None)
+                setattr(log, latitude_field, None)
+                setattr(log, longitude_field, None)
+                log.save(update_fields=(timestamp_field, latitude_field, longitude_field))
             capture.review_status = AttendanceFaceCapture.ReviewStatus.REJECTED
             capture.save(update_fields=("review_status", "reviewed_by", "reviewed_at"))
             audit(request.user, f"{audit_action}.face_exception_rejected", log, capture_id=capture.pk)
             messages.success(request, "Attendance exception rejected; no time was recorded.")
             return redirect(queue_name)
 
-        timestamp_field, approval_field, latitude_field, longitude_field, face_status_field, face_score_field = (
-            ("clock_in", "time_in_approved", "clock_in_latitude", "clock_in_longitude", "clock_in_face_status", "clock_in_face_score")
-            if capture.event == AttendanceFaceCapture.Event.TIME_IN
-            else ("clock_out", "time_out_approved", "clock_out_latitude", "clock_out_longitude", "clock_out_face_status", "clock_out_face_score")
-        )
-        if getattr(log, timestamp_field):
+        recorded_at = getattr(log, timestamp_field)
+        if recorded_at and recorded_at != capture.captured_at:
             capture.review_status = AttendanceFaceCapture.ReviewStatus.REJECTED
             capture.save(update_fields=("review_status", "reviewed_by", "reviewed_at"))
             messages.error(request, "This time event has already been recorded; the exception was closed without changing attendance.")
@@ -1071,10 +1074,11 @@ def _review_face_capture(request, capture_id, queue_name, audit_action):
 
         capture.review_status = AttendanceFaceCapture.ReviewStatus.APPROVED
         capture.save(update_fields=("review_status", "reviewed_by", "reviewed_at"))
-        setattr(log, timestamp_field, capture.captured_at)
+        if not recorded_at:
+            setattr(log, timestamp_field, capture.captured_at)
+            setattr(log, latitude_field, capture.latitude)
+            setattr(log, longitude_field, capture.longitude)
         setattr(log, approval_field, True)
-        setattr(log, latitude_field, capture.latitude)
-        setattr(log, longitude_field, capture.longitude)
         setattr(log, face_status_field, capture.face_status)
         setattr(log, face_score_field, capture.face_score)
         log.save(update_fields=(
@@ -1136,7 +1140,17 @@ def _approve_attendance_time(request, log, queue_name, audit_action):
         return redirect(queue_name)
 
     timestamp_field, approval_field, label = approval
-    if not getattr(log, timestamp_field):
+    capture_event = (
+        AttendanceFaceCapture.Event.TIME_IN
+        if request.POST["event"] == "time_in"
+        else AttendanceFaceCapture.Event.TIME_OUT
+    )
+    if log.face_captures.filter(
+        event=capture_event,
+        review_status=AttendanceFaceCapture.ReviewStatus.PENDING,
+    ).exists():
+        messages.error(request, f"Review the {label.lower()} face capture before approving this event.")
+    elif not getattr(log, timestamp_field):
         messages.error(request, f"{label} has not been recorded yet.")
     elif getattr(log, approval_field):
         messages.info(request, f"{label} is already approved.")
@@ -1276,10 +1290,7 @@ def coordinator_dashboard(request):
         "intern_count": InternProfile.objects.count(),
         "company_count": CompanyProfile.objects.count(),
         "open_posting_count": Posting.objects.filter(status=Posting.Status.PUBLISHED).count(),
-        "pending_dtr_count": AttendanceLog.objects.filter(
-            Q(clock_in__isnull=False, time_in_approved=False)
-            | Q(clock_out__isnull=False, time_out_approved=False)
-        ).count(),
+        "pending_dtr_count": pending_attendance_approval_count(AttendanceLog.objects.all()),
         "pending_report_count": WeeklyReport.objects.filter(status=WeeklyReport.Status.SUBMITTED).count(),
         "pending_daily_report_count": DailyReport.objects.filter(status=DailyReport.Status.SUBMITTED).count(),
         "pending_ojt_requirement_count": OJTRequirement.objects.filter(
@@ -1333,6 +1344,7 @@ def dtr_queue(request):
     ).order_by("-work_date")
     return render(request, "portal/coordinator/dtr_queue.html", {
         "logs": logs[:100],
+        "pending_dtr_count": pending_attendance_approval_count(logs),
         "now": timezone.now(),
     })
 

@@ -476,7 +476,7 @@ class PortalWorkflowTests(TestCase):
         self.assertContains(response, "retained for up to 30 days")
         self.assertContains(response, 'name="face_image"')
 
-    def test_successful_face_match_records_both_clock_events(self):
+    def test_successful_face_match_waits_for_approval_before_each_clock_event(self):
         self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
         self.client.force_login(self.intern_user)
         with patch(
@@ -488,16 +488,57 @@ class PortalWorkflowTests(TestCase):
         ):
             time_in_response = self.client.post(reverse("portal:attendance"), {"action": "clock_in"})
             self.assertRedirects(time_in_response, reverse("portal:attendance"))
+            log = AttendanceLog.objects.get(intern=self.intern)
+            time_in_capture = log.face_captures.get(event=AttendanceFaceCapture.Event.TIME_IN)
+            self.assertEqual(time_in_capture.review_status, AttendanceFaceCapture.ReviewStatus.PENDING)
+            self.assertFalse(log.time_in_approved)
+
+            blocked_time_out = self.client.post(reverse("portal:attendance"), {"action": "clock_out"})
+            self.assertRedirects(blocked_time_out, reverse("portal:attendance"))
+            log.refresh_from_db()
+            self.assertIsNone(log.clock_out)
+
+            coordinator = User.objects.create_user(username="attendance-approver", role=User.Role.COORDINATOR)
+            self.client.force_login(coordinator)
+            queue = self.client.get(reverse("portal:dtr_queue"))
+            self.assertContains(queue, "Approve time in")
+            self.assertEqual(queue.context["logs"][0].pending_time_in_face_capture, time_in_capture)
+            bypass = self.client.post(
+                reverse("portal:approve_dtr", args=(log.pk,)),
+                {"event": "time_in"},
+            )
+            self.assertRedirects(bypass, reverse("portal:dtr_queue"))
+            log.refresh_from_db()
+            self.assertFalse(log.time_in_approved)
+            approved_time_in = self.client.post(
+                reverse("portal:review_attendance_face_capture", args=(time_in_capture.pk,)),
+                {"action": "approve"},
+            )
+            self.assertRedirects(approved_time_in, reverse("portal:dtr_queue"))
+            self.client.force_login(self.intern_user)
             time_out_response = self.client.post(reverse("portal:attendance"), {"action": "clock_out"})
 
         self.assertRedirects(time_out_response, reverse("portal:attendance"))
-        log = AttendanceLog.objects.get(intern=self.intern)
+        log.refresh_from_db()
+        time_out_capture = log.face_captures.get(event=AttendanceFaceCapture.Event.TIME_OUT)
         self.assertIsNotNone(log.clock_in)
         self.assertIsNotNone(log.clock_out)
+        self.assertFalse(log.time_out_approved)
+        self.assertEqual(time_out_capture.review_status, AttendanceFaceCapture.ReviewStatus.PENDING)
+
+        self.client.force_login(coordinator)
+        approved_time_out = self.client.post(
+            reverse("portal:review_attendance_face_capture", args=(time_out_capture.pk,)),
+            {"action": "approve"},
+        )
+        self.assertRedirects(approved_time_out, reverse("portal:dtr_queue"))
+        log.refresh_from_db()
+        self.assertTrue(log.time_in_approved)
+        self.assertTrue(log.time_out_approved)
         self.assertEqual(log.face_captures.count(), 2)
         self.assertEqual(
             set(log.face_captures.values_list("review_status", flat=True)),
-            {AttendanceFaceCapture.ReviewStatus.NOT_REQUIRED},
+            {AttendanceFaceCapture.ReviewStatus.APPROVED},
         )
 
     @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
@@ -523,7 +564,8 @@ class PortalWorkflowTests(TestCase):
         self.assertIsNone(log.clock_in)
         self.client.force_login(self.company_user)
         queue = self.client.get(reverse("portal:company_dtr_queue"))
-        self.assertContains(queue, "Approve exception")
+        self.assertContains(queue, "Approve time in")
+        self.assertContains(queue, "Awaiting company/admin approval")
 
         image_response = self.client.get(
             reverse("portal:attendance_face_capture_image", args=(capture.pk,))
@@ -952,7 +994,7 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, self.intern_user.username)
         self.assertNotContains(response, other_user.username)
-        self.assertContains(response, "1 record")
+        self.assertContains(response, "2 time events")
 
         response = self.client.post(
             reverse("portal:company_approve_dtr", args=(own_log.pk,)),

@@ -29,8 +29,8 @@
 <section class="panel attendance-panel">
   <div>
     <p class="eyebrow">{{ today|date:"l, F j" }}</p>
-    <h2>{% if today_log.clock_in %}Shift in progress{% elif 'time_in' in pending_face_events %}Time in awaiting review{% else %}Ready to start?{% endif %}</h2>
-    <p class="muted">{% if today_log.clock_in %}Time in at {{ today_log.clock_in|date:"H:i" }}{% if today_log.clock_out %}; time out at {{ today_log.clock_out|date:"H:i" }}{% endif %}{% elif 'time_in' in pending_face_events %}No time-in has been recorded yet. A company/admin must review your face-verification exception.{% else %}Your device time is never used to determine attendance.{% endif %}</p>
+    <h2>{% if 'time_in' in pending_face_events %}Time in awaiting approval{% elif today_log.clock_in %}Shift in progress{% else %}Ready to start?{% endif %}</h2>
+    <p class="muted">{% if 'time_in' in pending_face_events %}Face verified{% if today_log.clock_in_face_status != 'matched' %} with an exception{% endif %}; no approved time-in yet. Your company/admin must review it before time-out is available.{% elif today_log.clock_in %}Time in at {{ today_log.clock_in|date:"H:i" }}{% if today_log.clock_out %}; time out at {{ today_log.clock_out|date:"H:i" }}{% endif %}{% else %}Your device time is never used to determine attendance.{% endif %}</p>
   </div>
   <label class="note-label">Optional work note<input id="attendance-note" type="text" maxlength="255" placeholder="Add a short note for this entry" value="{{ today_log.notes }}"></label>
   <div class="clock-actions">
@@ -49,7 +49,7 @@
       <button class="button button-primary" type="button" disabled>Time in</button>
       {% endif %}
     {% elif 'time_in' in pending_face_events %}
-      <span class="status">Time in pending company/admin review</span>
+      <span class="status">Time in pending company/admin approval</span>
     {% elif not today_log.clock_out and 'time_out' not in pending_face_events %}
     <form method="post" class="clock-form" data-action="clock_out">
       {% csrf_token %}
@@ -61,7 +61,7 @@
       <button class="button button-primary" type="submit">Time out</button>
     </form>
     {% elif 'time_out' in pending_face_events %}
-    <span class="status">Time out pending company/admin review</span>
+    <span class="status">Time out pending company/admin approval</span>
     {% else %}
     <span class="status status-good">Today's attendance is complete</span>
     {% endif %}
@@ -82,8 +82,8 @@
           <td>{{ log.hours_worked }}</td>
           <td>{{ log.get_clock_in_face_status_display }}{% if log.clock_in_face_score != None %} ({{ log.clock_in_face_score|floatformat:3 }}){% endif %}</td>
           <td>{{ log.get_clock_out_face_status_display }}{% if log.clock_out_face_score != None %} ({{ log.clock_out_face_score|floatformat:3 }}){% endif %}</td>
-          <td>{% if not log.clock_in %}<span class="status">Not recorded</span>{% elif log.time_in_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
-          <td>{% if not log.clock_out %}<span class="status">Not recorded</span>{% elif log.time_out_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
+          <td>{% if log.pending_time_in_face_capture %}<span class="status">Awaiting company/admin approval</span>{% elif not log.clock_in %}<span class="status">Not recorded</span>{% elif log.time_in_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
+          <td>{% if log.pending_time_out_face_capture %}<span class="status">Awaiting company/admin approval</span>{% elif not log.clock_out %}<span class="status">Not recorded</span>{% elif log.time_out_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
         </tr>
         {% empty %}
         <tr><td colspan="8" class="muted">No entries recorded.</td></tr>

@@ -1,7 +1,7 @@
 {% extends "base.html" %}{% block title %}DTR review queue | Fieldwork{% endblock %}
 {% block content %}
 <div class="page-heading">
-	<div><p class="eyebrow">PROGRAM OPERATIONS</p><h1>Attendance review</h1><p class="muted">Review each recorded time-in and time-out separately.</p></div>
+	<div><p class="eyebrow">PROGRAM OPERATIONS</p><h1>Attendance review</h1><p class="muted">{{ pending_dtr_count }} time event{{ pending_dtr_count|pluralize }} awaiting approval. Review each intern-submitted capture here.</p></div>
 </div>
 <section class="panel">
 	<div class="table-wrap">
@@ -18,8 +18,8 @@
 					<td>{{ log.clock_out|date:"H:i"|default:"—" }}</td>
 					<td>{{ log.get_clock_out_face_status_display }}{% if log.clock_out_face_score != None %} ({{ log.clock_out_face_score|floatformat:3 }}){% endif %}</td>
 					<td>{{ log.hours_worked }}</td>
-					<td>{% if not log.clock_in %}<span class="status">Not recorded</span>{% elif log.time_in_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
-					<td>{% if not log.clock_out %}<span class="status">Not recorded</span>{% elif log.time_out_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
+					<td>{% if log.pending_time_in_face_capture %}<span class="status">Awaiting approval</span>{% elif not log.clock_in %}<span class="status">Not recorded</span>{% elif log.time_in_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
+					<td>{% if log.pending_time_out_face_capture %}<span class="status">Awaiting approval</span>{% elif not log.clock_out %}<span class="status">Not recorded</span>{% elif log.time_out_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
 					<td>
 						{% for capture in log.face_captures.all %}
 						<div>
@@ -32,8 +32,8 @@
 							{% if capture.review_status == 'pending' %}
 							<form method="post" action="{% url 'portal:review_attendance_face_capture' capture.pk %}">
 								{% csrf_token %}
-								<button class="button button-small" type="submit" name="action" value="approve">Approve exception</button>
-								<button class="button button-small button-secondary" type="submit" name="action" value="reject">Reject exception</button>
+								<button class="button button-small" type="submit" name="action" value="approve">Approve {{ capture.get_event_display|lower }}</button>
+								<button class="button button-small button-secondary" type="submit" name="action" value="reject">Reject {{ capture.get_event_display|lower }}</button>
 							</form>
 							{% elif capture.reviewed_by %}<small class="muted">Reviewed by {{ capture.reviewed_by.get_full_name|default:capture.reviewed_by.username }}</small>{% endif %}
 						</div>
@@ -42,8 +42,8 @@
 					<td>
 						<form method="post" action="{% url 'portal:approve_dtr' log.id %}">
 							{% csrf_token %}
-							{% if log.clock_in and not log.time_in_approved %}<button class="button button-small" type="submit" name="event" value="time_in">Approve time in</button>{% endif %}
-							{% if log.clock_out and not log.time_out_approved %}<button class="button button-small" type="submit" name="event" value="time_out">Approve time out</button>{% endif %}
+							{% if log.clock_in and not log.time_in_approved and not log.pending_time_in_face_capture %}<button class="button button-small" type="submit" name="event" value="time_in">Approve time in</button>{% endif %}
+							{% if log.clock_out and not log.time_out_approved and not log.pending_time_out_face_capture %}<button class="button button-small" type="submit" name="event" value="time_out">Approve time out</button>{% endif %}
 						</form>
 						{% if not log.clock_in and not log.clock_out %}<small class="approval-requirement">Waiting for time in and time out.</small>{% endif %}
 					</td>

@@ -348,6 +348,30 @@ class AttendanceLog(models.Model):
     def approved(self):
         return self.time_in_approved and self.time_out_approved
 
+    @property
+    def pending_time_in_face_capture(self):
+        return next(
+            (
+                capture
+                for capture in self.face_captures.all()
+                if capture.event == AttendanceFaceCapture.Event.TIME_IN
+                and capture.review_status == AttendanceFaceCapture.ReviewStatus.PENDING
+            ),
+            None,
+        )
+
+    @property
+    def pending_time_out_face_capture(self):
+        return next(
+            (
+                capture
+                for capture in self.face_captures.all()
+                if capture.event == AttendanceFaceCapture.Event.TIME_OUT
+                and capture.review_status == AttendanceFaceCapture.ReviewStatus.PENDING
+            ),
+            None,
+        )
+
 
 class AttendanceFaceCapture(models.Model):
     class Event(models.TextChoices):
@@ -355,10 +379,10 @@ class AttendanceFaceCapture(models.Model):
         TIME_OUT = "time_out", "Time out"
 
     class ReviewStatus(models.TextChoices):
-        NOT_REQUIRED = "not_required", "No exception review required"
-        PENDING = "pending", "Awaiting company/admin review"
-        APPROVED = "approved", "Exception approved"
-        REJECTED = "rejected", "Exception rejected"
+        NOT_REQUIRED = "not_required", "No approval required"
+        PENDING = "pending", "Awaiting company/admin approval"
+        APPROVED = "approved", "Approved by company/admin"
+        REJECTED = "rejected", "Rejected by company/admin"
 
     attendance_log = models.ForeignKey(
         AttendanceLog,
@@ -392,6 +416,24 @@ class AttendanceFaceCapture(models.Model):
 
     def __str__(self):
         return f"{self.get_event_display()} face capture: {self.attendance_log}"
+
+
+def pending_attendance_approval_count(logs):
+    pending_captures = AttendanceFaceCapture.objects.filter(
+        attendance_log__in=logs,
+        review_status=AttendanceFaceCapture.ReviewStatus.PENDING,
+    ).count()
+    legacy_time_in = logs.filter(
+        clock_in__isnull=False,
+        time_in_approved=False,
+        face_captures__isnull=True,
+    ).distinct().count()
+    legacy_time_out = logs.filter(
+        clock_out__isnull=False,
+        time_out_approved=False,
+        face_captures__isnull=True,
+    ).distinct().count()
+    return pending_captures + legacy_time_in + legacy_time_out
 
 
 class DailyReport(models.Model):
