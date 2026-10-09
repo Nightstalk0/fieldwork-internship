@@ -141,9 +141,14 @@ def profile(request):
     intern = get_object_or_404(InternProfile, user=request.user)
     form = InternProfileForm(request.POST or None, request.FILES or None, instance=intern)
     if request.method == "POST" and form.is_valid():
-        profile_instance = form.save()
-        assign_accepted_company_ojt_requirements(profile_instance)
-        audit(request.user, "profile.updated", profile_instance)
+        try:
+            with transaction.atomic():
+                profile_instance = form.save()
+                assign_accepted_company_ojt_requirements(profile_instance)
+                audit(request.user, "profile.updated", profile_instance)
+        except Exception:
+            LOGGER.exception("Profile update failed for intern user %s.", request.user.pk)
+            raise
         messages.success(request, "Profile saved.")
         return redirect("portal:profile")
     enrollment = FaceEnrollment.objects.filter(intern=intern).first()

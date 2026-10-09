@@ -138,7 +138,10 @@
   let stopFaceDetection = null;
 
   const startCamera = async () => {
-    cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false,
+    });
     video.hidden = false;
     video.srcObject = cameraStream;
     await video.play();

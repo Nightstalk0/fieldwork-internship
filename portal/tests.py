@@ -119,7 +119,7 @@ class PortalWorkflowTests(TestCase):
 
         self.assertContains(response, 'class="nav-link-active" aria-current="page">Overview</a>')
 
-    def test_intern_can_save_external_placement_before_host_details(self):
+    def test_intern_can_update_external_host_details_later(self):
         form = InternProfileForm(
             {
                 "placement_type": InternProfile.PlacementType.EXTERNAL,
@@ -193,6 +193,26 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(self.intern.university, "Example University")
         self.assertEqual(self.intern.course, "Information Technology")
         self.assertEqual(self.intern.year_level, 3)
+
+    def test_profile_save_failure_is_logged_and_rolled_back(self):
+        self.client.force_login(self.intern_user)
+
+        with patch("portal.views.audit", side_effect=RuntimeError("audit unavailable")):
+            with self.assertLogs("portal.views", level="ERROR") as captured_logs:
+                with self.assertRaises(RuntimeError):
+                    self.client.post(reverse("portal:profile"), {
+                        "student_id": "TEST-STUDENT-ROLLBACK",
+                        "university": "Example University",
+                        "course": "Information Technology",
+                        "year_level": 3,
+                        "placement_type": InternProfile.PlacementType.PLATFORM,
+                        "external_host": "",
+                        "bio": "",
+                    })
+
+        self.assertIn("Profile update failed for intern user", captured_logs.output[0])
+        self.intern.refresh_from_db()
+        self.assertIsNone(self.intern.student_id)
 
     def test_coordinator_dashboard_shows_external_host_and_approved_progress(self):
         self.intern.placement_type = InternProfile.PlacementType.EXTERNAL
@@ -650,22 +670,6 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"face_count": 1, "face_detected": True})
         detector.assert_called_once()
-
-    def test_face_detection_api_works_before_profile_setup(self):
-        self.client.force_login(self.intern_user)
-
-        with patch(
-            "portal.views.detect_faces",
-            return_value={"face_detected": True, "face_count": 1, "detections": []},
-        ):
-            response = self.client.post(
-                reverse("portal:face_detection_preview"),
-                {"face_image": self._camera_data_url()},
-                HTTP_X_REQUESTED_WITH="XMLHttpRequest",
-            )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"face_count": 1, "face_detected": True})
 
     def test_face_capture_api_reports_expired_session_as_json(self):
         response = self.client.post(

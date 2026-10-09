@@ -12,9 +12,9 @@
   <p class="muted">Your enrollment uses an older consent version. Recapture below and confirm the current consent before your face can be checked.</p>
   {% else %}
   <p class="status">Not enrolled</p>
-  <p class="muted">Face enrollment is optional during onboarding and can be completed later. Attendance still requires approved OJT documents; without an enrollment, face matching will be unavailable and your capture will need reviewer attention. Only an encrypted face template is saved; this enrollment photo is processed in memory and discarded.</p>
+  <p class="muted">Only an encrypted face template is saved; this enrollment photo is processed in memory and discarded.</p>
   {% endif %}
-  <p class="muted">You can complete your profile and enroll your face at any time. You may skip profile setup for now and submit your OJT requirements first.</p>
+  <p class="muted">Profile details and face enrollment are optional during onboarding and can be completed later. Attendance still requires approved OJT documents; without an enrollment, face matching will be unavailable and your capture will need reviewer attention.</p>
   <p class="muted">Attendance captures you submit are encrypted, can be viewed by authorized company/admin reviewers, and are deleted after 30 days. Face matching is not liveness detection.</p>
   <div class="face-camera-frame face-enrollment-frame">
     <video id="enrollment-camera" aria-label="Camera preview. Position your face inside the oval guide." autoplay muted playsinline hidden></video>
@@ -83,7 +83,10 @@
     document.getElementById("enrollment-face-image").value = "";
     saveEnrollmentButton.hidden = true;
     try {
-      enrollmentStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+      enrollmentStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
       enrollmentVideo.srcObject = enrollmentStream;
       enrollmentVideo.hidden = false;
       await enrollmentVideo.play();
