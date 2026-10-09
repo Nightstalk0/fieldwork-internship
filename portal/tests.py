@@ -153,6 +153,51 @@ class PortalWorkflowTests(TestCase):
         self.assertFalse(invalid_form.is_valid())
         self.assertIn("external_host", invalid_form.errors)
 
+    def test_intern_cannot_save_or_continue_with_incomplete_profile_details(self):
+        self.client.force_login(self.intern_user)
+        profile_url = reverse("portal:profile")
+
+        response = self.client.post(profile_url, {
+            "student_id": "",
+            "university": "",
+            "course": "",
+            "year_level": "",
+            "placement_type": InternProfile.PlacementType.PLATFORM,
+            "external_host": "",
+            "bio": "",
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["form"].errors)
+        self.intern.refresh_from_db()
+        self.assertFalse(self.intern.student_id)
+        self.assertFalse(self.intern.university)
+        self.assertFalse(self.intern.course)
+        self.assertIsNone(self.intern.year_level)
+        self.assertRedirects(
+            self.client.get(reverse("portal:ojt_requirements")),
+            profile_url,
+        )
+
+    def test_incomplete_whitespace_profile_cannot_bypass_requirements_gate(self):
+        self.intern.student_id = " "
+        self.intern.university = " "
+        self.intern.course = " "
+        self.intern.year_level = 3
+        self.intern.save()
+        FaceEnrollment.objects.create(
+            intern=self.intern,
+            encrypted_embedding=b"encrypted-test-embedding",
+            enrolled_by=self.intern_user,
+            consent_confirmed_at=timezone.now(),
+            consent_text_version=FACE_CONSENT_VERSION,
+        )
+        self.client.force_login(self.intern_user)
+
+        response = self.client.get(reverse("portal:ojt_requirements"))
+
+        self.assertRedirects(response, reverse("portal:profile"))
+
     def test_coordinator_dashboard_shows_external_host_and_approved_progress(self):
         self.intern.placement_type = InternProfile.PlacementType.EXTERNAL
         self.intern.external_host = "Northside Design Studio"

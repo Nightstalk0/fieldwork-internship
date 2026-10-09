@@ -60,13 +60,14 @@ def role_required(*roles):
 
 def intern_profile_details_complete(intern):
     return bool(
-        intern.student_id
-        and intern.university
-        and intern.course
+        (intern.student_id or "").strip()
+        and (intern.university or "").strip()
+        and (intern.course or "").strip()
         and intern.year_level
+        and intern.placement_type in InternProfile.PlacementType.values
         and (
             intern.placement_type != InternProfile.PlacementType.EXTERNAL
-            or intern.external_host
+            or (intern.external_host or "").strip()
         )
     )
 
@@ -173,11 +174,19 @@ def profile(request):
     intern = get_object_or_404(InternProfile, user=request.user)
     form = InternProfileForm(request.POST or None, request.FILES or None, instance=intern)
     if request.method == "POST" and form.is_valid():
-        profile_instance = form.save()
-        assign_accepted_company_ojt_requirements(profile_instance)
-        audit(request.user, "profile.updated", profile_instance)
-        messages.success(request, "Profile saved.")
-        return redirect("portal:profile")
+        profile_instance = form.save(commit=False)
+        if not intern_profile_details_complete(profile_instance):
+            form.add_error(
+                None,
+                "Complete your student ID, university, course, year level, and placement details before saving.",
+            )
+        else:
+            profile_instance.save()
+            form.save_m2m()
+            assign_accepted_company_ojt_requirements(profile_instance)
+            audit(request.user, "profile.updated", profile_instance)
+            messages.success(request, "Profile saved.")
+            return redirect("portal:profile")
     enrollment = FaceEnrollment.objects.filter(intern=intern).first()
     return render(request, "portal/intern/profile.html", {
         "form": form,
