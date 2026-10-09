@@ -18,6 +18,9 @@
 {% endif %}
 <section class="panel">
   <h2>Face verification required</h2>
+  {% if not face_enrollment_current %}
+  <p class="requirement-notice">Set up or update your face enrollment before using face recognition. <a href="{% url 'portal:profile' %}">Enroll your face in Profile</a>.</p>
+  {% endif %}
   <p class="muted">Click Time in or Time out to open the camera. Fit your face inside the guide, then capture it. You can retake a poor or uncertain frame, or submit it for company/admin review. Every submitted time event waits for company/admin approval. Submitted camera images are encrypted and retained for up to 30 days. Face matching is not liveness detection.</p>
   <div class="clock-actions">
     <span id="camera-status" class="muted" aria-live="polite">Camera starts when you choose Time in or Time out.</span>

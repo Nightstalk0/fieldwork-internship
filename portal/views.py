@@ -106,7 +106,46 @@ def profile(request):
         audit(request.user, "profile.updated", profile_instance)
         messages.success(request, "Profile saved.")
         return redirect("portal:profile")
-    return render(request, "portal/intern/profile.html", {"form": form, "intern": intern})
+    enrollment = FaceEnrollment.objects.filter(intern=intern).first()
+    return render(request, "portal/intern/profile.html", {
+        "form": form,
+        "intern": intern,
+        "face_enrollment": enrollment,
+        "face_enrollment_current": enrollment is not None and enrollment.consent_text_version == FACE_CONSENT_VERSION,
+    })
+
+
+@role_required(User.Role.INTERN)
+@require_POST
+def intern_face_enrollment(request):
+    intern = get_object_or_404(InternProfile, user=request.user)
+    if request.POST.get("consent_confirmed") != "on":
+        messages.error(request, "Confirm your informed consent before enrolling your face.")
+        return redirect("portal:profile")
+
+    try:
+        image = decode_camera_image(request.POST.get("face_image", ""))
+        embedding = encrypt_embedding(create_face_embedding(image))
+    except (FaceCaptureError, FaceImageError) as exc:
+        messages.error(request, str(exc))
+        return redirect("portal:profile")
+    except FaceModelError:
+        LOGGER.exception("Face enrollment failed for intern %s.", intern.pk)
+        messages.error(request, "Face enrollment could not be completed because the models are unavailable.")
+        return redirect("portal:profile")
+
+    _, created = FaceEnrollment.objects.update_or_create(
+        intern=intern,
+        defaults={
+            "encrypted_embedding": embedding,
+            "enrolled_by": request.user,
+            "consent_confirmed_at": timezone.now(),
+            "consent_text_version": FACE_CONSENT_VERSION,
+        },
+    )
+    audit(request.user, "face_enrollment.created" if created else "face_enrollment.updated", intern)
+    messages.success(request, "Your encrypted face enrollment is saved. You can now use face recognition for attendance.")
+    return redirect("portal:profile")
 
 
 @role_required(User.Role.INTERN)
@@ -276,6 +315,7 @@ def attendance_face_preview(request):
 def attendance(request):
     intern = get_object_or_404(InternProfile, user=request.user)
     ojt_ready = baseline_ojt_requirements_approved(intern)
+    face_enrollment = FaceEnrollment.objects.filter(intern=intern).first()
     today = timezone.localdate()
     if request.method == "POST":
         action = request.POST.get("action")
@@ -393,6 +433,10 @@ def attendance(request):
         "logs": logs,
         "today": today,
         "ojt_ready": ojt_ready,
+        "face_enrollment_current": (
+            face_enrollment is not None
+            and face_enrollment.consent_text_version == FACE_CONSENT_VERSION
+        ),
         "pending_face_events": pending_face_events,
     })
 

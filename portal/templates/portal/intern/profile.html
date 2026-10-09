@@ -1,5 +1,36 @@
 {% extends "base.html" %}{% block title %}My profile | Fieldwork{% endblock %}
-{% block content %}<div class="page-heading"><div><p class="eyebrow">INTERN WORKSPACE</p><h1>Profile</h1><p class="muted">Keep your placement details and resume current.</p></div></div><section class="panel form-panel"><form method="post" enctype="multipart/form-data" class="stack-form">{% csrf_token %}{{ form.as_p }}<button class="button button-primary" type="submit">Save profile</button></form></section>{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">INTERN WORKSPACE</p><h1>Profile</h1><p class="muted">Keep your placement details and resume current.</p></div></div>
+<section class="panel form-panel"><form method="post" enctype="multipart/form-data" class="stack-form">{% csrf_token %}{{ form.as_p }}<button class="button button-primary" type="submit">Save profile</button></form></section>
+<section class="panel form-panel">
+  <h2>Face enrollment for attendance</h2>
+  {% if face_enrollment_current %}
+  <p class="status status-good">Enrolled</p>
+  <p class="muted">Last updated {{ face_enrollment.updated_at|date:"M j, Y H:i" }}. You can recapture below to update your enrolled face.</p>
+  {% elif face_enrollment %}
+  <p class="status status-risk">Enrollment needs updating</p>
+  <p class="muted">Your enrollment uses an older consent version. Recapture below and confirm the current consent before your face can be checked.</p>
+  {% else %}
+  <p class="status">Not enrolled</p>
+  <p class="muted">Enroll before using face recognition for attendance. Only an encrypted face template is saved; this enrollment photo is processed in memory and discarded.</p>
+  {% endif %}
+  <p class="muted">Attendance captures you submit are encrypted, can be viewed by authorized company/admin reviewers, and are deleted after 30 days. Face matching is not liveness detection.</p>
+  <div class="face-camera-frame face-enrollment-frame">
+    <video id="enrollment-camera" aria-label="Camera preview. Position your face inside the oval guide." autoplay muted playsinline hidden></video>
+    <div class="face-guide" aria-hidden="true"><span>Fit your face in the oval</span></div>
+  </div>
+  <p id="enrollment-camera-status" class="muted" aria-live="polite">Start the camera to capture your enrollment image.</p>
+  <div class="clock-actions">
+    <button class="button button-secondary" id="start-enrollment-camera" type="button">Start camera</button>
+  </div>
+  <form method="post" action="{% url 'portal:intern_face_enrollment' %}" id="intern-face-enrollment-form" class="stack-form">
+    {% csrf_token %}
+    <input type="hidden" name="face_image" id="enrollment-face-image">
+    <label class="consent-checkbox"><input type="checkbox" name="consent_confirmed" required> I understand that face verification is required for time-in and time-out, that submitted attendance images may be reviewed by authorized company/admin staff, and that those images are deleted after 30 days. I consent to storing an encrypted face template for matching.</label>
+    <button class="button button-primary" id="save-face-enrollment" type="submit" disabled>Capture and save face enrollment</button>
+  </form>
+</section>
+{% endblock %}
 {% block scripts %}<script>
   const placementType = document.getElementById("id_placement_type");
   const externalHost = document.getElementById("id_external_host");
@@ -11,4 +42,68 @@
   };
   placementType.addEventListener("change", updateExternalHost);
   updateExternalHost();
+
+  const enrollmentVideo = document.getElementById("enrollment-camera");
+  const enrollmentStatus = document.getElementById("enrollment-camera-status");
+  const saveEnrollmentButton = document.getElementById("save-face-enrollment");
+  const enrollmentForm = document.getElementById("intern-face-enrollment-form");
+  let enrollmentStream = null;
+
+  const stopEnrollmentCamera = () => {
+    enrollmentStream?.getTracks().forEach((track) => track.stop());
+    enrollmentStream = null;
+    enrollmentVideo.srcObject = null;
+    enrollmentVideo.hidden = true;
+    saveEnrollmentButton.disabled = true;
+  };
+
+  document.getElementById("start-enrollment-camera").addEventListener("click", async () => {
+    stopEnrollmentCamera();
+    try {
+      enrollmentStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+      enrollmentVideo.srcObject = enrollmentStream;
+      enrollmentVideo.hidden = false;
+      await enrollmentVideo.play();
+      if (!enrollmentVideo.videoWidth || !enrollmentVideo.videoHeight) {
+        await new Promise((resolve, reject) => {
+          const timeout = window.setTimeout(() => reject(new Error("Camera preview did not become ready.")), 5000);
+          enrollmentVideo.addEventListener("loadeddata", () => {
+            window.clearTimeout(timeout);
+            resolve();
+          }, { once: true });
+        });
+      }
+      if (!enrollmentVideo.videoWidth || !enrollmentVideo.videoHeight) {
+        throw new Error("Camera preview did not become ready.");
+      }
+      saveEnrollmentButton.disabled = false;
+      enrollmentStatus.textContent = "Camera ready. Center your face in the oval, then confirm consent and capture.";
+    } catch {
+      stopEnrollmentCamera();
+      enrollmentStatus.textContent = "Camera unavailable or permission denied. Allow camera access and try again.";
+    }
+  });
+
+  enrollmentForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!enrollmentVideo.videoWidth || !enrollmentVideo.videoHeight) {
+      enrollmentStatus.textContent = "Start the camera and wait for the preview before capturing.";
+      return;
+    }
+    const canvas = document.createElement("canvas");
+    const scale = Math.min(1, 1280 / enrollmentVideo.videoWidth);
+    canvas.width = Math.round(enrollmentVideo.videoWidth * scale);
+    canvas.height = Math.round(enrollmentVideo.videoHeight * scale);
+    const context = canvas.getContext("2d");
+    if (!context) {
+      enrollmentStatus.textContent = "Could not prepare the camera image. Please try again.";
+      return;
+    }
+    context.drawImage(enrollmentVideo, 0, 0, canvas.width, canvas.height);
+    document.getElementById("enrollment-face-image").value = canvas.toDataURL("image/jpeg", 0.82);
+    stopEnrollmentCamera();
+    enrollmentForm.submit();
+  });
+
+  window.addEventListener("pagehide", stopEnrollmentCamera);
 </script>{% endblock %}

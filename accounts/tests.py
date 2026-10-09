@@ -5,6 +5,15 @@ from .models import User
 
 
 class AccountFlowTests(TestCase):
+    def test_login_page_has_accessible_password_visibility_toggle(self):
+        response = self.client.get(reverse("accounts:login"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="id_password"')
+        self.assertContains(response, 'aria-label="Show password"')
+        self.assertContains(response, 'class="password-visibility-toggle"')
+        self.assertContains(response, 'passwordInput.type = revealPassword ? "text" : "password"')
+
     def test_registration_uses_account_type_tabs_without_role_dropdown(self):
         response = self.client.get(reverse("accounts:register"))
 

@@ -4,8 +4,36 @@
 <section class="auth-layout">
   <div class="auth-copy"><p class="eyebrow">FIELDWORK PORTAL</p><h1>Good work starts with a clear plan.</h1><p>Keep placements, progress, and people in sync.</p></div>
   <div class="auth-panel"><h2>Sign in</h2><p class="muted">Use your internship portal account.</p>
-    <form method="post" class="stack-form">{% csrf_token %}{{ form.non_field_errors }}{{ form.as_p }}<input type="hidden" name="next" value="{{ next }}"><button class="button button-primary" type="submit">Continue</button></form>
+    <form method="post" class="stack-form">{% csrf_token %}{{ form.non_field_errors }}
+      {% for field in form %}
+      <div class="login-field">
+        {{ field.label_tag }}
+        {% if field.name == "password" %}
+        <div class="password-input-wrap">
+          {{ field }}
+          <button class="password-visibility-toggle" type="button" aria-label="Show password" aria-pressed="false" title="Show password">
+            <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+          </button>
+        </div>
+        {% else %}{{ field }}{% endif %}
+        {{ field.errors }}
+        {% if field.help_text %}<small class="helptext">{{ field.help_text }}</small>{% endif %}
+      </div>
+      {% endfor %}
+      <input type="hidden" name="next" value="{{ next }}"><button class="button button-primary" type="submit">Continue</button>
+    </form>
     <p class="form-footnote">New to Fieldwork? <a href="{% url 'accounts:register' %}">Create an account</a></p>
   </div>
 </section>
 {% endblock %}
+{% block scripts %}<script>
+  const passwordInput = document.getElementById("id_password");
+  const passwordToggle = document.querySelector(".password-visibility-toggle");
+  passwordToggle.addEventListener("click", () => {
+    const revealPassword = passwordInput.type === "password";
+    passwordInput.type = revealPassword ? "text" : "password";
+    passwordToggle.setAttribute("aria-pressed", String(revealPassword));
+    passwordToggle.setAttribute("aria-label", revealPassword ? "Hide password" : "Show password");
+    passwordToggle.title = revealPassword ? "Hide password" : "Show password";
+  });
+</script>{% endblock %}

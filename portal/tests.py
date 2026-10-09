@@ -19,7 +19,7 @@ from cryptography.fernet import Fernet
 from accounts.models import User
 from ml_engine.face_recognition import decrypt_embedding
 from .forms import InternProfileForm
-from .models import Application, AttendanceFaceCapture, AttendanceLog, CompanyProfile, CompanyRequirement, DailyReport, FaceEnrollment, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport, assign_company_ojt_requirements
+from .models import Application, AttendanceFaceCapture, AttendanceLog, CompanyProfile, CompanyRequirement, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport, assign_company_ojt_requirements
 from .utils import haversine_distance_km
 from .validators import FileSizeAndTypeValidator
 
@@ -485,6 +485,29 @@ class PortalWorkflowTests(TestCase):
 
         self.assertEqual(response.status_code, 403)
 
+    @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
+    def test_intern_can_enroll_own_face_from_profile_after_consent(self):
+        self.client.force_login(self.intern_user)
+        profile_url = reverse("portal:profile")
+        enrollment_url = reverse("portal:intern_face_enrollment")
+        self.assertContains(self.client.get(profile_url), "Face enrollment for attendance")
+        payload = {"face_image": self._camera_data_url()}
+
+        missing_consent = self.client.post(enrollment_url, payload)
+        self.assertRedirects(missing_consent, profile_url)
+        self.assertFalse(FaceEnrollment.objects.filter(intern=self.intern).exists())
+
+        payload["consent_confirmed"] = "on"
+        with patch("portal.views.create_face_embedding", return_value=b"intern embedding"):
+            enrolled = self.client.post(enrollment_url, payload)
+
+        self.assertRedirects(enrolled, profile_url)
+        record = FaceEnrollment.objects.get(intern=self.intern)
+        self.assertEqual(record.enrolled_by, self.intern_user)
+        self.assertEqual(record.consent_text_version, FACE_CONSENT_VERSION)
+        self.assertEqual(decrypt_embedding(record.encrypted_embedding), b"intern embedding")
+        self.assertContains(self.client.get(profile_url), "Last updated")
+
     def test_attendance_page_has_face_guide_and_capture_decision_controls(self):
         self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
         self.client.force_login(self.intern_user)
@@ -493,6 +516,7 @@ class PortalWorkflowTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "face-guide")
+        self.assertContains(response, "Enroll your face in Profile")
         self.assertContains(response, "Capture and check")
         self.assertContains(response, "Retake face")
         self.assertContains(response, "Submit for approval")
@@ -687,6 +711,15 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(log.clock_in, capture.captured_at)
         self.assertTrue(log.time_in_approved)
         self.assertEqual(capture.review_status, AttendanceFaceCapture.ReviewStatus.APPROVED)
+        coordinator = User.objects.create_user(username="capture-review-coordinator", role=User.Role.COORDINATOR)
+        self.client.force_login(coordinator)
+        coordinator_queue = self.client.get(reverse("portal:dtr_queue"))
+        self.assertContains(coordinator_queue, "View capture")
+        coordinator_image = self.client.get(
+            reverse("portal:attendance_face_capture_image", args=(capture.pk,))
+        )
+        self.assertEqual(coordinator_image.status_code, 200)
+        self.assertEqual(coordinator_image.content, b"test attendance jpeg")
 
     def test_expired_attendance_capture_image_is_deleted_by_retention_command(self):
         log = AttendanceLog.objects.create(intern=self.intern, work_date="2026-10-09")
