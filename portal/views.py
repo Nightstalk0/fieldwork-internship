@@ -1037,7 +1037,7 @@ def _review_face_capture(request, capture_id, queue_name, audit_action):
 
     with transaction.atomic():
         capture = get_object_or_404(
-            _reviewable_face_captures(request).select_for_update(),
+            _reviewable_face_captures(request).select_related(None).select_for_update(),
             pk=capture_id,
         )
         log = AttendanceLog.objects.select_for_update().get(pk=capture.attendance_log_id)

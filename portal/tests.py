@@ -465,6 +465,41 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(capture.review_status, AttendanceFaceCapture.ReviewStatus.PENDING)
         self.assertEqual(bytes(capture.encrypted_image), b"encrypted test capture")
 
+    def test_company_can_approve_no_camera_time_in_without_server_error(self):
+        Application.objects.create(
+            intern=self.intern,
+            posting=self.posting,
+            status=Application.Status.ACCEPTED,
+        )
+        self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
+        self.client.force_login(self.intern_user)
+        submitted = self.client.post(
+            reverse("portal:attendance"),
+            {"action": "clock_in"},
+        )
+        self.assertRedirects(submitted, reverse("portal:attendance"))
+
+        log = AttendanceLog.objects.get(intern=self.intern)
+        capture = log.face_captures.get(event=AttendanceFaceCapture.Event.TIME_IN)
+        self.assertEqual(capture.face_status, AttendanceLog.FaceCheckStatus.NOT_CAPTURED)
+        self.assertIsNone(capture.encrypted_image)
+        self.assertIsNone(log.clock_in)
+
+        self.client.force_login(self.company_user)
+        queue = self.client.get(reverse("portal:company_dtr_queue"))
+        self.assertEqual(queue.status_code, 200)
+        approved = self.client.post(
+            reverse("portal:review_attendance_face_capture", args=(capture.pk,)),
+            {"action": "approve"},
+        )
+        self.assertRedirects(approved, reverse("portal:company_dtr_queue"))
+
+        log.refresh_from_db()
+        capture.refresh_from_db()
+        self.assertIsNotNone(log.clock_in)
+        self.assertTrue(log.time_in_approved)
+        self.assertEqual(capture.review_status, AttendanceFaceCapture.ReviewStatus.APPROVED)
+
     def test_attendance_page_explains_required_face_verification(self):
         self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
         self.client.force_login(self.intern_user)
