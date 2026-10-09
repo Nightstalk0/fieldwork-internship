@@ -11,7 +11,7 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Avg, Count, Prefetch, Q
-from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequest
+from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -171,7 +171,7 @@ def _coordinates(request, prefix):
     return latitude_value, longitude_value
 
 
-def _attendance_face_check(request, intern):
+def _attendance_face_check(request, intern, *, retain_image=True):
     image_data = request.POST.get("face_image", "").strip()
     if not image_data:
         return AttendanceLog.FaceCheckStatus.NOT_CAPTURED, None, None
@@ -188,11 +188,13 @@ def _attendance_face_check(request, intern):
     if enrollment.consent_text_version != FACE_CONSENT_VERSION:
         return AttendanceLog.FaceCheckStatus.CONSENT_REQUIRED, None, None
 
-    try:
-        encrypted_image = encrypt_face_capture(encode_camera_image(image))
-    except (FaceCaptureError, FaceModelError):
-        LOGGER.exception("Could not retain face capture for intern %s.", intern.pk)
-        return AttendanceLog.FaceCheckStatus.ERROR, None, None
+    encrypted_image = None
+    if retain_image:
+        try:
+            encrypted_image = encrypt_face_capture(encode_camera_image(image))
+        except (FaceCaptureError, FaceModelError):
+            LOGGER.exception("Could not retain face capture for intern %s.", intern.pk)
+            return AttendanceLog.FaceCheckStatus.ERROR, None, None
 
     try:
         result = compare_face_embedding(image, enrollment.encrypted_embedding)
@@ -204,6 +206,70 @@ def _attendance_face_check(request, intern):
         return AttendanceLog.FaceCheckStatus.ERROR, None, encrypted_image
 
     return result["status"], result["similarity"], encrypted_image
+
+
+def _face_check_feedback(face_status):
+    if face_status == AttendanceLog.FaceCheckStatus.MATCHED:
+        return {
+            "quality": "good",
+            "label": "Good — face match candidate",
+            "message": "One face was detected and it matches the enrolled reference. You can submit it for company/admin approval.",
+        }
+    if face_status == AttendanceLog.FaceCheckStatus.NOT_MATCHED:
+        return {
+            "quality": "needs_review",
+            "label": "Needs review — face detected",
+            "message": "A face was detected, but the system could not confirm a match. Retake the frame or submit it for company/admin review.",
+        }
+    messages_by_status = {
+        AttendanceLog.FaceCheckStatus.NOT_CAPTURED: "No camera frame was captured.",
+        AttendanceLog.FaceCheckStatus.NOT_ENROLLED: "There is no enrolled face reference for your account.",
+        AttendanceLog.FaceCheckStatus.CONSENT_REQUIRED: "Your face enrollment needs to be updated before face matching can run.",
+        AttendanceLog.FaceCheckStatus.UNAVAILABLE: "The frame did not contain exactly one alignable face.",
+        AttendanceLog.FaceCheckStatus.ERROR: "The camera frame or face-recognition service could not be processed.",
+    }
+    return {
+        "quality": "poor",
+        "label": "Poor capture — retake recommended",
+        "message": messages_by_status.get(
+            face_status,
+            "The face could not be checked. Retake the frame or submit it as an exception for company/admin review.",
+        ),
+    }
+
+
+@role_required(User.Role.INTERN)
+@require_POST
+def attendance_face_preview(request):
+    action = request.POST.get("action")
+    if action not in {"clock_in", "clock_out"}:
+        return HttpResponseBadRequest("Unknown attendance action.")
+
+    intern = get_object_or_404(InternProfile, user=request.user)
+    today = timezone.localdate()
+    log = AttendanceLog.objects.filter(intern=intern, work_date=today).first()
+    if action == "clock_in" and not baseline_ojt_requirements_approved(intern):
+        return JsonResponse({"error": "Your required OJT documents must be approved before time-in."}, status=400)
+    if action == "clock_out" and (
+        not log or not log.clock_in or not log.time_in_approved
+    ):
+        return JsonResponse({"error": "Time-in must be approved before time-out."}, status=400)
+
+    event = AttendanceFaceCapture.Event.TIME_IN if action == "clock_in" else AttendanceFaceCapture.Event.TIME_OUT
+    if log and (
+        getattr(log, "clock_in" if action == "clock_in" else "clock_out")
+        or log.face_captures.filter(
+            event=event,
+            review_status=AttendanceFaceCapture.ReviewStatus.PENDING,
+        ).exists()
+    ):
+        return JsonResponse({"error": "This attendance event is already recorded or awaiting review."}, status=409)
+
+    face_status, face_score, _ = _attendance_face_check(request, intern, retain_image=False)
+    return JsonResponse({
+        **_face_check_feedback(face_status),
+        "similarity": face_score,
+    })
 
 
 @role_required(User.Role.INTERN)

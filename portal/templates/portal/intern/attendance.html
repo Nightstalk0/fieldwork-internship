@@ -18,11 +18,30 @@
 {% endif %}
 <section class="panel">
   <h2>Face verification required</h2>
-  <p class="muted">A successful match against your enrolled face is required for time-in and time-out. If capture or verification fails, attendance is not recorded unless a company/admin reviews and approves the exception. Submitted camera images are encrypted and retained for up to 30 days for authorized company/admin review. Face matching is not liveness detection.</p>
+  <p class="muted">Click Time in or Time out to open the camera. Fit your face inside the guide, then capture it. You can retake a poor or uncertain frame, or submit it for company/admin review. Every submitted time event waits for company/admin approval. Submitted camera images are encrypted and retained for up to 30 days. Face matching is not liveness detection.</p>
   <div class="clock-actions">
-    <span id="camera-status" class="muted" aria-live="polite">Click Time in or Time out to start face verification.</span>
+    <span id="camera-status" class="muted" aria-live="polite">Camera starts when you choose Time in or Time out.</span>
   </div>
-  <video id="camera-preview" aria-label="Camera preview" autoplay muted playsinline width="480" height="360" style="max-width: 100%; height: auto;" hidden></video>
+  <div id="face-capture-panel" hidden>
+    <div class="face-camera-frame">
+      <video id="camera-preview" aria-label="Camera preview. Position your face inside the oval guide." autoplay muted playsinline></video>
+      <div class="face-guide" aria-hidden="true"><span>Fit your face in the oval</span></div>
+    </div>
+    <p id="face-capture-status" class="muted" aria-live="polite">Center your face and look toward the camera.</p>
+    <div id="face-capture-actions" class="clock-actions">
+      <button class="button button-primary" id="capture-face" type="button">Capture and check</button>
+      <button class="button button-secondary" id="cancel-face-capture" type="button">Cancel</button>
+    </div>
+    <section id="face-check-result" class="face-check-result" aria-live="polite" hidden>
+      <h3 id="face-check-label"></h3>
+      <p id="face-check-message"></p>
+      <p id="face-check-score" class="muted"></p>
+      <div class="clock-actions">
+        <button class="button button-secondary" id="retake-face" type="button">Retake face</button>
+        <button class="button button-primary" id="proceed-face" type="button">Submit for approval</button>
+      </div>
+    </section>
+  </div>
 </section>
 <section class="panel attendance-panel">
   <div>
@@ -101,12 +120,24 @@
   const locationStatus = document.getElementById("location-status");
   const cameraStatus = document.getElementById("camera-status");
   const video = document.getElementById("camera-preview");
+  const cameraPanel = document.getElementById("face-capture-panel");
+  const captureActions = document.getElementById("face-capture-actions");
+  const captureStatus = document.getElementById("face-capture-status");
+  const checkResult = document.getElementById("face-check-result");
+  const checkLabel = document.getElementById("face-check-label");
+  const checkMessage = document.getElementById("face-check-message");
+  const checkScore = document.getElementById("face-check-score");
+  const captureButton = document.getElementById("capture-face");
+  const proceedButton = document.getElementById("proceed-face");
   let cameraStream = null;
+  let currentForm = null;
+  let pendingFaceImage = "";
+  let attendanceSubmitting = false;
 
-  const captureCurrentFrame = async () => {
+  const startCamera = async () => {
     cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
-    video.srcObject = cameraStream;
     video.hidden = false;
+    video.srcObject = cameraStream;
     await video.play();
     if (!video.videoWidth || !video.videoHeight) {
       await new Promise((resolve, reject) => {
@@ -120,6 +151,15 @@
     if (!video.videoWidth || !video.videoHeight) {
       throw new Error("Camera preview did not become ready.");
     }
+  };
+
+  const stopCamera = () => {
+    cameraStream?.getTracks().forEach((track) => track.stop());
+    cameraStream = null;
+    video.srcObject = null;
+  };
+
+  const captureCurrentFrame = () => {
     const scale = Math.min(1, 1280 / video.videoWidth);
     const canvas = document.createElement("canvas");
     canvas.width = Math.round(video.videoWidth * scale);
@@ -132,59 +172,171 @@
     return canvas.toDataURL("image/jpeg", 0.82);
   };
 
-  let attendanceSubmitting = false;
-  document.querySelectorAll(".clock-form").forEach((form) => form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    if (attendanceSubmitting) return;
-    attendanceSubmitting = true;
-    const submitButton = event.submitter;
-    if (submitButton) submitButton.disabled = true;
-    form.elements.notes.value = noteInput.value;
+  const showCaptureStage = () => {
+    pendingFaceImage = "";
+    checkResult.hidden = true;
+    captureActions.hidden = false;
+    captureButton.disabled = false;
+    video.hidden = false;
+    proceedButton.textContent = "Submit without a face image";
+    cameraPanel.hidden = false;
+    captureStatus.textContent = "Center your face inside the oval, then capture.";
+  };
 
-    const submitAttendance = (faceImage) => {
-      form.querySelector("[name='face_image']").value = faceImage;
-      cameraStream?.getTracks().forEach((track) => track.stop());
-      cameraStream = null;
-      localStorage.removeItem(noteKey);
-      form.submit();
-    };
+  const showCheckResult = (result) => {
+    checkResult.className = `face-check-result face-check-${result.quality}`;
+    checkLabel.textContent = result.label;
+    checkMessage.textContent = result.message;
+    checkScore.textContent = result.similarity === null || result.similarity === undefined
+      ? ""
+      : `Face similarity: ${Number(result.similarity).toFixed(3)}. The company/admin makes the approval decision.`;
+    captureActions.hidden = true;
+    checkResult.hidden = false;
+    proceedButton.textContent = "Submit for approval";
+  };
 
-    const captureAndSubmit = async () => {
-      let faceImage = "";
-      try {
-        cameraStatus.textContent = "Starting camera and verifying your face…";
-        faceImage = await captureCurrentFrame();
-        cameraStatus.textContent = "Face frame captured. Submitting it for verification…";
-      } catch {
-        cameraStatus.textContent = "Camera unavailable or permission denied.";
-        if (!window.confirm("Could not capture a face. Submit this as a pending request for company/admin approval? Attendance will not be recorded automatically.")) {
-          attendanceSubmitting = false;
-          if (submitButton) submitButton.disabled = false;
-          cameraStatus.textContent = "No attendance request was submitted.";
-          return;
-        }
-      }
-
-      const submitWithLocation = () => submitAttendance(faceImage);
-      if (!navigator.geolocation) {
-        locationStatus.textContent = "Location unavailable; continuing.";
-        submitWithLocation();
+  const checkCapturedFrame = async (faceImage) => {
+    const body = new FormData(currentForm);
+    body.set("face_image", faceImage);
+    captureStatus.textContent = "Checking the face. Please wait…";
+    captureButton.disabled = true;
+    try {
+      const response = await fetch("{% url 'portal:attendance_face_preview' %}", {
+        method: "POST",
+        body,
+        credentials: "same-origin",
+        headers: { "X-Requested-With": "XMLHttpRequest" },
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        showCheckResult({
+          quality: "poor",
+          label: "Unable to check this capture",
+          message: result.error || "The face-check request failed. Retake the frame or submit it for review.",
+          similarity: null,
+        });
         return;
       }
-      locationStatus.textContent = "Requesting optional location…";
-      navigator.geolocation.getCurrentPosition((position) => {
-        form.elements[`${form.dataset.action}_latitude`].value = position.coords.latitude.toFixed(6);
-        form.elements[`${form.dataset.action}_longitude`].value = position.coords.longitude.toFixed(6);
-        locationStatus.textContent = "Location attached.";
-        submitWithLocation();
-      }, () => {
-        locationStatus.textContent = "Location not shared; continuing.";
-        submitWithLocation();
-      }, { enableHighAccuracy: true, timeout: 3000, maximumAge: 60000 });
+      pendingFaceImage = faceImage;
+      showCheckResult(result);
+    } catch {
+      pendingFaceImage = faceImage;
+      showCheckResult({
+        quality: "poor",
+        label: "Face check unavailable",
+        message: "The system could not check this frame right now. Retake it or submit it as an exception for company/admin review.",
+        similarity: null,
+      });
+    }
+  };
+
+  const submitAttendance = (faceImage) => {
+    attendanceSubmitting = true;
+    currentForm.querySelector("[name='face_image']").value = faceImage;
+    currentForm.elements.notes.value = noteInput.value;
+    const finishSubmission = () => {
+      stopCamera();
+      localStorage.removeItem(noteKey);
+      currentForm.submit();
     };
-    captureAndSubmit();
+    if (!navigator.geolocation) {
+      locationStatus.textContent = "Location unavailable; continuing.";
+      finishSubmission();
+      return;
+    }
+    locationStatus.textContent = "Requesting optional location…";
+    navigator.geolocation.getCurrentPosition((position) => {
+      currentForm.elements[`${currentForm.dataset.action}_latitude`].value = position.coords.latitude.toFixed(6);
+      currentForm.elements[`${currentForm.dataset.action}_longitude`].value = position.coords.longitude.toFixed(6);
+      locationStatus.textContent = "Location attached.";
+      finishSubmission();
+    }, () => {
+      locationStatus.textContent = "Location not shared; continuing.";
+      finishSubmission();
+    }, { enableHighAccuracy: true, timeout: 3000, maximumAge: 60000 });
+  };
+
+  document.querySelectorAll(".clock-form").forEach((form) => form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (attendanceSubmitting || currentForm) return;
+    currentForm = form;
+    cameraStatus.textContent = `Starting camera for ${form.dataset.action.replace("_", " ")}…`;
+    showCaptureStage();
+    startCamera().then(() => {
+      captureStatus.textContent = "Camera ready. Center your face inside the oval, then capture.";
+    }).catch(() => {
+      stopCamera();
+      video.hidden = true;
+      captureStatus.textContent = "Camera unavailable or permission denied. You may submit an exception for company/admin review, or cancel and try again.";
+      captureActions.hidden = true;
+      showCheckResult({
+        quality: "poor",
+        label: "Poor capture — no camera frame",
+        message: "Allow camera access and retake, or submit without an image for company/admin review.",
+        similarity: null,
+      });
+    });
   }));
 
-  window.addEventListener("pagehide", () => cameraStream?.getTracks().forEach((track) => track.stop()));
+  captureButton.addEventListener("click", () => {
+    if (!video.videoWidth || !video.videoHeight) {
+      captureStatus.textContent = "Wait for the camera preview, then try again.";
+      return;
+    }
+    try {
+      const faceImage = captureCurrentFrame();
+      video.pause();
+      checkCapturedFrame(faceImage);
+    } catch {
+      captureStatus.textContent = "Could not capture this frame. Retake or submit without an image for review.";
+      showCheckResult({
+        quality: "poor",
+        label: "Poor capture — frame unavailable",
+        message: "Try capturing again, or submit without an image for company/admin review.",
+        similarity: null,
+      });
+    }
+  });
+
+  document.getElementById("retake-face").addEventListener("click", async () => {
+    checkResult.hidden = true;
+    pendingFaceImage = "";
+    try {
+      if (!cameraStream) {
+        await startCamera();
+      } else {
+        await video.play();
+      }
+    } catch {
+      stopCamera();
+      captureStatus.textContent = "Camera unavailable. Allow camera access in your browser and try again.";
+      showCheckResult({
+        quality: "poor",
+        label: "Poor capture — camera unavailable",
+        message: "Allow camera access to retake, or submit without an image for company/admin review.",
+        similarity: null,
+      });
+      return;
+    }
+    captureActions.hidden = false;
+    captureButton.disabled = false;
+    captureStatus.textContent = "Center your face inside the oval and capture again.";
+  });
+
+  proceedButton.addEventListener("click", () => {
+    if (!currentForm || attendanceSubmitting) return;
+    cameraStatus.textContent = "Submitting your attendance for company/admin approval…";
+    submitAttendance(pendingFaceImage);
+  });
+
+  document.getElementById("cancel-face-capture").addEventListener("click", () => {
+    stopCamera();
+    currentForm = null;
+    pendingFaceImage = "";
+    cameraPanel.hidden = true;
+    cameraStatus.textContent = "Capture cancelled. Click Time in or Time out to try again.";
+  });
+
+  window.addEventListener("pagehide", stopCamera);
 </script>
 {% endblock %}

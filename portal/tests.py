@@ -446,6 +446,57 @@ class PortalWorkflowTests(TestCase):
         self.assertRedirects(allowed_response, reverse("portal:attendance"))
         self.assertTrue(AttendanceLog.objects.filter(intern=self.intern).exists())
 
+    def test_attendance_face_preview_classifies_capture_without_recording_attendance(self):
+        self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
+        self.client.force_login(self.intern_user)
+        cases = (
+            (AttendanceLog.FaceCheckStatus.MATCHED, "good"),
+            (AttendanceLog.FaceCheckStatus.NOT_MATCHED, "needs_review"),
+            (AttendanceLog.FaceCheckStatus.UNAVAILABLE, "poor"),
+        )
+
+        for face_status, expected_quality in cases:
+            with self.subTest(face_status=face_status), patch(
+                "portal.views._attendance_face_check",
+                return_value=(face_status, 0.81, b"unused preview image"),
+            ) as face_check:
+                response = self.client.post(
+                    reverse("portal:attendance_face_preview"),
+                    {"action": "clock_in", "face_image": self._camera_data_url()},
+                )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["quality"], expected_quality)
+                self.assertIn("label", response.json())
+                self.assertIn("message", response.json())
+                self.assertEqual(response.json()["similarity"], 0.81)
+                face_check.assert_called_once()
+                self.assertFalse(face_check.call_args.kwargs["retain_image"])
+
+        self.assertFalse(AttendanceLog.objects.filter(intern=self.intern).exists())
+
+    def test_company_cannot_use_intern_face_preview_endpoint(self):
+        self.client.force_login(self.company_user)
+
+        response = self.client.post(
+            reverse("portal:attendance_face_preview"),
+            {"action": "clock_in", "face_image": self._camera_data_url()},
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_attendance_page_has_face_guide_and_capture_decision_controls(self):
+        self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
+        self.client.force_login(self.intern_user)
+
+        response = self.client.get(reverse("portal:attendance"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "face-guide")
+        self.assertContains(response, "Capture and check")
+        self.assertContains(response, "Retake face")
+        self.assertContains(response, "Submit for approval")
+
     def test_face_mismatch_does_not_record_attendance_and_creates_review_request(self):
         self.intern.ojt_requirements.filter(is_required=True).update(status=OJTRequirement.Status.APPROVED)
         self.client.force_login(self.intern_user)
@@ -507,11 +558,11 @@ class PortalWorkflowTests(TestCase):
         response = self.client.get(reverse("portal:attendance"))
 
         self.assertContains(response, "Face verification required")
-        self.assertContains(response, "successful match")
         self.assertContains(response, "retained for up to 30 days")
-        self.assertContains(response, "Click Time in or Time out to start face verification.")
+        self.assertContains(response, "Camera starts when you choose Time in or Time out.")
         self.assertNotContains(response, "Start camera")
         self.assertNotContains(response, "Capture face for attendance")
+        self.assertContains(response, "Capture and check")
         self.assertContains(response, 'name="face_image"')
 
     def test_successful_face_match_waits_for_approval_before_each_clock_event(self):
