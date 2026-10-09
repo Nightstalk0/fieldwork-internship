@@ -20,9 +20,7 @@
   <h2>Face verification required</h2>
   <p class="muted">A successful match against your enrolled face is required for time-in and time-out. If capture or verification fails, attendance is not recorded unless a company/admin reviews and approves the exception. Submitted camera images are encrypted and retained for up to 30 days for authorized company/admin review. Face matching is not liveness detection.</p>
   <div class="clock-actions">
-    <button class="button button-secondary" id="start-camera" type="button">Start camera</button>
-    <button class="button button-secondary" id="capture-face" type="button" disabled>Capture face for attendance</button>
-    <span id="camera-status" class="muted" aria-live="polite">Capture a face frame before submitting time-in/time-out.</span>
+    <span id="camera-status" class="muted" aria-live="polite">Click Time in or Time out to start face verification.</span>
   </div>
   <video id="camera-preview" aria-label="Camera preview" autoplay muted playsinline width="480" height="360" style="max-width: 100%; height: auto;" hidden></video>
 </section>
@@ -103,66 +101,88 @@
   const locationStatus = document.getElementById("location-status");
   const cameraStatus = document.getElementById("camera-status");
   const video = document.getElementById("camera-preview");
-  const captureButton = document.getElementById("capture-face");
   let cameraStream = null;
 
-  document.getElementById("start-camera").addEventListener("click", async () => {
-    try {
-      cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
-      video.srcObject = cameraStream;
-      video.hidden = false;
-      captureButton.disabled = false;
-      cameraStatus.textContent = "Camera ready. Capture a face frame before submitting attendance.";
-    } catch {
-      cameraStatus.textContent = "Camera unavailable or permission denied. You may submit an exception for company/admin review; attendance will not be recorded automatically.";
-    }
-  });
-
-  captureButton.addEventListener("click", () => {
+  const captureCurrentFrame = async () => {
+    cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+    video.srcObject = cameraStream;
+    video.hidden = false;
+    await video.play();
     if (!video.videoWidth || !video.videoHeight) {
-      cameraStatus.textContent = "The camera is not ready yet.";
-      return;
+      await new Promise((resolve, reject) => {
+        const timeout = window.setTimeout(() => reject(new Error("Camera preview did not become ready.")), 5000);
+        video.addEventListener("loadeddata", () => {
+          window.clearTimeout(timeout);
+          resolve();
+        }, { once: true });
+      });
+    }
+    if (!video.videoWidth || !video.videoHeight) {
+      throw new Error("Camera preview did not become ready.");
     }
     const scale = Math.min(1, 1280 / video.videoWidth);
     const canvas = document.createElement("canvas");
     canvas.width = Math.round(video.videoWidth * scale);
     canvas.height = Math.round(video.videoHeight * scale);
-    canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-    const faceImage = document.querySelector(".clock-form [name='face_image']");
-    if (!faceImage) {
-      cameraStatus.textContent = "No attendance entry is currently available.";
-      return;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("Could not prepare the camera frame.");
     }
-    faceImage.value = canvas.toDataURL("image/jpeg", 0.82);
-    cameraStatus.textContent = "Frame captured. It will be encrypted and available to authorized company/admin reviewers for up to 30 days.";
-  });
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.82);
+  };
 
+  let attendanceSubmitting = false;
   document.querySelectorAll(".clock-form").forEach((form) => form.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (attendanceSubmitting) return;
+    attendanceSubmitting = true;
+    const submitButton = event.submitter;
+    if (submitButton) submitButton.disabled = true;
     form.elements.notes.value = noteInput.value;
-    const faceImage = form.querySelector("[name='face_image']");
-    if (!faceImage.value && !window.confirm("No camera image is attached. Submit this as an attendance exception for company/admin review? This will not record attendance automatically.")) {
-      return;
-    }
-    const submitAttendance = () => {
+
+    const submitAttendance = (faceImage) => {
+      form.querySelector("[name='face_image']").value = faceImage;
+      cameraStream?.getTracks().forEach((track) => track.stop());
+      cameraStream = null;
       localStorage.removeItem(noteKey);
       form.submit();
     };
-    if (!navigator.geolocation) {
-      locationStatus.textContent = "Location unavailable; continuing.";
-      submitAttendance();
-      return;
-    }
-    locationStatus.textContent = "Requesting optional location…";
-    navigator.geolocation.getCurrentPosition((position) => {
-      form.elements[`${form.dataset.action}_latitude`].value = position.coords.latitude.toFixed(6);
-      form.elements[`${form.dataset.action}_longitude`].value = position.coords.longitude.toFixed(6);
-      locationStatus.textContent = "Location attached.";
-      submitAttendance();
-    }, () => {
-      locationStatus.textContent = "Location not shared; continuing.";
-      submitAttendance();
-    }, { enableHighAccuracy: true, timeout: 3000, maximumAge: 60000 });
+
+    const captureAndSubmit = async () => {
+      let faceImage = "";
+      try {
+        cameraStatus.textContent = "Starting camera and verifying your face…";
+        faceImage = await captureCurrentFrame();
+        cameraStatus.textContent = "Face frame captured. Submitting it for verification…";
+      } catch {
+        cameraStatus.textContent = "Camera unavailable or permission denied.";
+        if (!window.confirm("Could not capture a face. Submit this as a pending request for company/admin approval? Attendance will not be recorded automatically.")) {
+          attendanceSubmitting = false;
+          if (submitButton) submitButton.disabled = false;
+          cameraStatus.textContent = "No attendance request was submitted.";
+          return;
+        }
+      }
+
+      const submitWithLocation = () => submitAttendance(faceImage);
+      if (!navigator.geolocation) {
+        locationStatus.textContent = "Location unavailable; continuing.";
+        submitWithLocation();
+        return;
+      }
+      locationStatus.textContent = "Requesting optional location…";
+      navigator.geolocation.getCurrentPosition((position) => {
+        form.elements[`${form.dataset.action}_latitude`].value = position.coords.latitude.toFixed(6);
+        form.elements[`${form.dataset.action}_longitude`].value = position.coords.longitude.toFixed(6);
+        locationStatus.textContent = "Location attached.";
+        submitWithLocation();
+      }, () => {
+        locationStatus.textContent = "Location not shared; continuing.";
+        submitWithLocation();
+      }, { enableHighAccuracy: true, timeout: 3000, maximumAge: 60000 });
+    };
+    captureAndSubmit();
   }));
 
   window.addEventListener("pagehide", () => cameraStream?.getTracks().forEach((track) => track.stop()));

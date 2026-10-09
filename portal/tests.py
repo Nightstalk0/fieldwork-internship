@@ -509,6 +509,9 @@ class PortalWorkflowTests(TestCase):
         self.assertContains(response, "Face verification required")
         self.assertContains(response, "successful match")
         self.assertContains(response, "retained for up to 30 days")
+        self.assertContains(response, "Click Time in or Time out to start face verification.")
+        self.assertNotContains(response, "Start camera")
+        self.assertNotContains(response, "Capture face for attendance")
         self.assertContains(response, 'name="face_image"')
 
     def test_successful_face_match_waits_for_approval_before_each_clock_event(self):
