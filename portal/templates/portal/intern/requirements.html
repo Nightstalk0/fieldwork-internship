@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}OJT requirements | Fieldwork{% endblock %}
 {% block content %}
-<div class="page-heading"><div><p class="eyebrow">INTERN WORKSPACE</p><h1>OJT requirements</h1><p class="muted">After completing your profile and face enrollment, upload your credentials here for admin/coordinator approval.</p></div></div>
+<div class="page-heading"><div><p class="eyebrow">INTERN WORKSPACE</p><h1>OJT requirements</h1><p class="muted">Start by uploading your required credentials for admin/coordinator approval. You can complete your profile and face enrollment later from <a href="{% url 'portal:profile' %}">Profile</a>.</p></div></div>
 {% if ojt_ready %}<section class="panel requirement-notice requirement-notice-good"><strong>Baseline documents approved</strong><p>You are cleared to start recording attendance. If your Fieldwork company has additional requirements, submit those separately; they do not affect baseline clearance.</p><a href="{% url 'portal:attendance' %}">Open attendance</a></section>{% else %}<section class="panel requirement-notice"><strong>{{ approved_required_count }} of {{ required_count }} baseline documents approved</strong><p>Required school/academic and baseline legal/health credentials are reviewed by the admin/coordinator. They must be approved before attendance and other internship activities are available. Company-specific requirements are assigned separately after a company accepts your application.</p></section>{% endif %}
 <section class="requirement-list" aria-label="OJT document checklist">
 {% for item in requirement_rows %}

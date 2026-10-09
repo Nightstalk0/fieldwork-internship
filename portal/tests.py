@@ -174,10 +174,7 @@ class PortalWorkflowTests(TestCase):
         self.assertFalse(self.intern.university)
         self.assertFalse(self.intern.course)
         self.assertIsNone(self.intern.year_level)
-        self.assertRedirects(
-            self.client.get(reverse("portal:ojt_requirements")),
-            profile_url,
-        )
+        self.assertEqual(self.client.get(reverse("portal:ojt_requirements")).status_code, 200)
 
     def test_intern_can_save_complete_profile_from_profile_page(self):
         self.client.force_login(self.intern_user)
@@ -199,7 +196,7 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(self.intern.course, "Information Technology")
         self.assertEqual(self.intern.year_level, 3)
 
-    def test_incomplete_whitespace_profile_cannot_bypass_requirements_gate(self):
+    def test_incomplete_whitespace_profile_does_not_block_requirements(self):
         self.intern.student_id = " "
         self.intern.university = " "
         self.intern.course = " "
@@ -216,7 +213,7 @@ class PortalWorkflowTests(TestCase):
 
         response = self.client.get(reverse("portal:ojt_requirements"))
 
-        self.assertRedirects(response, reverse("portal:profile"))
+        self.assertEqual(response.status_code, 200)
 
     def test_coordinator_dashboard_shows_external_host_and_approved_progress(self):
         self.intern.placement_type = InternProfile.PlacementType.EXTERNAL
@@ -573,6 +570,22 @@ class PortalWorkflowTests(TestCase):
 
         self.assertFalse(AttendanceLog.objects.filter(intern=self.intern).exists())
 
+    def test_attendance_face_preview_does_not_require_profile_or_enrollment(self):
+        self.intern.ojt_requirements.filter(
+            is_required=True,
+            company__isnull=True,
+        ).update(status=OJTRequirement.Status.APPROVED)
+        self.client.force_login(self.intern_user)
+
+        response = self.client.post(
+            reverse("portal:attendance_face_preview"),
+            {"action": "clock_in", "face_image": self._camera_data_url()},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["quality"], "poor")
+        self.assertIsNone(response.json()["similarity"])
+
     def test_attendance_face_preview_returns_json_for_invalid_action(self):
         self._complete_intern_profile(approve_requirements=True)
         self.client.force_login(self.intern_user)
@@ -662,20 +675,21 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(response.json(), {"face_count": 1, "face_detected": True})
         detector.assert_called_once()
 
-    def test_face_capture_api_requires_saved_profile_and_returns_json(self):
+    def test_face_detection_api_works_before_profile_setup(self):
         self.client.force_login(self.intern_user)
 
-        response = self.client.post(
-            reverse("portal:face_detection_preview"),
-            {"face_image": self._camera_data_url()},
-            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
-        )
+        with patch(
+            "portal.views.detect_faces",
+            return_value={"face_detected": True, "face_count": 1, "detections": []},
+        ):
+            response = self.client.post(
+                reverse("portal:face_detection_preview"),
+                {"face_image": self._camera_data_url()},
+                HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+            )
 
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(
-            response.json(),
-            {"error": "Complete and save your intern profile before face capture."},
-        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"face_count": 1, "face_detected": True})
 
     def test_face_capture_api_reports_expired_session_as_json(self):
         response = self.client.post(
@@ -686,31 +700,13 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json(), {"error": "Your session expired. Sign in again and retry."})
 
-    def test_intern_onboarding_requires_profile_and_face_before_requirements(self):
+    def test_intern_can_start_with_requirements_and_only_approval_gates_activities(self):
         self.client.force_login(self.intern_user)
 
         dashboard = self.client.get(reverse("portal:intern_dashboard"))
-        self.assertRedirects(dashboard, reverse("portal:profile"))
+        self.assertRedirects(dashboard, reverse("portal:ojt_requirements"))
         requirements = self.client.get(reverse("portal:ojt_requirements"))
-        self.assertRedirects(requirements, reverse("portal:profile"))
-
-        self.intern.student_id = "STUDENT-101"
-        self.intern.university = "Example University"
-        self.intern.course = "Information Technology"
-        self.intern.year_level = 3
-        self.intern.save()
-        profile_complete_but_not_enrolled = self.client.get(reverse("portal:ojt_requirements"))
-        self.assertRedirects(profile_complete_but_not_enrolled, reverse("portal:profile"))
-
-        FaceEnrollment.objects.create(
-            intern=self.intern,
-            encrypted_embedding=b"encrypted-test-embedding",
-            enrolled_by=self.intern_user,
-            consent_confirmed_at=timezone.now(),
-            consent_text_version=FACE_CONSENT_VERSION,
-        )
-        requirements_after_profile = self.client.get(reverse("portal:ojt_requirements"))
-        self.assertEqual(requirements_after_profile.status_code, 200)
+        self.assertEqual(requirements.status_code, 200)
 
         attendance_before_approval = self.client.get(reverse("portal:attendance"))
         self.assertRedirects(attendance_before_approval, reverse("portal:ojt_requirements"))
@@ -720,6 +716,8 @@ class PortalWorkflowTests(TestCase):
         ).update(status=OJTRequirement.Status.APPROVED)
         dashboard_after_approval = self.client.get(reverse("portal:intern_dashboard"))
         self.assertEqual(dashboard_after_approval.status_code, 200)
+        attendance_after_approval = self.client.get(reverse("portal:attendance"))
+        self.assertEqual(attendance_after_approval.status_code, 200)
 
     def test_attendance_page_has_face_guide_and_capture_decision_controls(self):
         self._complete_intern_profile(approve_requirements=True)

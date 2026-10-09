@@ -12,10 +12,10 @@
   <p class="muted">Your enrollment uses an older consent version. Recapture below and confirm the current consent before your face can be checked.</p>
   {% else %}
   <p class="status">Not enrolled</p>
-  <p class="muted">Enroll before using face recognition for attendance. Only an encrypted face template is saved; this enrollment photo is processed in memory and discarded.</p>
+  <p class="muted">Face enrollment is optional during onboarding and can be completed later. Attendance still requires approved OJT documents; without an enrollment, face matching will be unavailable and your capture will need reviewer attention. Only an encrypted face template is saved; this enrollment photo is processed in memory and discarded.</p>
   {% endif %}
   {% if not profile_details_complete %}
-  <p class="requirement-notice">Complete and save the required profile details above before starting face enrollment.</p>
+  <p class="requirement-notice">Complete and save the required profile details above before starting face enrollment. You can skip profile setup for now and submit your OJT requirements first.</p>
   {% endif %}
   <p class="muted">Attendance captures you submit are encrypted, can be viewed by authorized company/admin reviewers, and are deleted after 30 days. Face matching is not liveness detection.</p>
   <div class="face-camera-frame face-enrollment-frame">
@@ -43,10 +43,10 @@
   </form>
   {% if profile_details_complete and face_enrollment_current %}
   <p class="form-footnote">Profile and face enrollment are complete.</p>
-  <a class="button button-primary" href="{% url 'portal:ojt_requirements' %}">Continue to requirements</a>
   {% else %}
-  <p class="form-footnote">Complete and save the required profile details and a good face enrollment to continue to OJT requirements.</p>
+  <p class="form-footnote">You can finish profile setup and face enrollment later.</p>
   {% endif %}
+  <a class="button button-primary" href="{% url 'portal:ojt_requirements' %}">Go to OJT requirements</a>
 </section>
 {% endblock %}
 {% block scripts %}<script>

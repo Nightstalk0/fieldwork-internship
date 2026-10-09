@@ -84,9 +84,6 @@ def intern_onboarding_required(*, requirements_approved=False):
         @wraps(view)
         def wrapped(request, *args, **kwargs):
             intern = get_object_or_404(InternProfile, user=request.user)
-            if not intern_profile_is_complete(intern):
-                messages.info(request, "Complete your intern profile and face enrollment before continuing.")
-                return redirect("portal:profile")
             if requirements_approved and not baseline_ojt_requirements_approved(intern):
                 messages.info(request, "Submit your required documents and wait for coordinator approval before continuing.")
                 return redirect("portal:ojt_requirements")
@@ -100,7 +97,6 @@ def intern_onboarding_required(*, requirements_approved=False):
 def intern_api_required(
     *,
     require_profile=False,
-    require_face_enrollment=False,
     requirements_approved=False,
 ):
     def decorate(view):
@@ -118,8 +114,6 @@ def intern_api_required(
                 return JsonResponse({"error": "Complete your intern profile before face capture."}, status=404)
             if require_profile and not intern_profile_details_complete(intern):
                 return JsonResponse({"error": "Complete and save your intern profile before face capture."}, status=409)
-            if require_face_enrollment and not intern_profile_is_complete(intern):
-                return JsonResponse({"error": "Enroll or update your face from Profile before attendance."}, status=409)
             if requirements_approved and not baseline_ojt_requirements_approved(intern):
                 return JsonResponse({"error": "Wait for approval of your required OJT documents before attendance."}, status=409)
             return view(request, *args, **kwargs)
@@ -364,7 +358,7 @@ def _face_check_feedback(face_status):
     }
 
 
-@intern_api_required(require_profile=True, require_face_enrollment=True, requirements_approved=True)
+@intern_api_required(requirements_approved=True)
 def attendance_face_preview(request):
     action = request.POST.get("action")
     if action not in {"clock_in", "clock_out"}:
@@ -397,7 +391,7 @@ def attendance_face_preview(request):
     })
 
 
-@intern_api_required(require_profile=True)
+@intern_api_required()
 def face_detection_preview(request):
     try:
         image = decode_camera_image(request.POST.get("face_image", ""))

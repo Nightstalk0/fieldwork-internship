@@ -132,6 +132,23 @@ CAPTCHA_ENABLED = os.getenv("CAPTCHA_ENABLED", "false").lower() in {"1", "true",
 FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
 DATA_UPLOAD_MAX_MEMORY_SIZE = 12 * 1024 * 1024
 
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+        },
+    },
+    "loggers": {
+        "django.request": {
+            "handlers": ["console"],
+            "level": "ERROR",
+            "propagate": False,
+        },
+    },
+}
+
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SECURE_SSL_REDIRECT = not DEBUG
 SESSION_COOKIE_SECURE = not DEBUG
