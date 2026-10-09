@@ -179,6 +179,26 @@ class PortalWorkflowTests(TestCase):
             profile_url,
         )
 
+    def test_intern_can_save_complete_profile_from_profile_page(self):
+        self.client.force_login(self.intern_user)
+
+        response = self.client.post(reverse("portal:profile"), {
+            "student_id": "TEST-STUDENT-SAVE",
+            "university": "Example University",
+            "course": "Information Technology",
+            "year_level": 3,
+            "placement_type": InternProfile.PlacementType.PLATFORM,
+            "external_host": "",
+            "bio": "",
+        })
+
+        self.assertRedirects(response, reverse("portal:profile"))
+        self.intern.refresh_from_db()
+        self.assertEqual(self.intern.student_id, "TEST-STUDENT-SAVE")
+        self.assertEqual(self.intern.university, "Example University")
+        self.assertEqual(self.intern.course, "Information Technology")
+        self.assertEqual(self.intern.year_level, 3)
+
     def test_incomplete_whitespace_profile_cannot_bypass_requirements_gate(self):
         self.intern.student_id = " "
         self.intern.university = " "
