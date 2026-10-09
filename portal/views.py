@@ -96,6 +96,38 @@ def intern_onboarding_required(*, requirements_approved=False):
     return decorate
 
 
+def intern_api_required(
+    *,
+    require_profile=False,
+    require_face_enrollment=False,
+    requirements_approved=False,
+):
+    def decorate(view):
+        @wraps(view)
+        @require_POST
+        def wrapped(request, *args, **kwargs):
+            if not request.user.is_authenticated:
+                return JsonResponse({"error": "Your session expired. Sign in again and retry."}, status=401)
+            if request.user.is_staff or request.user.role != User.Role.INTERN:
+                return JsonResponse({"error": "Only interns can use face capture."}, status=403)
+
+            try:
+                intern = InternProfile.objects.get(user=request.user)
+            except InternProfile.DoesNotExist:
+                return JsonResponse({"error": "Complete your intern profile before face capture."}, status=404)
+            if require_profile and not intern_profile_details_complete(intern):
+                return JsonResponse({"error": "Complete and save your intern profile before face capture."}, status=409)
+            if require_face_enrollment and not intern_profile_is_complete(intern):
+                return JsonResponse({"error": "Enroll or update your face from Profile before attendance."}, status=409)
+            if requirements_approved and not baseline_ojt_requirements_approved(intern):
+                return JsonResponse({"error": "Wait for approval of your required OJT documents before attendance."}, status=409)
+            return view(request, *args, **kwargs)
+
+        return wrapped
+
+    return decorate
+
+
 def dashboard(request):
     if not request.user.is_authenticated:
         return redirect("accounts:login")
@@ -160,6 +192,9 @@ def profile(request):
 @require_POST
 def intern_face_enrollment(request):
     intern = get_object_or_404(InternProfile, user=request.user)
+    if not intern_profile_details_complete(intern):
+        messages.error(request, "Save your required profile details before enrolling your face.")
+        return redirect("portal:profile")
     if request.POST.get("consent_confirmed") != "on":
         messages.error(request, "Confirm your informed consent before enrolling your face.")
         return redirect("portal:profile")
@@ -320,15 +355,13 @@ def _face_check_feedback(face_status):
     }
 
 
-@role_required(User.Role.INTERN)
-@intern_onboarding_required(requirements_approved=True)
-@require_POST
+@intern_api_required(require_profile=True, require_face_enrollment=True, requirements_approved=True)
 def attendance_face_preview(request):
     action = request.POST.get("action")
     if action not in {"clock_in", "clock_out"}:
-        return HttpResponseBadRequest("Unknown attendance action.")
+        return JsonResponse({"error": "Unknown attendance action."}, status=400)
 
-    intern = get_object_or_404(InternProfile, user=request.user)
+    intern = InternProfile.objects.get(user=request.user)
     today = timezone.localdate()
     log = AttendanceLog.objects.filter(intern=intern, work_date=today).first()
     if action == "clock_in" and not baseline_ojt_requirements_approved(intern):
@@ -355,8 +388,7 @@ def attendance_face_preview(request):
     })
 
 
-@role_required(User.Role.INTERN)
-@require_POST
+@intern_api_required(require_profile=True)
 def face_detection_preview(request):
     try:
         image = decode_camera_image(request.POST.get("face_image", ""))
@@ -376,8 +408,7 @@ def face_detection_preview(request):
     })
 
 
-@role_required(User.Role.INTERN)
-@require_POST
+@intern_api_required(require_profile=True)
 def face_enrollment_preview(request):
     try:
         image = decode_camera_image(request.POST.get("face_image", ""))

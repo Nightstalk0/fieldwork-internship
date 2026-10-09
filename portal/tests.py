@@ -50,7 +50,7 @@ class PortalWorkflowTests(TestCase):
         Image.new("RGB", (100, 100), "white").save(image, format="JPEG")
         return "data:image/jpeg;base64," + base64.b64encode(image.getvalue()).decode("ascii")
 
-    def _complete_intern_profile(self, *, external=False, approve_requirements=False):
+    def _complete_intern_details(self, *, external=False):
         self.intern.student_id = "TEST-STUDENT-001"
         self.intern.university = "Example University"
         self.intern.course = "Information Technology"
@@ -60,6 +60,9 @@ class PortalWorkflowTests(TestCase):
         )
         self.intern.external_host = "External Host" if external else ""
         self.intern.save()
+
+    def _complete_intern_profile(self, *, external=False, approve_requirements=False):
+        self._complete_intern_details(external=external)
         FaceEnrollment.objects.update_or_create(
             intern=self.intern,
             defaults={
@@ -505,6 +508,18 @@ class PortalWorkflowTests(TestCase):
 
         self.assertFalse(AttendanceLog.objects.filter(intern=self.intern).exists())
 
+    def test_attendance_face_preview_returns_json_for_invalid_action(self):
+        self._complete_intern_profile(approve_requirements=True)
+        self.client.force_login(self.intern_user)
+
+        response = self.client.post(
+            reverse("portal:attendance_face_preview"),
+            {"action": "invalid", "face_image": self._camera_data_url()},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json(), {"error": "Unknown attendance action."})
+
     def test_company_cannot_use_intern_face_preview_endpoint(self):
         self.client.force_login(self.company_user)
 
@@ -517,6 +532,7 @@ class PortalWorkflowTests(TestCase):
 
     @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
     def test_intern_can_enroll_own_face_from_profile_after_consent(self):
+        self._complete_intern_details()
         self.client.force_login(self.intern_user)
         profile_url = reverse("portal:profile")
         enrollment_url = reverse("portal:intern_face_enrollment")
@@ -540,6 +556,7 @@ class PortalWorkflowTests(TestCase):
 
     @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
     def test_intern_face_enrollment_preview_requires_detectable_single_face(self):
+        self._complete_intern_details()
         self.client.force_login(self.intern_user)
         with patch("portal.views.create_face_embedding", return_value=b"preview embedding") as create_embedding:
             response = self.client.post(
@@ -565,6 +582,7 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(poor_capture.json()["quality"], "poor")
 
     def test_live_face_detection_preview_returns_face_count_without_enrollment(self):
+        self._complete_intern_details()
         self.client.force_login(self.intern_user)
         with patch(
             "portal.views.detect_faces",
@@ -578,6 +596,30 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"face_count": 1, "face_detected": True})
         detector.assert_called_once()
+
+    def test_face_capture_api_requires_saved_profile_and_returns_json(self):
+        self.client.force_login(self.intern_user)
+
+        response = self.client.post(
+            reverse("portal:face_detection_preview"),
+            {"face_image": self._camera_data_url()},
+            HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            response.json(),
+            {"error": "Complete and save your intern profile before face capture."},
+        )
+
+    def test_face_capture_api_reports_expired_session_as_json(self):
+        response = self.client.post(
+            reverse("portal:face_detection_preview"),
+            {"face_image": self._camera_data_url()},
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json(), {"error": "Your session expired. Sign in again and retry."})
 
     def test_intern_onboarding_requires_profile_and_face_before_requirements(self):
         self.client.force_login(self.intern_user)

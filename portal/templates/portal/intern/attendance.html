@@ -219,24 +219,17 @@
         credentials: "same-origin",
         headers: { "X-Requested-With": "XMLHttpRequest" },
       });
-      const result = await response.json();
-      if (!response.ok) {
-        showCheckResult({
-          quality: "poor",
-          label: "Unable to check this capture",
-          message: result.error || "The face-check request failed. Retake the frame or submit it for review.",
-          similarity: null,
-        });
-        return;
-      }
+      const result = await window.readFaceApiResponse(response);
       pendingFaceImage = faceImage;
       showCheckResult(result);
-    } catch {
+    } catch (error) {
       pendingFaceImage = faceImage;
       showCheckResult({
         quality: "poor",
         label: "Face check unavailable",
-        message: "The system could not check this frame right now. Retake it or submit it as an exception for company/admin review.",
+        message: error instanceof Error
+          ? error.message
+          : "The system could not check this frame right now. Retake it or submit it as an exception for company/admin review.",
         similarity: null,
       });
     }

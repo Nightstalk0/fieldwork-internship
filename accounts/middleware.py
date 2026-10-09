@@ -1,4 +1,4 @@
-from django.http import HttpResponseForbidden
+from django.http import HttpResponseForbidden, JsonResponse
 
 
 class RoleBasedRouteGuardMiddleware:
@@ -18,5 +18,10 @@ class RoleBasedRouteGuardMiddleware:
         )
         if required_role and request.user.is_authenticated:
             if not (request.user.is_staff or request.user.role == required_role):
+                if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+                    return JsonResponse(
+                        {"error": "Your account does not have access to this face-capture action."},
+                        status=403,
+                    )
                 return HttpResponseForbidden("You do not have access to this area.")
         return self.get_response(request)

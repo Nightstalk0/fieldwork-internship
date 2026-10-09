@@ -14,6 +14,9 @@
   <p class="status">Not enrolled</p>
   <p class="muted">Enroll before using face recognition for attendance. Only an encrypted face template is saved; this enrollment photo is processed in memory and discarded.</p>
   {% endif %}
+  {% if not profile_details_complete %}
+  <p class="requirement-notice">Complete and save the required profile details above before starting face enrollment.</p>
+  {% endif %}
   <p class="muted">Attendance captures you submit are encrypted, can be viewed by authorized company/admin reviewers, and are deleted after 30 days. Face matching is not liveness detection.</p>
   <div class="face-camera-frame face-enrollment-frame">
     <video id="enrollment-camera" aria-label="Camera preview. Position your face inside the oval guide." autoplay muted playsinline hidden></video>
@@ -22,7 +25,7 @@
   </div>
   <p id="enrollment-camera-status" class="muted" aria-live="polite">Start the camera to capture your enrollment image.</p>
   <div class="clock-actions">
-    <button class="button button-secondary" id="start-enrollment-camera" type="button">Start camera</button>
+    <button class="button button-secondary" id="start-enrollment-camera" type="button" {% if not profile_details_complete %}disabled{% endif %}>Start camera</button>
   </div>
   <form method="post" action="{% url 'portal:intern_face_enrollment' %}" id="intern-face-enrollment-form" class="stack-form">
     {% csrf_token %}
@@ -84,6 +87,8 @@
   document.getElementById("start-enrollment-camera").addEventListener("click", async () => {
     stopEnrollmentCamera();
     enrollmentResult.hidden = true;
+    document.getElementById("enrollment-face-image").value = "";
+    saveEnrollmentButton.hidden = true;
     try {
       enrollmentStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
       enrollmentVideo.srcObject = enrollmentStream;
@@ -144,7 +149,7 @@
         credentials: "same-origin",
         headers: { "X-Requested-With": "XMLHttpRequest" },
       });
-      const result = await response.json();
+      const result = await window.readFaceApiResponse(response);
       enrollmentResult.className = `face-check-result face-check-${result.quality || "poor"}`;
       enrollmentResultLabel.textContent = result.label || "Unable to check this capture";
       enrollmentResultMessage.textContent = result.message || "Retake the frame and try again.";
@@ -154,10 +159,12 @@
       enrollmentStatus.textContent = result.quality === "good"
         ? "This face is ready to enroll. Save it or retake the frame."
         : "This face cannot be enrolled yet. Retake the frame and follow the guide.";
-    } catch {
+    } catch (error) {
       enrollmentResult.className = "face-check-result face-check-poor";
       enrollmentResultLabel.textContent = "Face check unavailable";
-      enrollmentResultMessage.textContent = "The system could not check this frame. Retake it or try again later.";
+      enrollmentResultMessage.textContent = error instanceof Error
+        ? error.message
+        : "The system could not check this frame. Retake it or try again later.";
       document.getElementById("enrollment-face-image").value = "";
       saveEnrollmentButton.hidden = true;
       enrollmentResult.hidden = false;
