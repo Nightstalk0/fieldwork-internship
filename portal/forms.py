@@ -21,20 +21,6 @@ class CompanyRequirementForm(forms.ModelForm):
 
 
 class InternProfileForm(forms.ModelForm):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        for field_name in ("student_id", "university", "course", "year_level", "placement_type"):
-            self.fields[field_name].required = True
-
-    def clean(self):
-        cleaned_data = super().clean()
-        if (
-            cleaned_data.get("placement_type") == InternProfile.PlacementType.EXTERNAL
-            and not cleaned_data.get("external_host")
-        ):
-            self.add_error("external_host", "Enter the name of your external host organization.")
-        return cleaned_data
-
     class Meta:
         model = InternProfile
         fields = (
@@ -51,7 +37,7 @@ class InternProfileForm(forms.ModelForm):
         help_texts = {
             "year_level": "Enter your current year level as a number.",
             "placement_type": "Choose whether your host company has a Fieldwork account.",
-            "external_host": "Enter the name of your host when it does not use Fieldwork.",
+            "external_host": "Add your host's name when known; it can be added or updated later.",
             "bio": "Summarize your skills, interests, and the type of placement you are seeking.",
             "resume": "Upload a PDF or DOCX resume within the listed file-size limit.",
         }
@@ -60,10 +46,9 @@ class InternProfileForm(forms.ModelForm):
         cleaned_data = super().clean()
         placement_type = cleaned_data.get("placement_type")
         external_host = (cleaned_data.get("external_host") or "").strip()
-        if placement_type == InternProfile.PlacementType.EXTERNAL and not external_host:
-            self.add_error("external_host", "Enter the name of your external host company.")
-        elif placement_type == InternProfile.PlacementType.PLATFORM:
-            cleaned_data["external_host"] = ""
+        cleaned_data["external_host"] = (
+            external_host if placement_type == InternProfile.PlacementType.EXTERNAL else ""
+        )
         return cleaned_data
 
 

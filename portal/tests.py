@@ -119,7 +119,7 @@ class PortalWorkflowTests(TestCase):
 
         self.assertContains(response, 'class="nav-link-active" aria-current="page">Overview</a>')
 
-    def test_intern_can_set_external_placement_and_must_name_host(self):
+    def test_intern_can_save_external_placement_before_host_details(self):
         form = InternProfileForm(
             {
                 "placement_type": InternProfile.PlacementType.EXTERNAL,
@@ -138,7 +138,7 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(profile.placement_type, InternProfile.PlacementType.EXTERNAL)
         self.assertEqual(profile.external_host, "Northside Design Studio")
 
-        invalid_form = InternProfileForm(
+        draft_form = InternProfileForm(
             {
                 "placement_type": InternProfile.PlacementType.EXTERNAL,
                 "external_host": "",
@@ -150,14 +150,13 @@ class PortalWorkflowTests(TestCase):
             },
             instance=profile,
         )
-        self.assertFalse(invalid_form.is_valid())
-        self.assertIn("external_host", invalid_form.errors)
+        self.assertTrue(draft_form.is_valid(), draft_form.errors)
+        draft_profile = draft_form.save()
+        self.assertEqual(draft_profile.external_host, "")
 
-    def test_intern_cannot_save_or_continue_with_incomplete_profile_details(self):
+    def test_intern_can_save_incomplete_profile_as_draft_and_open_requirements(self):
         self.client.force_login(self.intern_user)
-        profile_url = reverse("portal:profile")
-
-        response = self.client.post(profile_url, {
+        response = self.client.post(reverse("portal:profile"), {
             "student_id": "",
             "university": "",
             "course": "",
@@ -167,8 +166,7 @@ class PortalWorkflowTests(TestCase):
             "bio": "",
         })
 
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.context["form"].errors)
+        self.assertRedirects(response, reverse("portal:profile"))
         self.intern.refresh_from_db()
         self.assertFalse(self.intern.student_id)
         self.assertFalse(self.intern.university)
@@ -195,25 +193,6 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(self.intern.university, "Example University")
         self.assertEqual(self.intern.course, "Information Technology")
         self.assertEqual(self.intern.year_level, 3)
-
-    def test_incomplete_whitespace_profile_does_not_block_requirements(self):
-        self.intern.student_id = " "
-        self.intern.university = " "
-        self.intern.course = " "
-        self.intern.year_level = 3
-        self.intern.save()
-        FaceEnrollment.objects.create(
-            intern=self.intern,
-            encrypted_embedding=b"encrypted-test-embedding",
-            enrolled_by=self.intern_user,
-            consent_confirmed_at=timezone.now(),
-            consent_text_version=FACE_CONSENT_VERSION,
-        )
-        self.client.force_login(self.intern_user)
-
-        response = self.client.get(reverse("portal:ojt_requirements"))
-
-        self.assertEqual(response.status_code, 200)
 
     def test_coordinator_dashboard_shows_external_host_and_approved_progress(self):
         self.intern.placement_type = InternProfile.PlacementType.EXTERNAL
@@ -610,7 +589,6 @@ class PortalWorkflowTests(TestCase):
 
     @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
     def test_intern_can_enroll_own_face_from_profile_after_consent(self):
-        self._complete_intern_details()
         self.client.force_login(self.intern_user)
         profile_url = reverse("portal:profile")
         enrollment_url = reverse("portal:intern_face_enrollment")
@@ -634,7 +612,6 @@ class PortalWorkflowTests(TestCase):
 
     @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
     def test_intern_face_enrollment_preview_requires_detectable_single_face(self):
-        self._complete_intern_details()
         self.client.force_login(self.intern_user)
         with patch("portal.views.create_face_embedding", return_value=b"preview embedding") as create_embedding:
             response = self.client.post(
@@ -659,8 +636,7 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(poor_capture.status_code, 200)
         self.assertEqual(poor_capture.json()["quality"], "poor")
 
-    def test_live_face_detection_preview_returns_face_count_without_enrollment(self):
-        self._complete_intern_details()
+    def test_live_face_detection_preview_returns_face_count_without_profile_or_enrollment(self):
         self.client.force_login(self.intern_user)
         with patch(
             "portal.views.detect_faces",

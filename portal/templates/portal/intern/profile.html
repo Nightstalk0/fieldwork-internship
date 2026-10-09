@@ -14,9 +14,7 @@
   <p class="status">Not enrolled</p>
   <p class="muted">Face enrollment is optional during onboarding and can be completed later. Attendance still requires approved OJT documents; without an enrollment, face matching will be unavailable and your capture will need reviewer attention. Only an encrypted face template is saved; this enrollment photo is processed in memory and discarded.</p>
   {% endif %}
-  {% if not profile_details_complete %}
-  <p class="requirement-notice">Complete and save the required profile details above before starting face enrollment. You can skip profile setup for now and submit your OJT requirements first.</p>
-  {% endif %}
+  <p class="muted">You can complete your profile and enroll your face at any time. You may skip profile setup for now and submit your OJT requirements first.</p>
   <p class="muted">Attendance captures you submit are encrypted, can be viewed by authorized company/admin reviewers, and are deleted after 30 days. Face matching is not liveness detection.</p>
   <div class="face-camera-frame face-enrollment-frame">
     <video id="enrollment-camera" aria-label="Camera preview. Position your face inside the oval guide." autoplay muted playsinline hidden></video>
@@ -25,7 +23,7 @@
   </div>
   <p id="enrollment-camera-status" class="muted" aria-live="polite">Start the camera to capture your enrollment image.</p>
   <div class="clock-actions">
-    <button class="button button-secondary" id="start-enrollment-camera" type="button" {% if not profile_details_complete %}disabled{% endif %}>Start camera</button>
+    <button class="button button-secondary" id="start-enrollment-camera" type="button">Start camera</button>
   </div>
   <form method="post" action="{% url 'portal:intern_face_enrollment' %}" id="intern-face-enrollment-form" class="stack-form">
     {% csrf_token %}
@@ -37,15 +35,11 @@
       <p id="enrollment-check-message"></p>
       <div class="clock-actions">
         <button class="button button-secondary" id="retake-face-enrollment" type="button">Retake face</button>
-        <button class="button button-primary" id="submit-face-enrollment" type="submit" hidden>Save enrollment and continue to requirements</button>
+        <button class="button button-primary" id="submit-face-enrollment" type="submit" hidden>Save face enrollment</button>
       </div>
     </section>
   </form>
-  {% if profile_details_complete and face_enrollment_current %}
-  <p class="form-footnote">Profile and face enrollment are complete.</p>
-  {% else %}
-  <p class="form-footnote">You can finish profile setup and face enrollment later.</p>
-  {% endif %}
+  {% if face_enrollment_current %}<p class="form-footnote">Face enrollment is complete.</p>{% else %}<p class="form-footnote">You can finish profile setup and face enrollment later.</p>{% endif %}
   <a class="button button-primary" href="{% url 'portal:ojt_requirements' %}">Go to OJT requirements</a>
 </section>
 {% endblock %}
@@ -56,7 +50,6 @@
   const updateExternalHost = () => {
     const isExternal = placementType.value === "external";
     externalHostRow.hidden = !isExternal;
-    externalHost.required = isExternal;
   };
   placementType.addEventListener("change", updateExternalHost);
   updateExternalHost();

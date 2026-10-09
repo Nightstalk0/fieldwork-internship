@@ -58,27 +58,6 @@ def role_required(*roles):
     return decorate
 
 
-def intern_profile_details_complete(intern):
-    return bool(
-        (intern.student_id or "").strip()
-        and (intern.university or "").strip()
-        and (intern.course or "").strip()
-        and intern.year_level
-        and intern.placement_type in InternProfile.PlacementType.values
-        and (
-            intern.placement_type != InternProfile.PlacementType.EXTERNAL
-            or (intern.external_host or "").strip()
-        )
-    )
-
-
-def intern_profile_is_complete(intern):
-    return intern_profile_details_complete(intern) and FaceEnrollment.objects.filter(
-        intern=intern,
-        consent_text_version=FACE_CONSENT_VERSION,
-    ).exists()
-
-
 def intern_onboarding_required(*, requirements_approved=False):
     def decorate(view):
         @wraps(view)
@@ -94,11 +73,7 @@ def intern_onboarding_required(*, requirements_approved=False):
     return decorate
 
 
-def intern_api_required(
-    *,
-    require_profile=False,
-    requirements_approved=False,
-):
+def intern_api_required(*, requirements_approved=False):
     def decorate(view):
         @wraps(view)
         @require_POST
@@ -112,8 +87,6 @@ def intern_api_required(
                 intern = InternProfile.objects.get(user=request.user)
             except InternProfile.DoesNotExist:
                 return JsonResponse({"error": "Complete your intern profile before face capture."}, status=404)
-            if require_profile and not intern_profile_details_complete(intern):
-                return JsonResponse({"error": "Complete and save your intern profile before face capture."}, status=409)
             if requirements_approved and not baseline_ojt_requirements_approved(intern):
                 return JsonResponse({"error": "Wait for approval of your required OJT documents before attendance."}, status=409)
             return view(request, *args, **kwargs)
@@ -168,25 +141,16 @@ def profile(request):
     intern = get_object_or_404(InternProfile, user=request.user)
     form = InternProfileForm(request.POST or None, request.FILES or None, instance=intern)
     if request.method == "POST" and form.is_valid():
-        profile_instance = form.save(commit=False)
-        if not intern_profile_details_complete(profile_instance):
-            form.add_error(
-                None,
-                "Complete your student ID, university, course, year level, and placement details before saving.",
-            )
-        else:
-            profile_instance.save()
-            form.save_m2m()
-            assign_accepted_company_ojt_requirements(profile_instance)
-            audit(request.user, "profile.updated", profile_instance)
-            messages.success(request, "Profile saved.")
-            return redirect("portal:profile")
+        profile_instance = form.save()
+        assign_accepted_company_ojt_requirements(profile_instance)
+        audit(request.user, "profile.updated", profile_instance)
+        messages.success(request, "Profile saved.")
+        return redirect("portal:profile")
     enrollment = FaceEnrollment.objects.filter(intern=intern).first()
     return render(request, "portal/intern/profile.html", {
         "form": form,
         "intern": intern,
         "face_enrollment": enrollment,
-        "profile_details_complete": intern_profile_details_complete(intern),
         "face_enrollment_current": enrollment is not None and enrollment.consent_text_version == FACE_CONSENT_VERSION,
     })
 
@@ -195,9 +159,6 @@ def profile(request):
 @require_POST
 def intern_face_enrollment(request):
     intern = get_object_or_404(InternProfile, user=request.user)
-    if not intern_profile_details_complete(intern):
-        messages.error(request, "Save your required profile details before enrolling your face.")
-        return redirect("portal:profile")
     if request.POST.get("consent_confirmed") != "on":
         messages.error(request, "Confirm your informed consent before enrolling your face.")
         return redirect("portal:profile")
@@ -411,7 +372,7 @@ def face_detection_preview(request):
     })
 
 
-@intern_api_required(require_profile=True)
+@intern_api_required()
 def face_enrollment_preview(request):
     try:
         image = decode_camera_image(request.POST.get("face_image", ""))
