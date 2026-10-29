@@ -9,6 +9,7 @@
   </div>
 </div>
 <section class="panel form-panel">
+  {% if pending_worksite_count %}<p class="status status-risk">{{ pending_worksite_count }} intern worksite request{{ pending_worksite_count|pluralize }} pending review</p>{% endif %}
   <h2>{% if is_coordinator %}Assign external intern worksite{% else %}Enroll a company worksite{% endif %}</h2>
   <p class="muted">Use your device while physically at the worksite. Attendance is accepted only when the intern is within the saved radius.</p>
   <form method="post" class="stack-form" id="worksite-form">
@@ -34,6 +35,7 @@
       <thead>
         <tr>
           {% if is_coordinator %}<th>Intern</th>{% endif %}
+          {% if not is_coordinator %}<th>Intern</th>{% endif %}
           <th>Worksite</th><th>Address</th><th>Coordinates</th><th>Radius</th><th>Status</th><th>Action</th>
         </tr>
       </thead>
@@ -41,24 +43,54 @@
         {% for worksite in worksites %}
         <tr>
           {% if is_coordinator %}<td>{{ worksite.intern.user.get_full_name|default:worksite.intern.user.username }}</td>{% endif %}
+          {% if not is_coordinator %}<td>{% if worksite.intern_id %}{{ worksite.intern.user.get_full_name|default:worksite.intern.user.username }}{% else %}<span class="muted">Company site</span>{% endif %}</td>{% endif %}
           <td>{{ worksite.name }}</td>
           <td>{{ worksite.address }}</td>
-          <td>{{ worksite.latitude }}, {{ worksite.longitude }}</td>
+          <td>{{ worksite.latitude }}, {{ worksite.longitude }}{% if worksite.reported_accuracy_meters %}<br><span class="muted">Accuracy ±{{ worksite.reported_accuracy_meters }} m</span>{% endif %}</td>
           <td>{{ worksite.radius_meters }} m</td>
-          <td>{% if worksite.is_active %}<span class="status status-good">Active</span>{% else %}<span class="status">Inactive</span>{% endif %}</td>
           <td>
-            {% if worksite.is_active %}
+            {% if worksite.approval_status == 'pending' %}<span class="status status-risk">Pending review</span>
+            {% elif worksite.approval_status == 'rejected' %}<span class="status status-risk">Rejected</span>
+            {% elif worksite.is_active %}<span class="status status-good">Approved · Active</span>
+            {% else %}<span class="status">Inactive</span>{% endif %}
+          </td>
+          <td>
+            {% if worksite.approval_status == 'pending' %}
+            <div class="clock-actions">
+              <form method="post">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="review_intern_request">
+                <input type="hidden" name="worksite_id" value="{{ worksite.pk }}">
+                <input type="hidden" name="decision" value="approve">
+                <button class="button button-small button-primary" type="submit">Approve</button>
+              </form>
+              <form method="post">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="review_intern_request">
+                <input type="hidden" name="worksite_id" value="{{ worksite.pk }}">
+                <input type="hidden" name="decision" value="reject">
+                <button class="button button-small button-secondary" type="submit">Reject</button>
+              </form>
+            </div>
+            {% elif worksite.is_active and worksite.intern_id and not is_coordinator %}
+            <form method="post">
+              {% csrf_token %}
+              <input type="hidden" name="action" value="reset_intern_location">
+              <input type="hidden" name="worksite_id" value="{{ worksite.pk }}">
+              <button class="button button-small button-secondary" type="submit">Reset location</button>
+            </form>
+            {% elif worksite.is_active %}
             <form method="post">
               {% csrf_token %}
               <input type="hidden" name="action" value="deactivate">
               <input type="hidden" name="worksite_id" value="{{ worksite.pk }}">
-              <button class="button button-small button-secondary" type="submit">Deactivate</button>
+              <button class="button button-small button-secondary" type="submit">{% if worksite.intern_id %}Reset location{% else %}Deactivate{% endif %}</button>
             </form>
             {% else %}<span class="muted">—</span>{% endif %}
           </td>
         </tr>
         {% empty %}
-        <tr><td colspan="{% if is_coordinator %}7{% else %}6{% endif %}" class="muted">No worksites are enrolled yet.</td></tr>
+        <tr><td colspan="7" class="muted">No worksites are enrolled yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>

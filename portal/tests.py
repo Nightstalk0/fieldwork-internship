@@ -171,6 +171,158 @@ class PortalWorkflowTests(TestCase):
         self.assertIsNone(worksite.company_id)
         self.assertEqual(worksite.created_by, coordinator)
 
+    def test_intern_worksite_registration_stays_pending_until_supervisor_approval(self):
+        Application.objects.create(
+            intern=self.intern,
+            posting=self.posting,
+            status=Application.Status.ACCEPTED,
+        )
+        self.client.force_login(self.intern_user)
+        url = reverse("portal:intern_worksite_registration")
+        payload = {
+            "name": "Intern's OJT office",
+            "address": "30 Training Avenue",
+            "latitude": "14.700000",
+            "longitude": "121.100000",
+            "reported_accuracy_meters": "18",
+        }
+
+        response = self.client.post(url, payload)
+
+        self.assertRedirects(response, reverse("portal:profile"))
+        worksite = WorksiteLocation.objects.get(intern=self.intern)
+        self.assertEqual(worksite.approval_status, WorksiteLocation.ApprovalStatus.PENDING)
+        self.assertFalse(worksite.is_active)
+        self.assertEqual(worksite.radius_meters, 100)
+        self.assertEqual(worksite.reported_accuracy_meters, 18)
+        self.assertFalse(worksite.is_active)
+
+        duplicate = self.client.post(url, payload)
+
+        self.assertRedirects(duplicate, reverse("portal:profile"))
+        self.assertEqual(WorksiteLocation.objects.filter(intern=self.intern).count(), 1)
+        self.assertContains(self.client.get(reverse("portal:profile")), "Pending supervisor review")
+
+    def test_company_supervisor_can_approve_and_reset_intern_worksite(self):
+        Application.objects.create(
+            intern=self.intern,
+            posting=self.posting,
+            status=Application.Status.ACCEPTED,
+        )
+        worksite = WorksiteLocation.objects.create(
+            intern=self.intern,
+            name="Intern-requested office",
+            address="30 Training Avenue",
+            latitude="14.700000",
+            longitude="121.100000",
+            radius_meters=100,
+            reported_accuracy_meters=18,
+            approval_status=WorksiteLocation.ApprovalStatus.PENDING,
+            is_active=False,
+            created_by=self.intern_user,
+        )
+        self.client.force_login(self.company_user)
+        url = reverse("portal:company_worksites")
+
+        queue = self.client.get(url)
+        self.assertContains(queue, "Intern-requested office")
+        self.assertContains(queue, "Approve")
+        approved = self.client.post(url, {
+            "action": "review_intern_request",
+            "decision": "approve",
+            "worksite_id": worksite.pk,
+        })
+
+        self.assertRedirects(approved, url)
+        worksite.refresh_from_db()
+        self.assertEqual(worksite.approval_status, WorksiteLocation.ApprovalStatus.APPROVED)
+        self.assertTrue(worksite.is_active)
+        self.assertEqual(worksite.reviewed_by, self.company_user)
+
+        reset = self.client.post(url, {
+            "action": "reset_intern_location",
+            "worksite_id": worksite.pk,
+        })
+
+        self.assertRedirects(reset, url)
+        worksite.refresh_from_db()
+        self.assertFalse(worksite.is_active)
+
+        self.client.force_login(self.intern_user)
+        self.client.post(reverse("portal:intern_worksite_registration"), {
+            "name": "Replacement OJT office",
+            "address": "40 Training Avenue",
+            "latitude": "14.710000",
+            "longitude": "121.110000",
+            "reported_accuracy_meters": "12",
+        })
+        self.assertEqual(WorksiteLocation.objects.filter(
+            intern=self.intern,
+            approval_status=WorksiteLocation.ApprovalStatus.PENDING,
+        ).count(), 1)
+
+    def test_coordinator_can_approve_external_intern_worksite_request(self):
+        self._complete_intern_details(external=True)
+        self.client.force_login(self.intern_user)
+        submitted = self.client.post(reverse("portal:intern_worksite_registration"), {
+            "name": "External OJT site",
+            "address": "50 Placement Road",
+            "latitude": "14.700000",
+            "longitude": "121.100000",
+            "reported_accuracy_meters": "24",
+        })
+        self.assertRedirects(submitted, reverse("portal:profile"))
+        worksite = WorksiteLocation.objects.get(intern=self.intern)
+
+        coordinator = User.objects.create_user(username="external-site-reviewer", role=User.Role.COORDINATOR)
+        self.client.force_login(coordinator)
+        review_url = reverse("portal:coordinator_external_worksites")
+        self.assertContains(self.client.get(review_url), "External OJT site")
+        approved = self.client.post(review_url, {
+            "action": "review_intern_request",
+            "decision": "approve",
+            "worksite_id": worksite.pk,
+        })
+
+        self.assertRedirects(approved, review_url)
+        worksite.refresh_from_db()
+        self.assertEqual(worksite.approval_status, WorksiteLocation.ApprovalStatus.APPROVED)
+        self.assertTrue(worksite.is_active)
+        self.assertEqual(worksite.reviewed_by, coordinator)
+
+    def test_attendance_prefers_approved_intern_worksite_over_company_sites(self):
+        self._complete_intern_profile()
+        self._enroll_attendance_location()
+        personal_site = WorksiteLocation.objects.create(
+            intern=self.intern,
+            name="Assigned intern site",
+            address="2 Personal Site Road",
+            latitude="14.700000",
+            longitude="121.100000",
+            approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+            is_active=True,
+        )
+        self.client.force_login(self.intern_user)
+
+        with patch(
+            "portal.views._attendance_face_check",
+            return_value=(AttendanceLog.FaceCheckStatus.MATCHED, 0.82, b"encrypted frame"),
+        ):
+            response = self.client.post(
+                reverse("portal:attendance"),
+                self._attendance_payload(
+                    "clock_in",
+                    clock_in_latitude="14.700000",
+                    clock_in_longitude="121.100000",
+                ),
+            )
+
+        self.assertRedirects(response, reverse("portal:attendance"))
+        log = AttendanceLog.objects.get(intern=self.intern)
+        self.assertTrue(log.clock_in_within_location)
+        self.assertEqual(log.clock_in_distance_meters, 0)
+        self.assertEqual(log.clock_in_allowed_radius_meters, personal_site.radius_meters)
+
     def test_role_dashboard_routes_use_role_specific_paths(self):
         self.assertEqual(reverse("portal:intern_dashboard"), "/intern/dashboard/")
         self.assertEqual(reverse("portal:company_dashboard"), "/supervisor/dashboard/")

@@ -3,6 +3,41 @@
 <div class="page-heading"><div><p class="eyebrow">INTERN WORKSPACE</p><h1>Profile</h1><p class="muted">Keep your placement details and resume current.</p></div></div>
 <section class="panel form-panel"><form method="post" enctype="multipart/form-data" class="stack-form">{% csrf_token %}{{ form.as_p }}<button class="button button-primary" type="submit">Save profile</button></form></section>
 <section class="panel form-panel">
+  <h2>OJT worksite location</h2>
+  {% if intern_worksite %}
+    <p class="status {% if intern_worksite.approval_status == 'approved' and intern_worksite.is_active %}status-good{% elif intern_worksite.approval_status == 'rejected' %}status-risk{% else %}status-neutral{% endif %}">
+      {{ intern_worksite.get_approval_status_display }}{% if intern_worksite.is_active %} · Active{% endif %}
+    </p>
+    <p><strong>{{ intern_worksite.name }}</strong> · {{ intern_worksite.address }}</p>
+    <p class="muted">Coordinates: {{ intern_worksite.latitude }}, {{ intern_worksite.longitude }} · Attendance radius: {{ intern_worksite.radius_meters }} m</p>
+    {% if intern_worksite.reported_accuracy_meters %}<p class="muted">Browser reported accuracy: about {{ intern_worksite.reported_accuracy_meters }} m.</p>{% endif %}
+    <p class="muted">{% if intern_worksite.approval_status == 'pending' %}Your supervisor must approve this location before it is used for attendance geofencing.{% else %}To change this location, ask your supervisor to reset it first. Attendance uses the approved location.{% endif %}</p>
+  {% elif can_request_intern_worksite %}
+    <p class="muted">While at your OJT site, capture its location and submit it for supervisor approval. The approved coordinates will then be used for attendance geofencing.</p>
+    <form method="post" action="{% url 'portal:intern_worksite_registration' %}" class="stack-form" id="intern-worksite-request-form">
+      {% csrf_token %}
+      <label for="worksite-name">Worksite name</label>
+      <input id="worksite-name" name="name" maxlength="120" required>
+      <label for="worksite-address">Address or site details</label>
+      <input id="worksite-address" name="address" maxlength="255" required>
+      {{ worksite_request_form.latitude }}
+      {{ worksite_request_form.longitude }}
+      {{ worksite_request_form.reported_accuracy_meters }}
+      <div class="clock-actions">
+        <button class="button button-secondary" type="button" id="capture-intern-worksite-location">Get current location</button>
+      </div>
+      <div class="panel location-confirmation" id="intern-worksite-location-confirmation" aria-live="polite" tabindex="-1">
+        <strong>Location not captured</strong>
+        <p>Capture your location to confirm the coordinates and accuracy before submitting.</p>
+      </div>
+      <p class="muted">The attendance radius is set to 100 m. Your location will remain pending and will not be used until a supervisor approves it.</p>
+      <button class="button button-primary" id="submit-intern-worksite-request" type="submit" disabled>Register My Current Location as OJT Worksite</button>
+    </form>
+  {% else %}
+    <p class="muted">An accepted company placement is required before requesting a personal OJT worksite. Once accepted, return here while at the site to register it.</p>
+  {% endif %}
+</section>
+<section class="panel form-panel">
   <h2>Face enrollment for attendance</h2>
   {% if face_enrollment_current %}
   <p class="status status-good">Enrolled</p>
@@ -52,6 +87,77 @@
   };
   placementType.addEventListener("change", updateExternalHost);
   updateExternalHost();
+
+  const internWorksiteForm = document.getElementById("intern-worksite-request-form");
+  if (internWorksiteForm) {
+    const captureLocationButton = document.getElementById("capture-intern-worksite-location");
+    const worksiteLocationStatus = document.getElementById("intern-worksite-location-confirmation");
+    const submitWorksiteButton = document.getElementById("submit-intern-worksite-request");
+    const latitudeField = internWorksiteForm.elements.latitude;
+    const longitudeField = internWorksiteForm.elements.longitude;
+    const accuracyField = internWorksiteForm.elements.reported_accuracy_meters;
+    const showLocationMessage = (title, detail) => {
+      const heading = document.createElement("strong");
+      heading.textContent = title;
+      const paragraph = document.createElement("p");
+      paragraph.textContent = detail;
+      worksiteLocationStatus.replaceChildren(heading, paragraph);
+    };
+
+    captureLocationButton.addEventListener("click", () => {
+      if (!navigator.geolocation) {
+        showLocationMessage("Location unavailable", "This browser does not support geolocation.");
+        return;
+      }
+      captureLocationButton.disabled = true;
+      submitWorksiteButton.disabled = true;
+      showLocationMessage("Getting your location…", "Keep this page open while your device determines its position.");
+      navigator.geolocation.getCurrentPosition((position) => {
+        const { latitude, longitude, accuracy: reportedAccuracy } = position.coords;
+        if (
+          !Number.isFinite(latitude) || !Number.isFinite(longitude) || !Number.isFinite(reportedAccuracy)
+          || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180 || reportedAccuracy < 0
+        ) {
+          showLocationMessage("Invalid location", "Your device returned invalid coordinates. Try capturing your location again.");
+          captureLocationButton.disabled = false;
+          return;
+        }
+        const accuracy = Math.max(1, Math.ceil(reportedAccuracy));
+        latitudeField.value = latitude.toFixed(6);
+        longitudeField.value = longitude.toFixed(6);
+        accuracyField.value = accuracy;
+        const coordinates = document.createElement("p");
+        coordinates.textContent = `Latitude: ${latitudeField.value} · Longitude: ${longitudeField.value}`;
+        const accuracyText = document.createElement("p");
+        accuracyText.textContent = `Estimated accuracy radius: about ${accuracy} m`;
+        worksiteLocationStatus.replaceChildren();
+        const heading = document.createElement("strong");
+        heading.textContent = "Review this location before submitting";
+        worksiteLocationStatus.append(heading, coordinates, accuracyText);
+        submitWorksiteButton.disabled = false;
+        captureLocationButton.disabled = false;
+      }, (error) => {
+        const messages = {
+          1: "Location permission was denied. Allow location access in your browser and try again.",
+          2: "Your device could not determine a location. Move to an area with a better GPS signal and try again.",
+          3: "The location request timed out. Try again.",
+        };
+        const heading = document.createElement("strong");
+        heading.textContent = "Could not capture location";
+        const detail = document.createElement("p");
+        detail.textContent = messages[error.code] || "An unexpected location error occurred.";
+        worksiteLocationStatus.replaceChildren(heading, detail);
+        captureLocationButton.disabled = false;
+      }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+    });
+
+    internWorksiteForm.addEventListener("submit", (event) => {
+      if (!latitudeField.value || !longitudeField.value || !accuracyField.value) {
+        event.preventDefault();
+        worksiteLocationStatus.focus();
+      }
+    });
+  }
 
   const enrollmentVideo = document.getElementById("enrollment-camera");
   const enrollmentStatus = document.getElementById("enrollment-camera-status");

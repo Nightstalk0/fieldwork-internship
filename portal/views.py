@@ -27,7 +27,7 @@ from zipfile import BadZipFile, LargeZipFile, ZipFile
 
 from accounts.models import User
 
-from .forms import CompanyProfileForm, DailyReportForm, ExternalWorksiteLocationForm, InternProfileForm, PostingForm, ScorecardForm, WorksiteLocationForm
+from .forms import CompanyProfileForm, DailyReportForm, ExternalWorksiteLocationForm, InternProfileForm, InternWorksiteRequestForm, PostingForm, ScorecardForm, WorksiteLocationForm
 from .models import Application, AttendanceFaceCapture, AttendanceLog, AuditLog, CompanyProfile, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, InternProfile, Posting, RiskAssessment, Scorecard, WorksiteLocation, pending_attendance_approval_count
 from .utils import attendance_pdf, audit, certificate_pdf, haversine_distance_km
 from ml_engine.face_capture import FaceCaptureError, decode_camera_image, encode_camera_image
@@ -123,21 +123,124 @@ def profile(request):
     enrollment = FaceEnrollment.objects.filter(intern=intern).first()
     return render(request, "portal/intern/profile.html", {
         "form": form,
+        "worksite_request_form": InternWorksiteRequestForm(),
         "intern": intern,
+        "can_request_intern_worksite": (
+            intern.placement_type == InternProfile.PlacementType.EXTERNAL
+            or Application.objects.filter(
+                intern=intern,
+                status=Application.Status.ACCEPTED,
+            ).exists()
+        ),
         "face_enrollment": enrollment,
         "face_enrollment_current": enrollment is not None and enrollment.consent_text_version == FACE_CONSENT_VERSION,
+        "intern_worksite": intern.attendance_worksites.filter(
+            Q(approval_status=WorksiteLocation.ApprovalStatus.PENDING)
+            | Q(approval_status=WorksiteLocation.ApprovalStatus.APPROVED, is_active=True)
+        ).order_by("-created_at").first(),
     })
+
+
+@role_required(User.Role.INTERN)
+@require_POST
+def intern_worksite_registration(request):
+    form = InternWorksiteRequestForm(request.POST)
+    intern = get_object_or_404(InternProfile, user=request.user)
+    if not form.is_valid():
+        for field_errors in form.errors.values():
+            for error in field_errors:
+                messages.error(request, error)
+        return redirect("portal:profile")
+
+    if intern.placement_type == InternProfile.PlacementType.PLATFORM:
+        has_accepted_placement = Application.objects.filter(
+            intern=intern,
+            status=Application.Status.ACCEPTED,
+        ).exists()
+        if not has_accepted_placement:
+            messages.error(request, "An accepted company placement is required before requesting a worksite.")
+            return redirect("portal:profile")
+
+    with transaction.atomic():
+        locked_intern = InternProfile.objects.select_for_update().get(pk=intern.pk)
+        existing_request = WorksiteLocation.objects.filter(intern=locked_intern).filter(
+            Q(approval_status=WorksiteLocation.ApprovalStatus.PENDING)
+            | Q(approval_status=WorksiteLocation.ApprovalStatus.APPROVED, is_active=True)
+        ).exists()
+        if existing_request:
+            messages.error(
+                request,
+                "A worksite request is already pending or approved. Ask your supervisor to review or reset it before registering again.",
+            )
+            return redirect("portal:profile")
+
+        worksite = form.save(commit=False)
+        worksite.intern = locked_intern
+        worksite.radius_meters = 100
+        worksite.approval_status = WorksiteLocation.ApprovalStatus.PENDING
+        worksite.is_active = False
+        worksite.created_by = request.user
+        worksite.save()
+        audit(request.user, "worksite.registration_requested", worksite)
+
+    messages.success(request, "Your worksite location was sent to your supervisor for review.")
+    return redirect("portal:profile")
 
 
 @role_required(User.Role.COMPANY)
 def company_worksites(request):
     company = get_object_or_404(CompanyProfile, user=request.user)
+    accepted_interns = accepted_company_interns(company)
     if request.method == "POST" and request.POST.get("action") == "deactivate":
         worksite = get_object_or_404(company.worksites, pk=request.POST.get("worksite_id"))
         worksite.is_active = False
         worksite.save(update_fields=("is_active",))
         audit(request.user, "worksite.deactivated", worksite)
         messages.success(request, f"{worksite.name} was deactivated.")
+        return redirect("portal:company_worksites")
+
+    if request.method == "POST" and request.POST.get("action") in {
+        "review_intern_request",
+        "reset_intern_location",
+    }:
+        worksite = get_object_or_404(
+            WorksiteLocation.objects.filter(intern__in=accepted_interns, company__isnull=True),
+            pk=request.POST.get("worksite_id"),
+        )
+        action = request.POST.get("action")
+        if action == "review_intern_request":
+            decision = request.POST.get("decision")
+            if worksite.approval_status != WorksiteLocation.ApprovalStatus.PENDING:
+                messages.info(request, "This worksite request has already been reviewed.")
+            elif decision not in {"approve", "reject"}:
+                messages.error(request, "Choose whether to approve or reject the worksite request.")
+            else:
+                worksite.approval_status = (
+                    WorksiteLocation.ApprovalStatus.APPROVED
+                    if decision == "approve"
+                    else WorksiteLocation.ApprovalStatus.REJECTED
+                )
+                worksite.is_active = decision == "approve"
+                worksite.reviewed_by = request.user
+                worksite.reviewed_at = timezone.now()
+                worksite.save(update_fields=(
+                    "approval_status",
+                    "is_active",
+                    "reviewed_by",
+                    "reviewed_at",
+                ))
+                audit(request.user, f"worksite.registration_{decision}", worksite)
+                outcome = "approved" if decision == "approve" else "rejected"
+                messages.success(request, f"{worksite.name} request {outcome}.")
+        elif worksite.is_active and worksite.approval_status == WorksiteLocation.ApprovalStatus.APPROVED:
+            worksite.is_active = False
+            worksite.reviewed_by = request.user
+            worksite.reviewed_at = timezone.now()
+            worksite.save(update_fields=("is_active", "reviewed_by", "reviewed_at"))
+            audit(request.user, "worksite.registration_reset", worksite)
+            messages.success(request, f"{worksite.name} was reset. The intern can request a new location.")
+        else:
+            messages.error(request, "Only an approved, active intern worksite can be reset.")
         return redirect("portal:company_worksites")
 
     form = WorksiteLocationForm(request.POST or None)
@@ -155,15 +258,26 @@ def company_worksites(request):
 
     return render(request, "portal/worksite_locations.html", {
         "form": form,
-        "worksites": company.worksites.all(),
+        "worksites": WorksiteLocation.objects.filter(
+            Q(company=company)
+            | Q(company__isnull=True, intern__in=accepted_interns)
+        ).select_related("intern__user", "created_by", "reviewed_by"),
+        "pending_worksite_count": WorksiteLocation.objects.filter(
+            company__isnull=True,
+            intern__in=accepted_interns,
+            approval_status=WorksiteLocation.ApprovalStatus.PENDING,
+        ).count(),
         "is_coordinator": False,
         "page_title": "Worksite locations",
-        "page_description": "Enroll each approved workplace. Interns accepted by your company must record attendance within one of your active worksite radii.",
+        "page_description": "Enroll approved company worksites and review location requests from your accepted interns. An approved intern-specific location takes precedence for that intern.",
     })
 
 
 @role_required(User.Role.COORDINATOR)
 def coordinator_external_worksites(request):
+    external_interns = InternProfile.objects.filter(
+        placement_type=InternProfile.PlacementType.EXTERNAL,
+    )
     if request.method == "POST" and request.POST.get("action") == "deactivate":
         worksite = get_object_or_404(
             WorksiteLocation.objects.filter(
@@ -176,6 +290,36 @@ def coordinator_external_worksites(request):
         worksite.save(update_fields=("is_active",))
         audit(request.user, "worksite.deactivated", worksite)
         messages.success(request, f"{worksite.name} was deactivated.")
+        return redirect("portal:coordinator_external_worksites")
+
+    if request.method == "POST" and request.POST.get("action") == "review_intern_request":
+        worksite = get_object_or_404(
+            WorksiteLocation.objects.filter(company__isnull=True, intern__in=external_interns),
+            pk=request.POST.get("worksite_id"),
+        )
+        decision = request.POST.get("decision")
+        if worksite.approval_status != WorksiteLocation.ApprovalStatus.PENDING:
+            messages.info(request, "This worksite request has already been reviewed.")
+        elif decision not in {"approve", "reject"}:
+            messages.error(request, "Choose whether to approve or reject the worksite request.")
+        else:
+            worksite.approval_status = (
+                WorksiteLocation.ApprovalStatus.APPROVED
+                if decision == "approve"
+                else WorksiteLocation.ApprovalStatus.REJECTED
+            )
+            worksite.is_active = decision == "approve"
+            worksite.reviewed_by = request.user
+            worksite.reviewed_at = timezone.now()
+            worksite.save(update_fields=(
+                "approval_status",
+                "is_active",
+                "reviewed_by",
+                "reviewed_at",
+            ))
+            audit(request.user, f"worksite.registration_{decision}", worksite)
+            outcome = "approved" if decision == "approve" else "rejected"
+            messages.success(request, f"{worksite.name} request {outcome}.")
         return redirect("portal:coordinator_external_worksites")
 
     form = ExternalWorksiteLocationForm(request.POST or None)
@@ -200,9 +344,12 @@ def coordinator_external_worksites(request):
     return render(request, "portal/worksite_locations.html", {
         "form": form,
         "worksites": worksites,
+        "pending_worksite_count": worksites.filter(
+            approval_status=WorksiteLocation.ApprovalStatus.PENDING,
+        ).count(),
         "is_coordinator": True,
         "page_title": "External intern worksites",
-        "page_description": "Assign an approved worksite and attendance radius to each external-placement intern.",
+        "page_description": "Assign worksite locations to external interns or review their self-registration requests before attendance can use them.",
     })
 
 
@@ -324,7 +471,18 @@ def _log_face_image_diagnostics(image, *, intern_id, endpoint, face_count=None):
 
 
 def _worksites_for_attendance(intern):
-    locations = WorksiteLocation.objects.filter(is_active=True)
+    intern_location = WorksiteLocation.objects.filter(
+        intern=intern,
+        is_active=True,
+        approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+    )
+    if intern_location.exists():
+        return intern_location
+
+    locations = WorksiteLocation.objects.filter(
+        is_active=True,
+        approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+    )
     if intern.placement_type == InternProfile.PlacementType.EXTERNAL:
         return locations.filter(company__isnull=True, intern=intern)
 
@@ -733,6 +891,9 @@ def attendance(request):
         "today": today,
         "location_enrolled": worksite_locations.exists(),
         "worksite_locations": worksite_locations,
+        "pending_worksite_request": intern.attendance_worksites.filter(
+            approval_status=WorksiteLocation.ApprovalStatus.PENDING,
+        ).first(),
         "pending_face_events": pending_face_events,
     })
 

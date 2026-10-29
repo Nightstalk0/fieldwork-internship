@@ -48,6 +48,35 @@ class ExternalWorksiteLocationForm(WorksiteLocationForm):
         ).select_related("user").order_by("user__last_name", "user__first_name", "user__username")
 
 
+class InternWorksiteRequestForm(forms.ModelForm):
+    class Meta:
+        model = WorksiteLocation
+        fields = ("name", "address", "latitude", "longitude", "reported_accuracy_meters")
+        widgets = {
+            "latitude": forms.HiddenInput(),
+            "longitude": forms.HiddenInput(),
+            "reported_accuracy_meters": forms.HiddenInput(),
+        }
+
+    def clean_latitude(self):
+        latitude = self.cleaned_data["latitude"]
+        if not -90 <= latitude <= 90:
+            raise forms.ValidationError("Latitude must be between -90 and 90 degrees.")
+        return latitude
+
+    def clean_longitude(self):
+        longitude = self.cleaned_data["longitude"]
+        if not -180 <= longitude <= 180:
+            raise forms.ValidationError("Longitude must be between -180 and 180 degrees.")
+        return longitude
+
+    def clean_reported_accuracy_meters(self):
+        accuracy = self.cleaned_data["reported_accuracy_meters"]
+        if accuracy is None or accuracy < 1:
+            raise forms.ValidationError("Capture your current location before submitting.")
+        return accuracy
+
+
 class InternProfileForm(forms.ModelForm):
     class Meta:
         model = InternProfile

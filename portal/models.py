@@ -140,6 +140,11 @@ class CompanyProfile(models.Model):
 
 
 class WorksiteLocation(models.Model):
+    class ApprovalStatus(models.TextChoices):
+        PENDING = "pending", "Pending supervisor review"
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
+
     company = models.ForeignKey(
         CompanyProfile,
         on_delete=models.CASCADE,
@@ -162,6 +167,21 @@ class WorksiteLocation(models.Model):
         default=100,
         validators=[MinValueValidator(10), MaxValueValidator(5000)],
     )
+    reported_accuracy_meters = models.PositiveIntegerField(null=True, blank=True)
+    approval_status = models.CharField(
+        max_length=12,
+        choices=ApprovalStatus.choices,
+        default=ApprovalStatus.APPROVED,
+        db_index=True,
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="worksite_locations_reviewed",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

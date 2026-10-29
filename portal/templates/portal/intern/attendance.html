@@ -15,9 +15,12 @@
   <strong>Worksite location is enrolled</strong>
   <p>Allow location access when submitting time-in and time-out. Your position must be within the radius set for your assigned worksite.</p>
   {% for worksite in worksite_locations %}<p><strong>{{ worksite.name }}</strong> · {{ worksite.radius_meters }} m radius</p>{% endfor %}
+  {% elif pending_worksite_request %}
+  <strong>Worksite location awaiting supervisor review</strong>
+  <p>{{ pending_worksite_request.name }} has been submitted. Attendance geofencing will use it after approval.</p>
   {% else %}
   <strong>Worksite location is not set up</strong>
-  <p>Attendance is unavailable until your host company enrolls a worksite or your coordinator assigns one.</p>
+  <p>Attendance is unavailable until a worksite is approved. You can <a href="{% url 'portal:profile' %}">register your current OJT location from your profile</a>, or ask your host company/coordinator to assign one.</p>
   {% endif %}
 </section>
 <section class="panel">
