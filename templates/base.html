@@ -53,23 +53,6 @@
   {% if request.user.is_authenticated %}<button class="sidebar-backdrop" type="button" aria-label="Close navigation menu" tabindex="-1"></button>{% endif %}
   <div class="app-main">
     <main class="page-shell">
-      {% if request.user.is_authenticated %}
-      <nav class="quick-actions" aria-label="Quick actions">
-        <strong>Quick actions</strong>
-        {% if request.user.is_staff or request.user.role == 'coordinator' %}
-          <a class="button button-primary" href="{% url 'portal:dtr_queue' %}">Approve pending logs</a>
-          <a class="button button-secondary" href="{% url 'portal:coordinator_daily_reports' %}">Review daily reports</a>
-          <a class="button button-secondary" href="{% url 'portal:coordinator_external_worksites' %}">Enroll external worksite</a>
-        {% elif request.user.role == 'company' %}
-          <a class="button button-primary" href="{% url 'portal:company_dtr_queue' %}">Review attendance</a>
-          <a class="button button-secondary" href="{% url 'portal:company_worksites' %}">Enroll a worksite</a>
-        {% else %}
-          <a class="button button-primary" href="{% url 'portal:attendance' %}">Record attendance</a>
-          <a class="button button-secondary" href="{% url 'portal:daily_report' %}">Submit daily report</a>
-          <a class="button button-secondary" href="{% url 'portal:profile' %}">Set up face enrollment</a>
-        {% endif %}
-      </nav>
-      {% endif %}
       {% if messages %}<div class="messages" aria-live="polite">{% for message in messages %}<div class="message message-{{ message.tags }}">{{ message }}</div>{% endfor %}</div>{% endif %}
       {% block content %}{% endblock %}
     </main>
