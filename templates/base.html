@@ -8,65 +8,103 @@
   <title>{% block title %}Fieldwork | Internship Management{% endblock %}</title>
   <link rel="stylesheet" href="{% static 'css/portal.css' %}">
 </head>
-<body>
-  <header class="topbar">
-    <a class="brand" href="{% url 'portal:dashboard' %}"><span class="brand-mark">F</span><span>Fieldwork</span></a>
-    {% if request.user.is_authenticated %}
-    <nav class="main-nav" aria-label="Main navigation">
-      {% if request.user.is_staff or request.user.role == 'coordinator' %}
-        <a href="{% url 'portal:coordinator_dashboard' %}" {% if request.resolver_match.url_name == 'coordinator_dashboard' %}class="nav-link-active" aria-current="page"{% endif %}>Overview</a>
-        <a href="{% url 'portal:dtr_queue' %}" {% if request.resolver_match.url_name == 'dtr_queue' %}class="nav-link-active" aria-current="page"{% endif %}>DTR queue{% if pending_dtr_count %}<span class="nav-count">{{ pending_dtr_count }}</span>{% endif %}</a>
-        <a href="{% url 'portal:coordinator_daily_reports' %}" {% if request.resolver_match.url_name == 'coordinator_daily_reports' %}class="nav-link-active" aria-current="page"{% endif %}>Daily reports{% if pending_daily_report_count %}<span class="nav-count">{{ pending_daily_report_count }}</span>{% endif %}</a>
-        <a href="{% url 'portal:coordinator_face_enrollment' %}" {% if request.resolver_match.url_name == 'coordinator_face_enrollment' %}class="nav-link-active" aria-current="page"{% endif %}>Face enrollment</a>
-        <a href="{% url 'portal:coordinator_external_worksites' %}" {% if request.resolver_match.url_name == 'coordinator_external_worksites' %}class="nav-link-active" aria-current="page"{% endif %}>External worksites</a>
-      {% elif request.user.role == 'company' %}
-        <a href="{% url 'portal:company_dashboard' %}" {% if request.resolver_match.url_name == 'company_dashboard' %}class="nav-link-active" aria-current="page"{% endif %}>Overview</a>
-        <a href="{% url 'portal:company_dtr_queue' %}" {% if request.resolver_match.url_name == 'company_dtr_queue' %}class="nav-link-active" aria-current="page"{% endif %}>DTR</a>
-        <a href="{% url 'portal:company_worksites' %}" {% if request.resolver_match.url_name == 'company_worksites' %}class="nav-link-active" aria-current="page"{% endif %}>Worksite locations</a>
-      {% else %}
-        <a href="{% url 'portal:intern_dashboard' %}" {% if request.resolver_match.url_name == 'intern_dashboard' %}class="nav-link-active" aria-current="page"{% endif %}>Overview</a>
-        <a href="{% url 'portal:attendance' %}" {% if request.resolver_match.url_name == 'attendance' %}class="nav-link-active" aria-current="page"{% endif %}>Attendance</a>
-        <a href="{% url 'portal:daily_report' %}" {% if request.resolver_match.url_name == 'daily_report' %}class="nav-link-active" aria-current="page"{% endif %}>Daily reports</a>
-        <a href="{% url 'portal:profile' %}" {% if request.resolver_match.url_name == 'profile' %}class="nav-link-active" aria-current="page"{% endif %}>Profile &amp; face enrollment</a>
+<body{% if request.user.is_authenticated %} class="is-authenticated"{% endif %}>
+  <header class="topbar{% if request.user.is_authenticated %} sidebar{% endif %}">
+    <div class="sidebar-brand-row">
+      <a class="brand" href="{% url 'portal:dashboard' %}"><span class="brand-mark">F</span><span>Fieldwork</span></a>
+      {% if request.user.is_authenticated %}
+      <button class="menu-toggle" type="button" aria-label="Open navigation menu" aria-controls="sidebar-content" aria-expanded="false">
+        <span></span><span></span><span></span>
+      </button>
       {% endif %}
-    </nav>
-    <div class="user-menu"><span>{{ request.user.get_full_name|default:request.user.username }}</span><form method="post" action="{% url 'accounts:logout' %}">{% csrf_token %}<button class="text-button" type="submit">Sign out</button></form></div>
+    </div>
+    {% if request.user.is_authenticated %}
+    <div class="sidebar-content" id="sidebar-content">
+      <nav class="main-nav" aria-label="Main navigation">
+        {% if request.user.is_staff or request.user.role == 'coordinator' %}
+          <a href="{% url 'portal:coordinator_dashboard' %}" data-icon="▦" {% if request.resolver_match.url_name == 'coordinator_dashboard' %}class="nav-link-active" aria-current="page"{% endif %}>Overview</a>
+          <a href="{% url 'portal:dtr_queue' %}" data-icon="◷" {% if request.resolver_match.url_name == 'dtr_queue' %}class="nav-link-active" aria-current="page"{% endif %}>DTR queue{% if pending_dtr_count %}<span class="nav-count">{{ pending_dtr_count }}</span>{% endif %}</a>
+          <a href="{% url 'portal:coordinator_daily_reports' %}" data-icon="☷" {% if request.resolver_match.url_name == 'coordinator_daily_reports' %}class="nav-link-active" aria-current="page"{% endif %}>Daily reports{% if pending_daily_report_count %}<span class="nav-count">{{ pending_daily_report_count }}</span>{% endif %}</a>
+          <a href="{% url 'portal:coordinator_face_enrollment' %}" data-icon="◎" {% if request.resolver_match.url_name == 'coordinator_face_enrollment' %}class="nav-link-active" aria-current="page"{% endif %}>Face enrollment</a>
+          <a href="{% url 'portal:coordinator_external_worksites' %}" data-icon="⌖" {% if request.resolver_match.url_name == 'coordinator_external_worksites' %}class="nav-link-active" aria-current="page"{% endif %}>External worksites</a>
+        {% elif request.user.role == 'company' %}
+          <a href="{% url 'portal:company_dashboard' %}" data-icon="▦" {% if request.resolver_match.url_name == 'company_dashboard' %}class="nav-link-active" aria-current="page"{% endif %}>Overview</a>
+          <a href="{% url 'portal:company_dtr_queue' %}" data-icon="◷" {% if request.resolver_match.url_name == 'company_dtr_queue' %}class="nav-link-active" aria-current="page"{% endif %}>DTR</a>
+          <a href="{% url 'portal:company_worksites' %}" data-icon="⌖" {% if request.resolver_match.url_name == 'company_worksites' %}class="nav-link-active" aria-current="page"{% endif %}>Worksite locations</a>
+        {% else %}
+          <a href="{% url 'portal:intern_dashboard' %}" data-icon="▦" {% if request.resolver_match.url_name == 'intern_dashboard' %}class="nav-link-active" aria-current="page"{% endif %}>Overview</a>
+          <a href="{% url 'portal:attendance' %}" data-icon="◷" {% if request.resolver_match.url_name == 'attendance' %}class="nav-link-active" aria-current="page"{% endif %}>Attendance</a>
+          <a href="{% url 'portal:daily_report' %}" data-icon="☷" {% if request.resolver_match.url_name == 'daily_report' %}class="nav-link-active" aria-current="page"{% endif %}>Daily reports</a>
+          <a href="{% url 'portal:profile' %}" data-icon="◉" {% if request.resolver_match.url_name == 'profile' %}class="nav-link-active" aria-current="page"{% endif %}>Profile &amp; face enrollment</a>
+        {% endif %}
+      </nav>
+      <div class="user-menu">
+        <div class="profile-summary">
+          <span class="profile-avatar" aria-hidden="true">{{ request.user.get_full_name|default:request.user.username|slice:":1"|upper }}</span>
+          <span class="profile-name">{{ request.user.get_full_name|default:request.user.username }}</span>
+        </div>
+        <form method="post" action="{% url 'accounts:logout' %}">{% csrf_token %}<button class="text-button" type="submit"><span aria-hidden="true">↪</span> Sign out</button></form>
+      </div>
+    </div>
     {% else %}
-    <nav class="main-nav"><a href="{% url 'accounts:login' %}">Sign in</a><a href="{% url 'accounts:register' %}">Create account</a></nav>
+    <nav class="main-nav guest-nav" aria-label="Account navigation"><a href="{% url 'accounts:login' %}">Sign in</a><a href="{% url 'accounts:register' %}">Create account</a></nav>
     {% endif %}
   </header>
-  <main class="page-shell">
-    {% if request.user.is_authenticated %}
-    <nav class="quick-actions" aria-label="Quick actions">
-      <strong>Quick actions</strong>
-      {% if request.user.is_staff or request.user.role == 'coordinator' %}
-        <a class="button button-primary" href="{% url 'portal:dtr_queue' %}">Approve pending logs</a>
-        <a class="button button-secondary" href="{% url 'portal:coordinator_daily_reports' %}">Review daily reports</a>
-        <a class="button button-secondary" href="{% url 'portal:coordinator_external_worksites' %}">Enroll external worksite</a>
-      {% elif request.user.role == 'company' %}
-        <a class="button button-primary" href="{% url 'portal:company_dtr_queue' %}">Review attendance</a>
-        <a class="button button-secondary" href="{% url 'portal:company_worksites' %}">Enroll a worksite</a>
-      {% else %}
-        <a class="button button-primary" href="{% url 'portal:attendance' %}">Record attendance</a>
-        <a class="button button-secondary" href="{% url 'portal:daily_report' %}">Submit daily report</a>
-        <a class="button button-secondary" href="{% url 'portal:profile' %}">Set up face enrollment</a>
+  {% if request.user.is_authenticated %}<button class="sidebar-backdrop" type="button" aria-label="Close navigation menu" tabindex="-1"></button>{% endif %}
+  <div class="app-main">
+    <main class="page-shell">
+      {% if request.user.is_authenticated %}
+      <nav class="quick-actions" aria-label="Quick actions">
+        <strong>Quick actions</strong>
+        {% if request.user.is_staff or request.user.role == 'coordinator' %}
+          <a class="button button-primary" href="{% url 'portal:dtr_queue' %}">Approve pending logs</a>
+          <a class="button button-secondary" href="{% url 'portal:coordinator_daily_reports' %}">Review daily reports</a>
+          <a class="button button-secondary" href="{% url 'portal:coordinator_external_worksites' %}">Enroll external worksite</a>
+        {% elif request.user.role == 'company' %}
+          <a class="button button-primary" href="{% url 'portal:company_dtr_queue' %}">Review attendance</a>
+          <a class="button button-secondary" href="{% url 'portal:company_worksites' %}">Enroll a worksite</a>
+        {% else %}
+          <a class="button button-primary" href="{% url 'portal:attendance' %}">Record attendance</a>
+          <a class="button button-secondary" href="{% url 'portal:daily_report' %}">Submit daily report</a>
+          <a class="button button-secondary" href="{% url 'portal:profile' %}">Set up face enrollment</a>
+        {% endif %}
+      </nav>
       {% endif %}
-    </nav>
-    {% endif %}
-    {% if messages %}<div class="messages" aria-live="polite">{% for message in messages %}<div class="message message-{{ message.tags }}">{{ message }}</div>{% endfor %}</div>{% endif %}
-    {% block content %}{% endblock %}
-  </main>
-  <footer class="site-footer"><span>Fieldwork Internship Management</span><span>Secure placement records</span></footer>
+      {% if messages %}<div class="messages" aria-live="polite">{% for message in messages %}<div class="message message-{{ message.tags }}">{{ message }}</div>{% endfor %}</div>{% endif %}
+      {% block content %}{% endblock %}
+    </main>
+    <footer class="site-footer"><span>Fieldwork Internship Management</span><span>Secure placement records</span></footer>
+  </div>
   <script>
-    document.querySelectorAll(".main-nav").forEach((nav) => {
-      nav.addEventListener("wheel", (event) => {
-        if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
-        const maxScroll = nav.scrollWidth - nav.clientWidth;
-        const nextScroll = nav.scrollLeft + event.deltaY;
-        if (maxScroll <= 0 || nextScroll < 0 || nextScroll > maxScroll) return;
-        event.preventDefault();
-        nav.scrollLeft = nextScroll;
-      }, { passive: false });
+    const menuToggle = document.querySelector(".menu-toggle");
+    const sidebar = document.querySelector(".topbar");
+    const sidebarBackdrop = document.querySelector(".sidebar-backdrop");
+
+    function setMenuOpen(isOpen) {
+      if (!menuToggle || !sidebar || !sidebarBackdrop) return;
+      sidebar.classList.toggle("menu-open", isOpen);
+      menuToggle.setAttribute("aria-expanded", String(isOpen));
+      menuToggle.setAttribute("aria-label", isOpen ? "Close navigation menu" : "Open navigation menu");
+      sidebarBackdrop.tabIndex = isOpen ? 0 : -1;
+    }
+
+    menuToggle?.addEventListener("click", () => {
+      setMenuOpen(menuToggle.getAttribute("aria-expanded") !== "true");
+    });
+    sidebarBackdrop?.addEventListener("click", () => setMenuOpen(false));
+    sidebar?.querySelectorAll(".main-nav a").forEach((link) => {
+      link.addEventListener("click", () => setMenuOpen(false));
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    });
+    document.querySelectorAll("form").forEach((form) => {
+      form.addEventListener("submit", (event) => {
+        const submitButton = event.submitter;
+        if (!(submitButton instanceof HTMLButtonElement) || submitButton.disabled) return;
+        submitButton.classList.add("is-loading");
+        submitButton.setAttribute("aria-busy", "true");
+      });
     });
   </script>
   {% block scripts %}{% endblock %}

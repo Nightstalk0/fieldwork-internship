@@ -11,7 +11,7 @@
 <section class="metric-grid">
   <div class="metric">
     <span>Today's attendance</span>
-    <strong>{% if recent_attendance.0.work_date == today %}Recorded{% else %}Not started{% endif %}</strong>
+    <strong>{% if recent_attendance.0.work_date == today %}<span class="status status-good">Recorded</span>{% else %}<span class="status status-neutral">Not started</span>{% endif %}</strong>
     <small>{{ today|date:"M j, Y" }}</small>
   </div>
   <div class="metric">

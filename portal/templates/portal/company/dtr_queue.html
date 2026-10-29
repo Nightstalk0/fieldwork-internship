@@ -22,8 +22,8 @@
           <td>{{ log.clock_in|date:"H:i"|default:"—" }}</td>
           <td>{{ log.clock_out|date:"H:i"|default:"—" }}</td>
           <td>{{ log.hours_worked }}</td>
-          <td>{% if not log.clock_in %}<span class="status">Not recorded</span>{% elif log.time_in_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
-          <td>{% if not log.clock_out %}<span class="status">Not recorded</span>{% elif log.time_out_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
+          <td>{% if not log.clock_in %}<span class="status status-neutral">Not recorded</span>{% elif log.time_in_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
+          <td>{% if not log.clock_out %}<span class="status status-neutral">Not recorded</span>{% elif log.time_out_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
           <td>
             {% for capture in log.face_captures.all %}
             <div>

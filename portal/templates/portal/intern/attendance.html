@@ -108,8 +108,8 @@
           <td>{{ log.hours_worked }}</td>
           <td>{{ log.get_clock_in_face_status_display }}{% if log.clock_in_face_score != None %} ({{ log.clock_in_face_score|floatformat:3 }}){% endif %}</td>
           <td>{{ log.get_clock_out_face_status_display }}{% if log.clock_out_face_score != None %} ({{ log.clock_out_face_score|floatformat:3 }}){% endif %}</td>
-          <td>{% if log.pending_time_in_face_capture %}<span class="status">Awaiting company/admin approval</span>{% elif not log.clock_in %}<span class="status">Not recorded</span>{% elif log.time_in_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
-          <td>{% if log.pending_time_out_face_capture %}<span class="status">Awaiting company/admin approval</span>{% elif not log.clock_out %}<span class="status">Not recorded</span>{% elif log.time_out_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
+          <td>{% if log.pending_time_in_face_capture %}<span class="status">Awaiting company/admin approval</span>{% elif not log.clock_in %}<span class="status status-neutral">Not recorded</span>{% elif log.time_in_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
+          <td>{% if log.pending_time_out_face_capture %}<span class="status">Awaiting company/admin approval</span>{% elif not log.clock_out %}<span class="status status-neutral">Not recorded</span>{% elif log.time_out_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
         </tr>
         {% empty %}
         <tr><td colspan="8" class="muted">No entries recorded.</td></tr>
