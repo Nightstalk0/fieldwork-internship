@@ -23,15 +23,16 @@ from .predictors import Model1CompletionPredictor, Model2RiskPredictor, Model3Ma
 class FaceDetectorTests(SimpleTestCase):
     @patch("ml_engine.face_detector.load_face_model")
     def test_returns_confidence_and_bounding_box_for_faces(self, load_model):
-        model = load_model.return_value
+        session = load_model.return_value
+        session.get_inputs.return_value = [SimpleNamespace(name="images")]
+        session.run.return_value = [np.array([[
+            [78, 104, 273, 299, 0.91, 0],
+            [8, 68, 65, 137, 0.84, 0],
+            [0, 0, 416, 416, 0.99, 1],
+            [0, 0, 100, 100, 0.10, 0],
+            [0, 0, 0, 0, 0, 0],
+        ]], dtype=np.float32)]
         image = Image.new("RGB", (640, 480))
-        model.predict.return_value = [
-            SimpleNamespace(boxes=[
-                SimpleNamespace(cls=[0], conf=[0.91], xyxy=[[120.2, 80.4, 420.1, 380.3]]),
-                SimpleNamespace(cls=[0], conf=[0.84], xyxy=[[12.0, 25.0, 100.0, 130.0]]),
-                SimpleNamespace(cls=[1], conf=[0.99], xyxy=[[0.0, 0.0, 10.0, 10.0]]),
-            ]),
-        ]
 
         result = detect_faces(image)
 
@@ -39,19 +40,20 @@ class FaceDetectorTests(SimpleTestCase):
         self.assertEqual(result["face_count"], 2)
         self.assertEqual(result["detections"], [
             {"confidence": 0.91, "bbox": [120, 80, 420, 380]},
-            {"confidence": 0.84, "bbox": [12, 25, 100, 130]},
+            {"confidence": 0.84, "bbox": [12, 25, 100, 131]},
         ])
-        model.predict.assert_called_once_with(
-            source=image,
-            imgsz=416,
-            device="cpu",
-            max_det=10,
-            verbose=False,
-        )
+        session.run.assert_called_once()
+        model_input = session.run.call_args.args[1]["images"]
+        self.assertEqual(model_input.shape, (1, 3, 416, 416))
+        self.assertEqual(model_input.dtype, np.float32)
+        self.assertGreaterEqual(float(model_input.min()), 0)
+        self.assertLessEqual(float(model_input.max()), 1)
 
     @patch("ml_engine.face_detector.load_face_model")
     def test_returns_empty_detection_list_for_no_faces(self, load_model):
-        load_model.return_value.predict.return_value = [SimpleNamespace(boxes=[])]
+        session = load_model.return_value
+        session.get_inputs.return_value = [SimpleNamespace(name="images")]
+        session.run.return_value = [np.zeros((1, 10, 6), dtype=np.float32)]
 
         result = detect_faces(Image.new("RGB", (640, 480)))
 
@@ -60,6 +62,18 @@ class FaceDetectorTests(SimpleTestCase):
             "face_count": 0,
             "detections": [],
         })
+
+    @patch("ml_engine.face_detector.load_face_model")
+    def test_converts_alpha_images_to_three_channel_onnx_input(self, load_model):
+        session = load_model.return_value
+        session.get_inputs.return_value = [SimpleNamespace(name="images")]
+        session.run.return_value = [np.zeros((1, 10, 6), dtype=np.float32)]
+
+        result = detect_faces(Image.new("RGBA", (32, 24), (255, 0, 0, 128)))
+
+        self.assertFalse(result["face_detected"])
+        model_input = session.run.call_args.args[1]["images"]
+        self.assertEqual(model_input.shape, (1, 3, 416, 416))
 
 
 class FaceRecognitionTests(SimpleTestCase):

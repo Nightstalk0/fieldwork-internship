@@ -22,7 +22,7 @@ Set `USE_S3=true` with an AWS bucket and region to store uploads in S3. Sentry a
 
 ## Face detection
 
-The supplied YOLO11n face detector is stored at `ml_engine/models/best.pt` and runs directly with Ultralytics on CPU; it has not been converted or modified. The inference stack is pinned to Ultralytics 8.4.174, PyTorch 2.14.1 CPU, Torchvision 0.29.1 CPU, and NumPy 2.5.3 in `requirements.txt`. The existing Pillow range (`>=10.4,<12`; currently 11.3.0) is compatible and is sufficient for in-memory image inputs.
+The supplied YOLO11n face detector checkpoint is `ml_engine/models/best.pt`. Production inference uses its exported `ml_engine/models/best.onnx` model with ONNX Runtime on CPU; the Ultralytics and PyTorch packages are only needed when regenerating that ONNX file. NumPy is pinned to 2.5.3, and Pillow (`>=10.4,<12`) handles in-memory camera images.
 
 Run the detector against an image with:
 
@@ -30,7 +30,7 @@ Run the detector against an image with:
 python manage.py detect_faces path\to\image.jpg
 ```
 
-The command prints JSON containing `face_detected`, `face_count`, and a `detections` array. Each detection has a confidence score and an `[x1, y1, x2, y2]` pixel bounding box. The model is loaded once per process. Attendance and camera behavior are unchanged; application code can call `ml_engine.face_detector.detect_faces` with an image path or a PIL image.
+The command prints JSON containing `face_detected`, `face_count`, and a `detections` array. Each detection has a confidence score and an `[x1, y1, x2, y2]` pixel bounding box. The ONNX session is loaded once per process. Attendance and camera behavior are unchanged; application code can call `ml_engine.face_detector.detect_faces` with an image path or a PIL image.
 
 ## Face-verified attendance
 
@@ -52,7 +52,7 @@ For production, configure a stable `FACE_EMBEDDING_ENCRYPTION_KEY` secret. It en
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-Set it in the deployment's secret environment variables; do not commit the key. When `DEBUG=true`, local development can derive a key from `SECRET_KEY`; otherwise the explicit Fernet key is required. Rotating either key requires deleting and recreating face enrollments. Camera capture requires browser permission and HTTPS except on localhost. The `.pt` checkpoint must come from a trusted source because loading PyTorch checkpoints can execute serialized code.
+Set it in the deployment's secret environment variables; do not commit the key. When `DEBUG=true`, local development can derive a key from `SECRET_KEY`; otherwise the explicit Fernet key is required. Rotating either key requires deleting and recreating face enrollments. Camera capture requires browser permission and HTTPS except on localhost. The `.pt` checkpoint must come from a trusted source when running the export script because loading PyTorch checkpoints can execute serialized code.
 
 `python manage.py seed_demo_data --password <temporary-password>` creates an example intern, company, and published opportunity. Without the option, the demo accounts are created with unusable passwords.
 
@@ -66,7 +66,14 @@ Each time-in and time-out log stores its submitted coordinates and whether that 
 
 For temporary Render face-capture troubleshooting, set `FACE_CAPTURE_DIAGNOSTICS=true` in the service environment and inspect the service logs. Diagnostics report decoded image type, mode, dimensions, NumPy shape/dtype, and face count without logging image contents; disable the setting after troubleshooting.
 
-The face detector loads `best.pt` lazily and caches one model per worker process; do not preload it in the WSGI module on small-memory instances. Render's WSGI startup forces CPU-only PyTorch and one math-library thread, and inference uses a 416-pixel input size and a 10-detection limit to reduce peak memory. A single Gunicorn worker is recommended for 512 MB instances.
+The Render face detector runs `best.onnx` with ONNX Runtime's CPU provider, with one inference thread and one Gunicorn worker recommended for 512 MB instances. PyTorch and Ultralytics are not installed in the production requirements. To export or regenerate the model locally, install the export-only dependencies and run:
+
+```powershell
+python -m pip install -r requirements-export.txt
+python ml_engine/export_face_detector.py
+```
+
+Commit or otherwise deploy the generated `ml_engine/models/best.onnx` file with the application. The export script embeds NMS and fixes the input size and detection limit to match the runtime implementation.
 
 All interns can submit one daily report per workday for coordinator review. Historical OJT document records remain in the database, but OJT pages have been retired and their old URLs redirect to the relevant core workflow. New interns are not given default requirements, and OJT approval does not block attendance or reports.
 
