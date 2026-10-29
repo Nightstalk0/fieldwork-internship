@@ -1,6 +1,6 @@
 import base64
 import tempfile
-from datetime import datetime, timezone as datetime_timezone
+from datetime import datetime, timedelta, timezone as datetime_timezone
 from io import BytesIO
 from unittest.mock import patch
 from zipfile import ZipFile
@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet
 from accounts.models import User
 from ml_engine.face_recognition import FaceImageError, decrypt_embedding
 from .forms import InternProfileForm
-from .models import Application, AttendanceFaceCapture, AttendanceLog, CompanyProfile, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, InternProfile, Posting, RiskAssessment, Scorecard, WeeklyReport, WorksiteLocation
+from .models import AcademicPeriod, Application, AttendanceFaceCapture, AttendanceLog, CompanyProfile, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, InternProfile, Posting, RiskAssessment, Scorecard, WeeklyReport, WorksiteLocation
 from .utils import haversine_distance_km
 from .validators import FileSizeAndTypeValidator
 
@@ -322,6 +322,178 @@ class PortalWorkflowTests(TestCase):
         self.assertTrue(log.clock_in_within_location)
         self.assertEqual(log.clock_in_distance_meters, 0)
         self.assertEqual(log.clock_in_allowed_radius_meters, personal_site.radius_meters)
+
+    def test_academic_period_rejects_reversed_or_overlapping_ranges(self):
+        prelim = AcademicPeriod.objects.create(
+            academic_year="2026-2027",
+            period=AcademicPeriod.Period.PRELIM,
+            starts_on="2026-08-01",
+            ends_on="2026-09-01",
+        )
+        overlapping = AcademicPeriod(
+            academic_year="2026-2027",
+            period=AcademicPeriod.Period.MIDTERM,
+            starts_on="2026-09-01",
+            ends_on="2026-10-01",
+        )
+
+        with self.assertRaises(ValidationError):
+            overlapping.full_clean()
+        self.assertEqual(prelim.period, AcademicPeriod.Period.PRELIM)
+
+        reversed_range = AcademicPeriod(
+            academic_year="2026-2027",
+            period=AcademicPeriod.Period.FINAL,
+            starts_on="2026-12-01",
+            ends_on="2026-11-30",
+        )
+        with self.assertRaises(ValidationError):
+            reversed_range.full_clean()
+
+    def test_dtr_period_filter_weeks_and_486_hour_cap(self):
+        periods = [
+            AcademicPeriod.objects.create(
+                academic_year="2026-2027",
+                period=period,
+                starts_on=start,
+                ends_on=end,
+            )
+            for period, start, end in (
+                (AcademicPeriod.Period.PRELIM, "2026-01-05", "2026-01-05"),
+                (AcademicPeriod.Period.MIDTERM, "2026-01-06", "2026-01-06"),
+                (AcademicPeriod.Period.PRE_FINAL, "2026-01-07", "2026-01-07"),
+                (AcademicPeriod.Period.FINAL, "2026-01-08", "2026-01-08"),
+            )
+        ]
+        for day, hours in enumerate((250, 250, 12, 8), start=5):
+            start = datetime(2026, 1, day, 8, tzinfo=datetime_timezone.utc)
+            AttendanceLog.objects.create(
+                intern=self.intern,
+                work_date=f"2026-01-{day:02d}",
+                clock_in=start,
+                clock_out=start + timedelta(hours=hours),
+                time_in_approved=True,
+                time_out_approved=True,
+            )
+        approved_logs = AttendanceLog.objects.filter(intern=self.intern)
+        weekly_aggregate = list(approved_logs.approved_hours_by_week())
+        self.assertEqual(len(weekly_aggregate), 1)
+        self.assertEqual(weekly_aggregate[0]["total_duration"], timedelta(hours=520))
+        self.assertEqual(
+            approved_logs.approved_hours_for_period(periods[0].starts_on, periods[0].ends_on),
+            timedelta(hours=250),
+        )
+        self.client.force_login(self.intern_user)
+
+        all_periods = self.client.get(reverse("portal:attendance"))
+
+        self.assertEqual(all_periods.status_code, 200)
+        self.assertEqual(all_periods.context["approved_rendered_hours"], 486)
+        self.assertEqual(
+            [entry["hours"] for entry in all_periods.context["period_totals"]],
+            [250, 236, 0, 0],
+        )
+        self.assertEqual(len(all_periods.context["weekly_groups"]), 1)
+        self.assertEqual(all_periods.context["weekly_groups"][0]["hours"], 486)
+        self.assertContains(all_periods, "Week 1")
+        self.assertContains(all_periods, "Location")
+
+        selected_period = self.client.get(
+            reverse("portal:attendance"),
+            {"period": periods[1].pk},
+        )
+        self.assertEqual(len(selected_period.context["weekly_groups"]), 1)
+        self.assertEqual(selected_period.context["weekly_groups"][0]["hours"], 236)
+        self.assertEqual(len(selected_period.context["weekly_groups"][0]["logs"]), 1)
+        self.assertEqual(selected_period.context["weekly_groups"][0]["logs"][0].rendered_hours, 236)
+
+    def test_pending_attendance_does_not_count_toward_dtr_progress(self):
+        start = datetime(2026, 1, 5, 8, tzinfo=datetime_timezone.utc)
+        AttendanceLog.objects.create(
+            intern=self.intern,
+            work_date="2026-01-05",
+            clock_in=start,
+            clock_out=start + timedelta(hours=8),
+            time_in_approved=True,
+            time_out_approved=False,
+        )
+        self.client.force_login(self.intern_user)
+
+        response = self.client.get(reverse("portal:intern_dashboard"))
+
+        self.assertEqual(response.context["completed_hours"], 0)
+        self.assertEqual(response.context["completion_percent"], 0)
+
+    def test_coordinator_dtr_summary_filters_and_caps_approved_hours(self):
+        self._complete_intern_details()
+        Application.objects.create(
+            intern=self.intern,
+            posting=self.posting,
+            status=Application.Status.ACCEPTED,
+        )
+        start = datetime(2026, 1, 5, 8, tzinfo=datetime_timezone.utc)
+        AttendanceLog.objects.create(
+            intern=self.intern,
+            work_date="2026-01-05",
+            clock_in=start,
+            clock_out=start + timedelta(hours=500),
+            time_in_approved=True,
+            time_out_approved=True,
+        )
+        coordinator = User.objects.create_user(username="dtr-summary-coordinator", role=User.Role.COORDINATOR)
+        self.client.force_login(coordinator)
+
+        response = self.client.get(reverse("portal:coordinator_dtr_summary"), {
+            "q": "TEST-STUDENT-001",
+            "placement": InternProfile.PlacementType.PLATFORM,
+            "company": self.company.pk,
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["intern_page"].paginator.count, 1)
+        listed_intern = response.context["intern_page"].object_list[0]
+        self.assertEqual(listed_intern.approved_rendered_hours, 486)
+        self.assertEqual(listed_intern.completion_percent, 100)
+        self.assertContains(response, "486.00 / 486 h")
+
+    def test_coordinator_dtr_summary_paginates_and_filters_external_hosts(self):
+        for index in range(26):
+            User.objects.create_user(username=f"dtr-roster-{index}", role=User.Role.INTERN)
+        external_user = User.objects.create_user(username="external-dtr-intern", role=User.Role.INTERN)
+        external_intern = InternProfile.objects.get(user=external_user)
+        external_intern.placement_type = InternProfile.PlacementType.EXTERNAL
+        external_intern.external_host = "Northside Training"
+        external_intern.save(update_fields=("placement_type", "external_host"))
+        coordinator = User.objects.create_user(username="dtr-paginator", role=User.Role.COORDINATOR)
+        self.client.force_login(coordinator)
+
+        page_two = self.client.get(reverse("portal:coordinator_dtr_summary"), {"page": 2})
+
+        self.assertEqual(page_two.context["intern_page"].paginator.count, 28)
+        self.assertEqual(len(page_two.context["intern_page"].object_list), 3)
+        self.assertContains(page_two, "Page 2 of 2")
+        external_filter = self.client.get(
+            reverse("portal:coordinator_dtr_summary"),
+            {"placement": InternProfile.PlacementType.EXTERNAL, "host": "Northside Training"},
+        )
+        self.assertEqual(external_filter.context["intern_page"].paginator.count, 1)
+        self.assertContains(external_filter, "Northside Training")
+
+    def test_company_dtr_detail_is_limited_to_accepted_company_interns(self):
+        self._complete_intern_details()
+        Application.objects.create(
+            intern=self.intern,
+            posting=self.posting,
+            status=Application.Status.ACCEPTED,
+        )
+        self.client.force_login(self.company_user)
+
+        response = self.client.get(
+            reverse("portal:company_dtr_detail", args=(self.intern.pk,)),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Weekly DTR breakdown")
 
     def test_role_dashboard_routes_use_role_specific_paths(self):
         self.assertEqual(reverse("portal:intern_dashboard"), "/intern/dashboard/")

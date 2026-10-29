@@ -7,7 +7,10 @@
     <h1>Attendance review</h1>
     <p class="muted">{{ pending_dtr_count }} time event{{ pending_dtr_count|pluralize }} awaiting approval.</p>
   </div>
-  <a class="button button-secondary" href="{% url 'portal:company_dashboard' %}">Company overview</a>
+  <div class="clock-actions">
+    <a class="button button-secondary" href="{% url 'portal:company_dtr_summary' %}">Intern DTR summaries</a>
+    <a class="button button-secondary" href="{% url 'portal:company_dashboard' %}">Company overview</a>
+  </div>
 </div>
 
 <section class="panel">

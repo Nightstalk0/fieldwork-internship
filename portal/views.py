@@ -12,11 +12,12 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
-from django.db.models import Avg, Count, Q
+from django.db.models import Avg, Count, DurationField, ExpressionWrapper, F, Q, Sum
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.core.paginator import Paginator
 from django.views.decorators.http import require_POST
 from docx import Document
 from docx.opc.exceptions import PackageNotFoundError
@@ -28,7 +29,7 @@ from zipfile import BadZipFile, LargeZipFile, ZipFile
 from accounts.models import User
 
 from .forms import CompanyProfileForm, DailyReportForm, ExternalWorksiteLocationForm, InternProfileForm, InternWorksiteRequestForm, PostingForm, ScorecardForm, WorksiteLocationForm
-from .models import Application, AttendanceFaceCapture, AttendanceLog, AuditLog, CompanyProfile, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, InternProfile, Posting, RiskAssessment, Scorecard, WorksiteLocation, pending_attendance_approval_count
+from .models import AcademicPeriod, Application, AttendanceFaceCapture, AttendanceLog, AuditLog, CompanyProfile, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, InternProfile, OJT_RENDERED_HOURS_CAP, Posting, RiskAssessment, Scorecard, WorksiteLocation, pending_attendance_approval_count
 from .utils import attendance_pdf, audit, certificate_pdf, haversine_distance_km
 from ml_engine.face_capture import FaceCaptureError, decode_camera_image, encode_camera_image
 from ml_engine.face_detector import detect_faces
@@ -44,6 +45,122 @@ from ml_engine.face_recognition import (
 
 OJT_TARGET_HOURS = 120
 LOGGER = logging.getLogger(__name__)
+
+
+def _approved_hours_by_intern(intern_ids):
+    duration = ExpressionWrapper(F("clock_out") - F("clock_in"), output_field=DurationField())
+    daily_totals = AttendanceLog.objects.filter(
+        intern_id__in=intern_ids,
+    ).approved().values(
+        "intern_id",
+        "work_date",
+    ).annotate(
+        total_duration=Sum(duration),
+    ).order_by("intern_id", "work_date")
+    result = {}
+    for row in daily_totals:
+        total_duration = row["total_duration"]
+        daily_hours = round(total_duration.total_seconds() / 3600, 2) if total_duration else 0
+        intern_id = row["intern_id"]
+        consumed_hours = min(
+            daily_hours,
+            max(OJT_RENDERED_HOURS_CAP - result.get(intern_id, 0), 0),
+        )
+        result[intern_id] = round(result.get(intern_id, 0) + consumed_hours, 2)
+    return result
+
+
+def _dtr_breakdown_context(intern, selected_period_id="all"):
+    periods = list(AcademicPeriod.objects.all())
+    selected_period = None
+    if selected_period_id not in {"", "all", None}:
+        selected_period = get_object_or_404(AcademicPeriod, pk=selected_period_id)
+
+    all_logs = list(intern.attendance_logs.order_by("work_date", "pk"))
+    approved_hours_by_day = {
+        row["work_date"]: round(row["total_duration"].total_seconds() / 3600, 2)
+        for row in AttendanceLog.objects.filter(intern=intern).approved_hours_by_day()
+    }
+    remaining_hours = float(OJT_RENDERED_HOURS_CAP)
+    period_hours = {period.pk: 0.0 for period in periods}
+    week_for_log = {}
+    monday_dates = []
+
+    for period in periods:
+        period.display_label = f"{period.academic_year} · {period.get_period_display()}"
+
+    for log in all_logs:
+        approved_hours = approved_hours_by_day.get(log.work_date, 0)
+        rendered_hours = min(approved_hours, remaining_hours)
+        rendered_hours = round(max(rendered_hours, 0), 2)
+        remaining_hours = round(max(remaining_hours - rendered_hours, 0), 2)
+        log.rendered_hours = rendered_hours
+
+        log.academic_period = next(
+            (
+                period
+                for period in periods
+                if period.starts_on <= log.work_date <= period.ends_on
+            ),
+            None,
+        )
+        if log.academic_period:
+            period_hours[log.academic_period.pk] += rendered_hours
+
+        week_start = log.work_date - timedelta(days=log.work_date.weekday())
+        week_for_log[log.pk] = week_start
+        monday_dates.append(week_start)
+        log.week_day_number = log.work_date.weekday() + 1
+
+    period_totals = [
+        {
+            "period": period,
+            "hours": round(period_hours[period.pk], 2),
+        }
+        for period in periods
+    ]
+    overall_hours = round(OJT_RENDERED_HOURS_CAP - remaining_hours, 2)
+    unassigned_period_hours = round(
+        max(overall_hours - sum(period_hours.values()), 0),
+        2,
+    )
+    if selected_period:
+        display_logs = [
+            log
+            for log in all_logs
+            if selected_period.starts_on <= log.work_date <= selected_period.ends_on
+        ]
+    else:
+        display_logs = all_logs
+
+    first_week = min(monday_dates) if monday_dates else None
+    week_map = {}
+    for log in display_logs:
+        week_start = week_for_log[log.pk]
+        week_map.setdefault(week_start, []).append(log)
+
+    weekly_groups = []
+    for week_start in sorted(week_map, reverse=True):
+        week_logs = week_map[week_start]
+        week_number = ((week_start - first_week).days // 7 + 1) if first_week else 1
+        weekly_groups.append({
+            "number": week_number,
+            "start": week_start,
+            "end": week_start + timedelta(days=6),
+            "logs": list(reversed(week_logs)),
+            "hours": round(sum(log.rendered_hours for log in week_logs), 2),
+        })
+
+    return {
+        "weekly_groups": weekly_groups,
+        "academic_periods": periods,
+        "selected_academic_period": selected_period,
+        "period_totals": period_totals,
+        "unassigned_period_hours": unassigned_period_hours,
+        "approved_rendered_hours": overall_hours,
+        "completion_percent": round(overall_hours * 100 / OJT_RENDERED_HOURS_CAP, 1),
+        "rendered_hours_cap": OJT_RENDERED_HOURS_CAP,
+    }
 
 
 def role_required(*roles):
@@ -92,16 +209,15 @@ def dashboard(request):
 @role_required(User.Role.INTERN)
 def intern_dashboard(request):
     intern = get_object_or_404(InternProfile, user=request.user)
-    completed_hours = round(sum(
-        log.hours_worked
-        for log in intern.attendance_logs.filter(time_in_approved=True, time_out_approved=True)
-    ), 2)
+    completed_hours = _approved_hours_by_intern([intern.pk]).get(intern.pk, 0)
     context = {
         "intern": intern,
         "recent_attendance": intern.attendance_logs.all()[:7],
         "recent_daily_reports": intern.daily_reports.all()[:4],
         "today": timezone.localdate(),
         "completed_hours": completed_hours,
+        "completion_percent": round(completed_hours * 100 / OJT_RENDERED_HOURS_CAP, 1),
+        "rendered_hours_cap": OJT_RENDERED_HOURS_CAP,
     }
     return render(request, "portal/intern/dashboard.html", context)
 
@@ -877,7 +993,7 @@ def attendance(request):
         return redirect("portal:attendance")
 
     today_log = AttendanceLog.objects.filter(intern=intern, work_date=today).first()
-    logs = intern.attendance_logs.all()[:30]
+    dtr_context = _dtr_breakdown_context(intern, request.GET.get("period", "all"))
     pending_face_events = set()
     if today_log:
         pending_face_events = set(
@@ -887,7 +1003,6 @@ def attendance(request):
         )
     return render(request, "portal/intern/attendance.html", {
         "today_log": today_log,
-        "logs": logs,
         "today": today,
         "location_enrolled": worksite_locations.exists(),
         "worksite_locations": worksite_locations,
@@ -895,6 +1010,7 @@ def attendance(request):
             approval_status=WorksiteLocation.ApprovalStatus.PENDING,
         ).first(),
         "pending_face_events": pending_face_events,
+        **dtr_context,
     })
 
 
@@ -1090,6 +1206,161 @@ def accepted_company_interns(company):
         applications__posting__company=company,
         applications__status=Application.Status.ACCEPTED,
     ).select_related("user").distinct()
+
+
+def _dtr_roster_context(request, interns, *, coordinator=False):
+    placement = request.GET.get("placement", "")
+    valid_placements = {choice[0] for choice in InternProfile.PlacementType.choices}
+    if placement and placement not in valid_placements:
+        return None, HttpResponseBadRequest("Invalid placement filter.")
+    if placement:
+        interns = interns.filter(placement_type=placement)
+
+    search = request.GET.get("q", "").strip()
+    if search:
+        interns = interns.filter(
+            Q(user__first_name__icontains=search)
+            | Q(user__last_name__icontains=search)
+            | Q(user__username__icontains=search)
+            | Q(student_id__icontains=search)
+        )
+
+    companies = CompanyProfile.objects.none()
+    external_hosts = []
+    selected_company = None
+    selected_host = ""
+    if coordinator:
+        companies = CompanyProfile.objects.filter(
+            postings__applications__status=Application.Status.ACCEPTED,
+        ).distinct().order_by("organization")
+        external_hosts = list(
+            InternProfile.objects.filter(
+                placement_type=InternProfile.PlacementType.EXTERNAL,
+            ).exclude(external_host="").order_by().values_list(
+                "external_host",
+                flat=True,
+            ).distinct()
+        )
+        company_id = request.GET.get("company", "")
+        if company_id:
+            if not company_id.isdigit():
+                return None, HttpResponseBadRequest("Invalid company filter.")
+            selected_company = get_object_or_404(companies, pk=company_id)
+            interns = interns.filter(
+                applications__posting__company=selected_company,
+                applications__status=Application.Status.ACCEPTED,
+            ).distinct()
+        selected_host = request.GET.get("host", "")
+        if selected_host:
+            if selected_host not in external_hosts:
+                return None, HttpResponseBadRequest("Invalid external host filter.")
+            interns = interns.filter(
+                placement_type=InternProfile.PlacementType.EXTERNAL,
+                external_host=selected_host,
+            )
+
+    interns = interns.select_related("user").order_by(
+        "user__last_name",
+        "user__first_name",
+        "user__username",
+    )
+    page = Paginator(interns, 25).get_page(request.GET.get("page"))
+    hours_by_intern = _approved_hours_by_intern(
+        [intern.pk for intern in page.object_list],
+    )
+    accepted_company_names = {}
+    if coordinator:
+        page_intern_ids = [intern.pk for intern in page.object_list]
+        applications = Application.objects.filter(
+            intern_id__in=page_intern_ids,
+            status=Application.Status.ACCEPTED,
+        ).select_related("posting__company")
+        for application in applications:
+            accepted_company_names.setdefault(application.intern_id, set()).add(
+                application.posting.company.organization,
+            )
+    for intern in page.object_list:
+        intern.approved_rendered_hours = hours_by_intern.get(intern.pk, 0)
+        intern.completion_percent = round(
+            intern.approved_rendered_hours * 100 / OJT_RENDERED_HOURS_CAP,
+            1,
+        )
+        intern.accepted_company_names = sorted(accepted_company_names.get(intern.pk, set()))
+    query_params = request.GET.copy()
+    query_params.pop("page", None)
+    return {
+        "intern_page": page,
+        "search": search,
+        "selected_placement": placement,
+        "companies": companies,
+        "selected_company": selected_company,
+        "external_hosts": external_hosts,
+        "selected_host": selected_host,
+        "placement_choices": (
+            (InternProfile.PlacementType.PLATFORM, "Internal"),
+            (InternProfile.PlacementType.EXTERNAL, "External"),
+        ),
+        "rendered_hours_cap": OJT_RENDERED_HOURS_CAP,
+        "is_coordinator": coordinator,
+        "query_string": query_params.urlencode(),
+    }, None
+
+
+@role_required(User.Role.COMPANY)
+def company_dtr_summary(request):
+    company = get_object_or_404(CompanyProfile, user=request.user)
+    context, error = _dtr_roster_context(
+        request,
+        accepted_company_interns(company),
+    )
+    if error:
+        return error
+    context.update({
+        "company": company,
+        "detail_url_name": "portal:company_dtr_detail",
+    })
+    return render(request, "portal/dtr_summary.html", context)
+
+
+@role_required(User.Role.COORDINATOR)
+def coordinator_dtr_summary(request):
+    context, error = _dtr_roster_context(
+        request,
+        InternProfile.objects.all(),
+        coordinator=True,
+    )
+    if error:
+        return error
+    context["detail_url_name"] = "portal:coordinator_dtr_detail"
+    return render(request, "portal/dtr_summary.html", context)
+
+
+def _render_dtr_detail(request, intern, *, coordinator):
+    context = _dtr_breakdown_context(intern, request.GET.get("period", "all"))
+    context.update({
+        "intern": intern,
+        "today": timezone.localdate(),
+        "is_coordinator": coordinator,
+        "summary_url_name": (
+            "portal:coordinator_dtr_summary"
+            if coordinator
+            else "portal:company_dtr_summary"
+        ),
+    })
+    return render(request, "portal/dtr_detail.html", context)
+
+
+@role_required(User.Role.COMPANY)
+def company_dtr_detail(request, intern_id):
+    company = get_object_or_404(CompanyProfile, user=request.user)
+    intern = get_object_or_404(accepted_company_interns(company), pk=intern_id)
+    return _render_dtr_detail(request, intern, coordinator=False)
+
+
+@role_required(User.Role.COORDINATOR)
+def coordinator_dtr_detail(request, intern_id):
+    intern = get_object_or_404(InternProfile.objects.select_related("user"), pk=intern_id)
+    return _render_dtr_detail(request, intern, coordinator=True)
 
 
 def company_attendance_logs(company):

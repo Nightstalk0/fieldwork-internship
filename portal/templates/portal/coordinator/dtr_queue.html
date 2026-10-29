@@ -2,6 +2,7 @@
 {% block content %}
 <div class="page-heading">
 	<div><p class="eyebrow">PROGRAM OPERATIONS</p><h1>Attendance review</h1><p class="muted">{{ pending_dtr_count }} time event{{ pending_dtr_count|pluralize }} awaiting approval. Review each intern-submitted capture here.</p></div>
+	<a class="button button-secondary" href="{% url 'portal:coordinator_dtr_summary' %}">Intern DTR summaries</a>
 </div>
 <section class="panel">
 	<div class="table-wrap">

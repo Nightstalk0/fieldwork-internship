@@ -66,6 +66,12 @@ The server checks submitted coordinates against assigned worksite coordinates an
 
 Each time-in and time-out stores submitted coordinates, distance to the nearest applicable site, allowed radius, geofence result, and any explanation. Older attendance records retain an unknown (`NULL`) location-check status.
 
+## DTR hours and academic periods
+
+The intern attendance page groups entries into Monday–Sunday weeks and displays only fully approved time-in/time-out hours toward OJT completion. Rendered hours are allocated oldest-first and capped at 486.0 per intern; unapproved entries remain visible but contribute zero. Company supervisors can open **Intern DTR summaries** for their accepted interns, while coordinators can search all interns by name/student ID and filter by placement type or accepted company. DTR summaries are paginated.
+
+Configure academic grading ranges in Django admin under **Academic periods**. Create one date-range record for each Prelim, Midterm, Pre-Final, and Final period, with an academic-year label; ranges must not overlap. The DTR period filter assigns attendance dates to these ranges. Existing attendance remains in **All periods** even if it falls outside configured dates.
+
 To test locally with Chrome/Edge location emulation:
 
 1. Start the Django server and sign in as an intern with an accepted company placement or an external placement.

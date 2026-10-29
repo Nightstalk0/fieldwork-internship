@@ -1,0 +1,93 @@
+<section class="panel progress-panel">
+  <div class="section-heading">
+    <h2>OJT completion</h2>
+    <strong>{{ approved_rendered_hours|floatformat:2 }} / {{ rendered_hours_cap }} hours</strong>
+  </div>
+  <progress max="{{ rendered_hours_cap }}" value="{{ approved_rendered_hours }}" aria-label="OJT completion"></progress>
+  <p>{{ completion_percent|floatformat:1 }}% complete. Only fully approved time-in/time-out pairs count toward the cap.</p>
+  {% if unassigned_period_hours %}<p>{{ unassigned_period_hours|floatformat:2 }} approved hours are outside configured academic period ranges.</p>{% endif %}
+  {% if period_totals %}
+  <div class="dtr-period-totals">
+    {% for item in period_totals %}
+    <span>{{ item.period.display_label }}: <strong>{{ item.hours|floatformat:2 }} h</strong></span>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <div class="section-heading">
+    <h2>Weekly DTR breakdown</h2>
+    <span class="muted">{{ weekly_groups|length }} week{{ weekly_groups|length|pluralize }}</span>
+  </div>
+  {% if academic_periods %}
+  <form method="get" class="dtr-filter-form">
+    <label for="dtr-period-filter">Academic period</label>
+    <select id="dtr-period-filter" name="period">
+      <option value="all"{% if not selected_academic_period %} selected{% endif %}>All periods</option>
+      {% for period in academic_periods %}
+      <option value="{{ period.pk }}"{% if selected_academic_period.pk == period.pk %} selected{% endif %}>{{ period.display_label }}</option>
+      {% endfor %}
+    </select>
+    <button class="button button-secondary" type="submit">Apply filter</button>
+  </form>
+  {% else %}
+  <p class="muted">No academic periods are configured. An administrator can add date ranges in the Academic periods section of Django admin.</p>
+  {% endif %}
+  {% for week in weekly_groups %}
+  <details class="dtr-week"{% if forloop.first %} open{% endif %}>
+    <summary>
+      <span>Week {{ week.number }} · {{ week.start|date:"M j" }}–{{ week.end|date:"M j, Y" }}</span>
+      <strong>{{ week.hours|floatformat:2 }} approved hours</strong>
+    </summary>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Date / day</th><th>Academic period</th><th>Time in</th><th>Time out</th><th>Daily hours</th><th>Location</th><th>Approval</th></tr>
+        </thead>
+        <tbody>
+          {% for log in week.logs %}
+          <tr>
+            <td>{{ log.work_date|date:"M j, Y" }}<br><span class="muted">Day {{ log.week_day_number }} · {{ log.work_date|date:"l" }}</span></td>
+            <td>{% if log.academic_period %}{{ log.academic_period.display_label }}{% else %}<span class="muted">Unassigned</span>{% endif %}</td>
+            <td>{{ log.clock_in|date:"H:i"|default:"—" }}</td>
+            <td>{{ log.clock_out|date:"H:i"|default:"—" }}</td>
+            <td>{{ log.rendered_hours|floatformat:2 }}</td>
+            <td>
+              <div><strong>In:</strong>
+                {% if log.clock_in_within_location == True %}<span class="status status-good">Within radius</span>
+                {% elif log.clock_in_within_location == False %}<span class="status status-risk">Outside radius</span>
+                {% elif log.clock_in %}<span class="status status-neutral">Unavailable / unknown</span>
+                {% else %}<span class="muted">—</span>{% endif %}
+                {% if log.clock_in_distance_meters != None %}<small>{{ log.clock_in_distance_meters|floatformat:0 }} m away{% if log.clock_in_allowed_radius_meters %} · {{ log.clock_in_allowed_radius_meters }} m allowed{% endif %}</small>{% endif %}
+              </div>
+              <div><strong>Out:</strong>
+                {% if log.clock_out_within_location == True %}<span class="status status-good">Within radius</span>
+                {% elif log.clock_out_within_location == False %}<span class="status status-risk">Outside radius</span>
+                {% elif log.clock_out %}<span class="status status-neutral">Unavailable / unknown</span>
+                {% else %}<span class="muted">—</span>{% endif %}
+                {% if log.clock_out_distance_meters != None %}<small>{{ log.clock_out_distance_meters|floatformat:0 }} m away{% if log.clock_out_allowed_radius_meters %} · {{ log.clock_out_allowed_radius_meters }} m allowed{% endif %}</small>{% endif %}
+              </div>
+            </td>
+            <td>
+              <div><strong>In:</strong>
+                {% if not log.clock_in %}<span class="status status-neutral">Not recorded</span>
+                {% elif log.time_in_approved %}<span class="status status-good">Approved</span>
+                {% else %}<span class="status">Pending</span>{% endif %}
+              </div>
+              <div><strong>Out:</strong>
+                {% if not log.clock_out %}<span class="status status-neutral">Not recorded</span>
+                {% elif log.time_out_approved %}<span class="status status-good">Approved</span>
+                {% else %}<span class="status">Pending</span>{% endif %}
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+  {% empty %}
+  <p class="muted">No attendance entries match this period.</p>
+  {% endfor %}
+</section>

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}{{ intern.user.get_full_name|default:intern.user.username }} DTR | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">DAILY TIME RECORD</p>
+    <h1>{{ intern.user.get_full_name|default:intern.user.username }}</h1>
+    <p class="muted">{{ intern.student_id|default:"No student ID" }} · {{ intern.get_placement_type_display }}</p>
+  </div>
+  <a class="button button-secondary" href="{% url summary_url_name %}">Back to DTR summaries</a>
+</div>
+{% include "portal/_dtr_breakdown.html" %}
+{% endblock %}

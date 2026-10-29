@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}DTR summary | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">{% if is_coordinator %}PROGRAM OPERATIONS{% else %}HOST ORGANIZATION{% endif %}</p>
+    <h1>Intern DTR summaries</h1>
+    <p class="muted">Approved rendered hours are capped at {{ rendered_hours_cap }} per intern.</p>
+  </div>
+  <a class="button button-secondary" href="{% if is_coordinator %}{% url 'portal:dtr_queue' %}{% else %}{% url 'portal:company_dtr_queue' %}{% endif %}">Attendance review</a>
+</div>
+<section class="panel">
+  <form method="get" class="dtr-filter-form">
+    <label for="dtr-search">Search name or student ID</label>
+    <input id="dtr-search" type="search" name="q" value="{{ search }}" placeholder="Name, username, or ID">
+    <label for="dtr-placement">Placement type</label>
+    <select id="dtr-placement" name="placement">
+      <option value="">All placements</option>
+      {% for value, label in placement_choices %}
+      <option value="{{ value }}"{% if selected_placement == value %} selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    {% if is_coordinator %}
+    <label for="dtr-external-host">External company</label>
+    <select id="dtr-external-host" name="host">
+      <option value="">All external companies</option>
+      {% for host in external_hosts %}
+      <option value="{{ host }}"{% if selected_host == host %} selected{% endif %}>{{ host }}</option>
+      {% endfor %}
+    </select>
+    <label for="dtr-company">Company</label>
+    <select id="dtr-company" name="company">
+      <option value="">All companies</option>
+      {% for company_option in companies %}
+      <option value="{{ company_option.pk }}"{% if selected_company.pk == company_option.pk %} selected{% endif %}>{{ company_option.organization }}</option>
+      {% endfor %}
+    </select>
+    {% endif %}
+    <button class="button button-primary" type="submit">Filter interns</button>
+  </form>
+</section>
+<section class="panel">
+  <div class="section-heading">
+    <h2>Interns</h2>
+    <span class="muted">{{ intern_page.paginator.count }} result{{ intern_page.paginator.count|pluralize }}</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Intern</th><th>Student ID</th>{% if is_coordinator %}<th>Placement / company</th>{% endif %}<th>Approved hours</th><th>Completion</th><th>DTR</th></tr>
+      </thead>
+      <tbody>
+        {% for intern in intern_page %}
+        <tr>
+          <td>{{ intern.user.get_full_name|default:intern.user.username }}<br><span class="muted">{{ intern.user.username }}</span></td>
+          <td>{{ intern.student_id|default:"—" }}</td>
+          {% if is_coordinator %}
+          <td>{% if intern.placement_type == 'external' %}External · {{ intern.external_host|default:"Host not set" }}{% else %}Internal{% for organization in intern.accepted_company_names %}<br>{{ organization }}{% empty %}<br><span class="muted">No accepted company</span>{% endfor %}{% endif %}</td>
+          {% endif %}
+          <td>{{ intern.approved_rendered_hours|floatformat:2 }} / {{ rendered_hours_cap }} h</td>
+          <td>
+            <progress max="{{ rendered_hours_cap }}" value="{{ intern.approved_rendered_hours }}" aria-label="{{ intern.user.username }} OJT completion"></progress>
+            {{ intern.completion_percent|floatformat:1 }}%
+          </td>
+          <td><a class="button button-small button-secondary" href="{% url detail_url_name intern.pk %}">View DTR</a></td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="{% if is_coordinator %}6{% else %}5{% endif %}" class="muted">No interns match these filters.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if intern_page.has_other_pages %}
+  <nav class="pagination" aria-label="DTR summary pages">
+    {% if intern_page.has_previous %}<a class="button button-small button-secondary" href="?{% if query_string %}{{ query_string }}&amp;{% endif %}page={{ intern_page.previous_page_number }}">Previous</a>{% endif %}
+    <span>Page {{ intern_page.number }} of {{ intern_page.paginator.num_pages }}</span>
+    {% if intern_page.has_next %}<a class="button button-small button-secondary" href="?{% if query_string %}{{ query_string }}&amp;{% endif %}page={{ intern_page.next_page_number }}">Next</a>{% endif %}
+  </nav>
+  {% endif %}
+</section>
+{% endblock %}

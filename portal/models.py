@@ -2,8 +2,10 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
+from django.core.exceptions import ValidationError
 from django.db import models
-from django.db.models import Q
+from django.db.models import DurationField, ExpressionWrapper, F, Q, Sum
+from django.db.models.functions import TruncWeek
 from django.utils import timezone
 
 from .validators import FileSizeAndTypeValidator
@@ -14,6 +16,42 @@ def face_capture_image_expiry():
 
 
 FACE_CONSENT_VERSION = "v2"
+OJT_RENDERED_HOURS_CAP = 486
+
+
+class AttendanceLogQuerySet(models.QuerySet):
+    def approved(self):
+        return self.filter(
+            time_in_approved=True,
+            time_out_approved=True,
+            clock_in__isnull=False,
+            clock_out__gt=F("clock_in"),
+        )
+
+    def _approved_duration_expression(self):
+        return ExpressionWrapper(
+            F("clock_out") - F("clock_in"),
+            output_field=DurationField(),
+        )
+
+    def approved_hours_by_day(self):
+        return self.approved().values("work_date").annotate(
+            total_duration=Sum(self._approved_duration_expression()),
+        ).order_by("work_date")
+
+    def approved_hours_by_week(self):
+        return self.approved().annotate(
+            week_start=TruncWeek("work_date"),
+        ).values("week_start").annotate(
+            total_duration=Sum(self._approved_duration_expression()),
+        ).order_by("week_start")
+
+    def approved_hours_for_period(self, starts_on, ends_on):
+        return self.approved().filter(
+            work_date__range=(starts_on, ends_on),
+        ).aggregate(
+            total_duration=Sum(self._approved_duration_expression()),
+        )["total_duration"]
 
 
 class InternProfile(models.Model):
@@ -207,6 +245,46 @@ class WorksiteLocation(models.Model):
         return self.name
 
 
+class AcademicPeriod(models.Model):
+    class Period(models.TextChoices):
+        PRELIM = "prelim", "Prelim"
+        MIDTERM = "midterm", "Midterm"
+        PRE_FINAL = "pre_final", "Pre-Final"
+        FINAL = "final", "Final"
+
+    academic_year = models.CharField(max_length=32)
+    period = models.CharField(max_length=12, choices=Period.choices)
+    starts_on = models.DateField()
+    ends_on = models.DateField()
+
+    class Meta:
+        ordering = ("starts_on", "period")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("academic_year", "period"),
+                name="uniq_academic_year_period",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.starts_on and self.ends_on and self.ends_on < self.starts_on:
+            errors["ends_on"] = "The end date must be on or after the start date."
+        if self.starts_on and self.ends_on:
+            overlaps = AcademicPeriod.objects.exclude(pk=self.pk).filter(
+                starts_on__lte=self.ends_on,
+                ends_on__gte=self.starts_on,
+            )
+            if overlaps.exists():
+                errors["starts_on"] = "Academic period date ranges cannot overlap."
+        if errors:
+            raise ValidationError(errors)
+
+    def __str__(self):
+        return f"{self.academic_year} {self.get_period_display()}"
+
+
 class CompanyRequirement(models.Model):
     company = models.ForeignKey(CompanyProfile, on_delete=models.CASCADE, related_name="requirements")
     title = models.CharField(max_length=160)
@@ -316,6 +394,7 @@ class AttendanceLog(models.Model):
     time_in_approved = models.BooleanField(default=False)
     time_out_approved = models.BooleanField(default=False)
     notes = models.CharField(max_length=255, blank=True)
+    objects = AttendanceLogQuerySet.as_manager()
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=("intern", "work_date"), name="uniq_attendance_intern_day")]
@@ -326,6 +405,12 @@ class AttendanceLog(models.Model):
         if not self.clock_in or not self.clock_out:
             return 0
         return round(max((self.clock_out - self.clock_in).total_seconds(), 0) / 3600, 2)
+
+    @property
+    def approved_hours_worked(self):
+        if not self.approved:
+            return 0
+        return self.hours_worked
 
     @property
     def approved(self):

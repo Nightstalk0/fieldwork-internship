@@ -1,6 +1,13 @@
 from django.contrib import admin
 
-from .models import Application, AttendanceLog, AuditLog, CompanyProfile, InternProfile, Posting, RiskAssessment, Scorecard, WeeklyReport
+from .models import AcademicPeriod, Application, AttendanceLog, AuditLog, CompanyProfile, InternProfile, Posting, RiskAssessment, Scorecard, WeeklyReport
+
+
+@admin.register(AcademicPeriod)
+class AcademicPeriodAdmin(admin.ModelAdmin):
+    list_display = ("academic_year", "period", "starts_on", "ends_on")
+    list_filter = ("academic_year", "period")
+    ordering = ("starts_on",)
 
 
 @admin.register(InternProfile)
