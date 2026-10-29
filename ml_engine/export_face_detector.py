@@ -3,7 +3,8 @@ from pathlib import Path
 from ultralytics import YOLO
 
 
-MODEL_DIR = Path(__file__).resolve().parent / "models"
+ML_ENGINE_DIR = Path(__file__).resolve().parent
+MODEL_DIR = ML_ENGINE_DIR / "models"
 CHECKPOINT_PATH = MODEL_DIR / "best.pt"
 
 
