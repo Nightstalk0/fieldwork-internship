@@ -66,6 +66,8 @@ Each time-in and time-out log stores its submitted coordinates and whether that 
 
 For temporary Render face-capture troubleshooting, set `FACE_CAPTURE_DIAGNOSTICS=true` in the service environment and inspect the service logs. Diagnostics report decoded image type, mode, dimensions, NumPy shape/dtype, and face count without logging image contents; disable the setting after troubleshooting.
 
+The face detector loads `best.pt` lazily and caches one model per worker process; do not preload it in the WSGI module on small-memory instances. Render's WSGI startup forces CPU-only PyTorch and one math-library thread, and inference uses a 416-pixel input size and a 10-detection limit to reduce peak memory. A single Gunicorn worker is recommended for 512 MB instances.
+
 All interns can submit one daily report per workday for coordinator review. Historical OJT document records remain in the database, but OJT pages have been retired and their old URLs redirect to the relevant core workflow. New interns are not given default requirements, and OJT approval does not block attendance or reports.
 
 Run the project checks and tests with:

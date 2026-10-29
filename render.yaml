@@ -3,7 +3,7 @@ services:
     name: django-ims
     runtime: python
     buildCommand: bash build.sh
-    startCommand: "DJANGO_SETTINGS_MODULE=django_ims.settings python manage.py migrate --no-input && exec gunicorn django_ims.wsgi:application --bind 0.0.0.0:${PORT:-10000}"
+    startCommand: "DJANGO_SETTINGS_MODULE=django_ims.settings python manage.py migrate --no-input && exec gunicorn django_ims.wsgi:application --bind 0.0.0.0:${PORT:-10000} --workers 1 --threads 1 --timeout 120"
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.8

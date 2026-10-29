@@ -43,8 +43,9 @@ class FaceDetectorTests(SimpleTestCase):
         ])
         model.predict.assert_called_once_with(
             source=image,
-            imgsz=640,
+            imgsz=416,
             device="cpu",
+            max_det=10,
             verbose=False,
         )
 

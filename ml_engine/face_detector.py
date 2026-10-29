@@ -1,3 +1,4 @@
+import logging
 from functools import lru_cache
 from pathlib import Path
 from threading import Lock
@@ -9,6 +10,7 @@ from PIL import Image
 MODEL_PATH = Path(__file__).resolve().parent / "models" / "best.pt"
 ImageSource = str | Path | Image.Image
 _PREDICTION_LOCK = Lock()
+LOGGER = logging.getLogger(__name__)
 
 
 class FaceDetection(TypedDict):
@@ -26,6 +28,14 @@ class FaceDetectionResponse(TypedDict):
 def load_face_model():
     if not MODEL_PATH.is_file():
         raise FileNotFoundError(f"Face-detection model not found: {MODEL_PATH}")
+
+    import torch
+
+    torch.set_num_threads(1)
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        LOGGER.warning("PyTorch inter-op thread limit was already initialized.")
 
     from ultralytics import YOLO
 
@@ -47,20 +57,24 @@ def detect_faces(image: ImageSource) -> FaceDetectionResponse:
     with _PREDICTION_LOCK:
         results = load_face_model().predict(
             source=source,
-            imgsz=640,
+            imgsz=416,
             device="cpu",
+            max_det=10,
             verbose=False,
         )
-    for result in results:
-        if result.boxes is None:
-            continue
-        for box in result.boxes:
-            if int(box.cls[0]) != 0:
+    try:
+        for result in results:
+            if result.boxes is None:
                 continue
-            detections.append({
-                "confidence": round(float(box.conf[0]), 4),
-                "bbox": [int(round(float(value))) for value in box.xyxy[0]],
-            })
+            for box in result.boxes:
+                if int(box.cls[0]) != 0:
+                    continue
+                detections.append({
+                    "confidence": round(float(box.conf[0]), 4),
+                    "bbox": [int(round(float(value))) for value in box.xyxy[0]],
+                })
+    finally:
+        del results
 
     return {
         "face_detected": bool(detections),
