@@ -609,6 +609,30 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(response.json(), {"face_count": 1, "face_detected": True})
         detector.assert_called_once()
 
+    @override_settings(FACE_CAPTURE_DIAGNOSTICS=True)
+    def test_live_face_detection_logs_decoded_image_shape_when_no_face_is_found(self):
+        self.client.force_login(self.intern_user)
+        with (
+            patch(
+                "portal.views.detect_faces",
+                return_value={"face_detected": False, "face_count": 0, "detections": []},
+            ),
+            self.assertLogs("portal.views", level="WARNING") as captured_logs,
+        ):
+            response = self.client.post(
+                reverse("portal:face_detection_preview"),
+                {"face_image": self._camera_data_url()},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"face_count": 0, "face_detected": False})
+        self.assertIn("image_type=Image", captured_logs.output[0])
+        self.assertIn("mode=RGB", captured_logs.output[0])
+        self.assertIn("array_shape=(100, 100, 3)", captured_logs.output[0])
+        self.assertIn("array_dtype=uint8", captured_logs.output[0])
+        self.assertIn("array_empty=False", captured_logs.output[0])
+        self.assertIn("face_count=0", captured_logs.output[0])
+
     def test_face_capture_api_reports_expired_session_as_json(self):
         response = self.client.post(
             reverse("portal:face_detection_preview"),

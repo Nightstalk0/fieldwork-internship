@@ -64,6 +64,8 @@ The server checks the submitted coordinates against the saved worksite coordinat
 
 Each time-in and time-out log stores its submitted coordinates and whether that event passed the worksite-radius check. Older attendance records retain an unknown (`NULL`) location-check status.
 
+For temporary Render face-capture troubleshooting, set `FACE_CAPTURE_DIAGNOSTICS=true` in the service environment and inspect the service logs. Diagnostics report decoded image type, mode, dimensions, NumPy shape/dtype, and face count without logging image contents; disable the setting after troubleshooting.
+
 All interns can submit one daily report per workday for coordinator review. Historical OJT document records remain in the database, but OJT pages have been retired and their old URLs redirect to the relevant core workflow. New interns are not given default requirements, and OJT approval does not block attendance or reports.
 
 Run the project checks and tests with:

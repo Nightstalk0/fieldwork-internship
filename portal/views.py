@@ -6,6 +6,8 @@ from decimal import Decimal, InvalidOperation
 from functools import wraps
 from pathlib import Path
 
+import numpy as np
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
@@ -301,6 +303,26 @@ def _coordinates(request, prefix):
     return latitude_value, longitude_value
 
 
+def _log_face_image_diagnostics(image, *, intern_id, endpoint, face_count=None):
+    if not getattr(settings, "FACE_CAPTURE_DIAGNOSTICS", False):
+        return
+
+    image_array = np.asarray(image)
+    LOGGER.warning(
+        "Face image diagnostics: endpoint=%s intern_id=%s image_type=%s mode=%s "
+        "size=%s array_shape=%s array_dtype=%s array_empty=%s face_count=%s",
+        endpoint,
+        intern_id,
+        type(image).__name__,
+        image.mode,
+        image.size,
+        image_array.shape,
+        image_array.dtype,
+        image_array.size == 0,
+        face_count if face_count is not None else "not_run",
+    )
+
+
 def _worksites_for_attendance(intern):
     locations = WorksiteLocation.objects.filter(is_active=True)
     if intern.placement_type == InternProfile.PlacementType.EXTERNAL:
@@ -345,6 +367,8 @@ def _attendance_face_check(request, intern, *, retain_image=True):
     except FaceCaptureError as exc:
         LOGGER.warning("Could not read face image for intern %s: %s", intern.pk, exc)
         return AttendanceLog.FaceCheckStatus.ERROR, None, None
+
+    _log_face_image_diagnostics(image, intern_id=intern.pk, endpoint="attendance")
 
     enrollment = FaceEnrollment.objects.filter(intern=intern).first()
     if enrollment is None:
@@ -447,11 +471,18 @@ def face_detection_preview(request):
     try:
         detection = detect_faces(image)
     except (FileNotFoundError, ImportError, OSError, RuntimeError, TypeError, ValueError):
+        _log_face_image_diagnostics(image, intern_id=request.user.pk, endpoint="face_detection")
         LOGGER.exception("Live face detection failed for intern %s.", request.user.pk)
         return JsonResponse(
             {"face_count": 0, "error": "The face-detection model is unavailable. Try again shortly."},
             status=503,
         )
+    _log_face_image_diagnostics(
+        image,
+        intern_id=request.user.pk,
+        endpoint="face_detection",
+        face_count=detection["face_count"],
+    )
     return JsonResponse({
         "face_count": detection["face_count"],
         "face_detected": detection["face_detected"],
