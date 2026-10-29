@@ -338,12 +338,11 @@ def _worksites_for_attendance(intern):
     ).distinct()
 
 
-def _attendance_location_error(worksites, latitude, longitude):
-    if not worksites.exists():
-        return "No active worksite is assigned to your placement. Ask your coordinator or host company to enroll one."
+def _attendance_location_status(worksites, latitude, longitude):
     if latitude is None or longitude is None:
-        return "Location access is required to record attendance. Allow location access and try again."
+        return AttendanceFaceCapture.LocationStatus.UNAVAILABLE, None, None
 
+    distances = []
     for worksite in worksites:
         distance_meters = haversine_distance_km(
             latitude,
@@ -352,9 +351,44 @@ def _attendance_location_error(worksites, latitude, longitude):
             worksite.longitude,
         ) * 1000
         if distance_meters <= worksite.radius_meters:
-            return None
+            distances.append((distance_meters, worksite.radius_meters, True))
+        else:
+            distances.append((distance_meters, worksite.radius_meters, False))
 
-    return "You are outside the allowed radius of your assigned worksite. Attendance was not recorded."
+    if not distances:
+        return AttendanceFaceCapture.LocationStatus.UNAVAILABLE, None, None
+
+    eligible_sites = [entry for entry in distances if entry[2]]
+    distance_meters, radius_meters, within_location = min(
+        eligible_sites or distances,
+        key=lambda entry: entry[0],
+    )
+    location_status = (
+        AttendanceFaceCapture.LocationStatus.INSIDE
+        if within_location
+        else AttendanceFaceCapture.LocationStatus.OUTSIDE
+    )
+    return location_status, round(distance_meters, 2), radius_meters
+
+
+def _location_fields(action):
+    prefix = "clock_in" if action == "clock_in" else "clock_out"
+    return {
+        "timestamp": prefix,
+        "latitude": f"{prefix}_latitude",
+        "longitude": f"{prefix}_longitude",
+        "within_location": f"{prefix}_within_location",
+        "distance": f"{prefix}_distance_meters",
+        "allowed_radius": f"{prefix}_allowed_radius_meters",
+        "reason": f"{prefix}_location_reason",
+        "face_status": f"{prefix}_face_status",
+        "face_score": f"{prefix}_face_score",
+        "approval": "time_in_approved" if action == "clock_in" else "time_out_approved",
+    }
+
+
+def _distance_decimal(distance_meters):
+    return Decimal(str(distance_meters)).quantize(Decimal("0.01")) if distance_meters is not None else None
 
 
 def _attendance_face_check(request, intern, *, retain_image=True):
@@ -401,7 +435,7 @@ def _face_check_feedback(face_status):
         return {
             "quality": "good",
             "label": "Good — face match candidate",
-            "message": "One face was detected and it matches the enrolled reference. You can submit it for company/admin approval.",
+            "message": "One face was detected and it matches the enrolled reference.",
         }
     if face_status == AttendanceLog.FaceCheckStatus.NOT_MATCHED:
         return {
@@ -440,6 +474,12 @@ def attendance_face_preview(request):
             {"error": "No active worksite is assigned to your placement. Ask your coordinator or host company to enroll one."},
             status=409,
         )
+    latitude, longitude = _coordinates(request, action)
+    location_status, distance_meters, allowed_radius_meters = _attendance_location_status(
+        _worksites_for_attendance(intern),
+        latitude,
+        longitude,
+    )
     if action == "clock_out" and (
         not log or not log.clock_in or not log.time_in_approved
     ):
@@ -459,6 +499,10 @@ def attendance_face_preview(request):
     return JsonResponse({
         **_face_check_feedback(face_status),
         "similarity": face_score,
+        "location_status": location_status,
+        "distance_meters": distance_meters,
+        "allowed_radius_meters": allowed_radius_meters,
+        "location_requires_reason": location_status != AttendanceFaceCapture.LocationStatus.INSIDE,
     })
 
 
@@ -531,10 +575,26 @@ def attendance(request):
             if not existing_log.time_in_approved:
                 messages.error(request, "Your time-in must be approved by the company/admin before you can time out.")
                 return redirect("portal:attendance")
+        if not worksite_locations.exists():
+            messages.error(
+                request,
+                "No active worksite is assigned to your placement. Ask your coordinator or host company to enroll one.",
+            )
+            return redirect("portal:attendance")
         latitude, longitude = _coordinates(request, action)
-        location_error = _attendance_location_error(worksite_locations, latitude, longitude)
-        if location_error:
-            messages.error(request, location_error)
+        location_status, distance_meters, allowed_radius_meters = _attendance_location_status(
+            worksite_locations,
+            latitude,
+            longitude,
+        )
+        location_reason = request.POST.get(f"{action}_location_reason", "").strip()[:1000]
+        requires_location_reason = location_status != AttendanceFaceCapture.LocationStatus.INSIDE
+        if requires_location_reason and len(location_reason) < 10:
+            messages.error(
+                request,
+                "Your location is outside the assigned worksite radius or GPS is unavailable. "
+                "Provide an explanation of at least 10 characters to submit this attendance for supervisor review.",
+            )
             return redirect("portal:attendance")
         event = AttendanceFaceCapture.Event.TIME_IN if action == "clock_in" else AttendanceFaceCapture.Event.TIME_OUT
         existing_log = AttendanceLog.objects.filter(intern=intern, work_date=today).first()
@@ -558,35 +618,26 @@ def attendance(request):
                         return redirect("portal:attendance")
                 else:
                     log, _ = AttendanceLog.objects.select_for_update().get_or_create(intern=intern, work_date=today)
-                timestamp_field, latitude_field, longitude_field, within_location_field, face_status_field, face_score_field = (
-                    (
-                        "clock_in",
-                        "clock_in_latitude",
-                        "clock_in_longitude",
-                        "clock_in_within_location",
-                        "clock_in_face_status",
-                        "clock_in_face_score",
-                    )
-                    if action == "clock_in"
-                    else (
-                        "clock_out",
-                        "clock_out_latitude",
-                        "clock_out_longitude",
-                        "clock_out_within_location",
-                        "clock_out_face_status",
-                        "clock_out_face_score",
-                    )
-                )
+                fields = _location_fields(action)
                 if log.face_captures.filter(
                     event=event,
                     review_status=AttendanceFaceCapture.ReviewStatus.PENDING,
                 ).exists():
                     messages.info(request, "This attendance event is already waiting for company/admin review.")
                     return redirect("portal:attendance")
-                if getattr(log, timestamp_field):
+                if getattr(log, fields["timestamp"]):
                     messages.info(request, f"You have already recorded {event.replace('_', ' ')} today.")
                     return redirect("portal:attendance")
 
+                automatically_approved = (
+                    face_status == AttendanceLog.FaceCheckStatus.MATCHED
+                    and location_status == AttendanceFaceCapture.LocationStatus.INSIDE
+                )
+                review_status = (
+                    AttendanceFaceCapture.ReviewStatus.NOT_REQUIRED
+                    if automatically_approved
+                    else AttendanceFaceCapture.ReviewStatus.PENDING
+                )
                 capture = AttendanceFaceCapture.objects.create(
                     attendance_log=log,
                     event=event,
@@ -596,32 +647,44 @@ def attendance(request):
                     captured_at=captured_at,
                     latitude=latitude,
                     longitude=longitude,
-                    review_status=AttendanceFaceCapture.ReviewStatus.PENDING,
+                    location_status=location_status,
+                    distance_meters=_distance_decimal(distance_meters),
+                    allowed_radius_meters=allowed_radius_meters,
+                    location_reason=location_reason,
+                    review_status=review_status,
                 )
-                setattr(log, face_status_field, face_status)
-                setattr(log, face_score_field, face_score)
-                setattr(log, latitude_field, latitude)
-                setattr(log, longitude_field, longitude)
-                setattr(log, within_location_field, True)
+                setattr(log, fields["face_status"], face_status)
+                setattr(log, fields["face_score"], face_score)
+                setattr(log, fields["latitude"], latitude)
+                setattr(log, fields["longitude"], longitude)
+                setattr(
+                    log,
+                    fields["within_location"],
+                    location_status == AttendanceFaceCapture.LocationStatus.INSIDE,
+                )
+                setattr(log, fields["distance"], _distance_decimal(distance_meters))
+                setattr(log, fields["allowed_radius"], allowed_radius_meters)
+                setattr(log, fields["reason"], location_reason)
+                setattr(log, fields["approval"], automatically_approved)
                 log.notes = request.POST.get("notes", "").strip()[:255] or log.notes
-                if action == "clock_in":
-                    if face_status == AttendanceLog.FaceCheckStatus.MATCHED:
-                        log.clock_in = captured_at
-                else:
-                    if face_status == AttendanceLog.FaceCheckStatus.MATCHED:
-                        log.clock_out = captured_at
+                if face_status == AttendanceLog.FaceCheckStatus.MATCHED:
+                    setattr(log, fields["timestamp"], captured_at)
                 update_fields = [
-                    face_status_field,
-                    face_score_field,
+                    fields["face_status"],
+                    fields["face_score"],
                     "notes",
-                    latitude_field,
-                    longitude_field,
-                    within_location_field,
+                    fields["latitude"],
+                    fields["longitude"],
+                    fields["within_location"],
+                    fields["distance"],
+                    fields["allowed_radius"],
+                    fields["reason"],
+                    fields["approval"],
                 ]
                 if face_status == AttendanceLog.FaceCheckStatus.MATCHED:
-                    update_fields.append(timestamp_field)
+                    update_fields.append(fields["timestamp"])
                 log.save(update_fields=update_fields)
-                if face_status == AttendanceLog.FaceCheckStatus.MATCHED:
+                if automatically_approved:
                     audit(
                         request.user,
                         "attendance.clocked_in" if action == "clock_in" else "attendance.clocked_out",
@@ -630,13 +693,26 @@ def attendance(request):
                     )
                     messages.success(
                         request,
-                        f"Face verified. {event.replace('_', ' ').title()} is waiting for company/admin approval.",
+                        f"Face verified and {event.replace('_', ' ')} approved within the assigned worksite.",
+                    )
+                elif requires_location_reason:
+                    audit(
+                        request.user,
+                        "attendance.location_review_requested",
+                        log,
+                        event=event,
+                        capture_id=capture.pk,
+                        location_status=location_status,
+                    )
+                    messages.warning(
+                        request,
+                        f"{event.replace('_', ' ').title()} was submitted with a location exception and is awaiting supervisor review.",
                     )
                 else:
                     audit(request.user, "attendance.face_review_requested", log, event=event, capture_id=capture.pk)
                     messages.warning(
                         request,
-                        "Face verification did not pass. Attendance was not recorded; the company/admin must review this request.",
+                        "Face verification did not pass. Attendance is awaiting company/admin review.",
                     )
         except IntegrityError:
             messages.info(request, "Today's attendance record was already created. Refresh and try again.")
@@ -1065,38 +1141,20 @@ def _review_face_capture(request, capture_id, queue_name, audit_action):
         reviewed_at = timezone.now()
         capture.reviewed_by = request.user
         capture.reviewed_at = reviewed_at
-        timestamp_field, approval_field, latitude_field, longitude_field, within_location_field, face_status_field, face_score_field = (
-            (
-                "clock_in",
-                "time_in_approved",
-                "clock_in_latitude",
-                "clock_in_longitude",
-                "clock_in_within_location",
-                "clock_in_face_status",
-                "clock_in_face_score",
-            )
-            if capture.event == AttendanceFaceCapture.Event.TIME_IN
-            else (
-                "clock_out",
-                "time_out_approved",
-                "clock_out_latitude",
-                "clock_out_longitude",
-                "clock_out_within_location",
-                "clock_out_face_status",
-                "clock_out_face_score",
-            )
+        fields = _location_fields(
+            "clock_in" if capture.event == AttendanceFaceCapture.Event.TIME_IN else "clock_out"
         )
         if action == "reject":
-            if getattr(log, timestamp_field) == capture.captured_at and not getattr(log, approval_field):
-                setattr(log, timestamp_field, None)
-                log.save(update_fields=(timestamp_field,))
+            if getattr(log, fields["timestamp"]) == capture.captured_at and not getattr(log, fields["approval"]):
+                setattr(log, fields["timestamp"], None)
+                log.save(update_fields=(fields["timestamp"],))
             capture.review_status = AttendanceFaceCapture.ReviewStatus.REJECTED
             capture.save(update_fields=("review_status", "reviewed_by", "reviewed_at"))
             audit(request.user, f"{audit_action}.face_exception_rejected", log, capture_id=capture.pk)
             messages.success(request, "Attendance exception rejected; no time was recorded.")
             return redirect(queue_name)
 
-        recorded_at = getattr(log, timestamp_field)
+        recorded_at = getattr(log, fields["timestamp"])
         if recorded_at and recorded_at != capture.captured_at:
             capture.review_status = AttendanceFaceCapture.ReviewStatus.REJECTED
             capture.save(update_fields=("review_status", "reviewed_by", "reviewed_at"))
@@ -1106,22 +1164,37 @@ def _review_face_capture(request, capture_id, queue_name, audit_action):
         capture.review_status = AttendanceFaceCapture.ReviewStatus.APPROVED
         capture.save(update_fields=("review_status", "reviewed_by", "reviewed_at"))
         if not recorded_at:
-            setattr(log, timestamp_field, capture.captured_at)
-            setattr(log, latitude_field, capture.latitude)
-            setattr(log, longitude_field, capture.longitude)
-        setattr(log, within_location_field, True)
-        setattr(log, approval_field, True)
-        setattr(log, face_status_field, capture.face_status)
-        setattr(log, face_score_field, capture.face_score)
-        log.save(update_fields=(
-            timestamp_field,
-            approval_field,
-            latitude_field,
-            longitude_field,
-            within_location_field,
-            face_status_field,
-            face_score_field,
-        ))
+            setattr(log, fields["timestamp"], capture.captured_at)
+        if capture.location_status != AttendanceFaceCapture.LocationStatus.UNKNOWN:
+            setattr(log, fields["latitude"], capture.latitude)
+            setattr(log, fields["longitude"], capture.longitude)
+            setattr(
+                log,
+                fields["within_location"],
+                capture.location_status == AttendanceFaceCapture.LocationStatus.INSIDE,
+            )
+            setattr(log, fields["distance"], capture.distance_meters)
+            setattr(log, fields["allowed_radius"], capture.allowed_radius_meters)
+            setattr(log, fields["reason"], capture.location_reason)
+        setattr(log, fields["approval"], True)
+        setattr(log, fields["face_status"], capture.face_status)
+        setattr(log, fields["face_score"], capture.face_score)
+        update_fields = [
+            fields["timestamp"],
+            fields["approval"],
+            fields["face_status"],
+            fields["face_score"],
+        ]
+        if capture.location_status != AttendanceFaceCapture.LocationStatus.UNKNOWN:
+            update_fields.extend((
+                fields["latitude"],
+                fields["longitude"],
+                fields["within_location"],
+                fields["distance"],
+                fields["allowed_radius"],
+                fields["reason"],
+            ))
+        log.save(update_fields=update_fields)
         audit(request.user, f"{audit_action}.face_exception_approved", log, capture_id=capture.pk)
         messages.success(request, f"{capture.get_event_display()} recorded at the captured time and approved.")
     return redirect(queue_name)

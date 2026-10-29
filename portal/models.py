@@ -283,9 +283,15 @@ class AttendanceLog(models.Model):
     clock_in_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     clock_in_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     clock_in_within_location = models.BooleanField(null=True, blank=True, default=None)
+    clock_in_distance_meters = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    clock_in_allowed_radius_meters = models.PositiveSmallIntegerField(null=True, blank=True)
+    clock_in_location_reason = models.TextField(blank=True)
     clock_out_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     clock_out_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     clock_out_within_location = models.BooleanField(null=True, blank=True, default=None)
+    clock_out_distance_meters = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    clock_out_allowed_radius_meters = models.PositiveSmallIntegerField(null=True, blank=True)
+    clock_out_location_reason = models.TextField(blank=True)
     status = models.CharField(max_length=12, choices=Status.choices, default=Status.PRESENT)
     time_in_approved = models.BooleanField(default=False)
     time_out_approved = models.BooleanField(default=False)
@@ -341,6 +347,12 @@ class AttendanceFaceCapture(models.Model):
         APPROVED = "approved", "Approved by company/admin"
         REJECTED = "rejected", "Rejected by company/admin"
 
+    class LocationStatus(models.TextChoices):
+        UNKNOWN = "unknown", "Location status not recorded"
+        INSIDE = "inside", "Within worksite radius"
+        OUTSIDE = "outside", "Outside worksite radius"
+        UNAVAILABLE = "unavailable", "GPS unavailable"
+
     attendance_log = models.ForeignKey(
         AttendanceLog,
         on_delete=models.CASCADE,
@@ -354,6 +366,14 @@ class AttendanceFaceCapture(models.Model):
     captured_at = models.DateTimeField(default=timezone.now)
     latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    location_status = models.CharField(
+        max_length=12,
+        choices=LocationStatus.choices,
+        default=LocationStatus.UNKNOWN,
+    )
+    distance_meters = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    allowed_radius_meters = models.PositiveSmallIntegerField(null=True, blank=True)
+    location_reason = models.TextField(blank=True)
     review_status = models.CharField(
         max_length=12,
         choices=ReviewStatus.choices,

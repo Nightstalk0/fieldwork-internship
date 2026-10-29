@@ -166,6 +166,12 @@ textarea { resize: vertical; line-height: 1.45; }
 .face-check-good { border-left-color: var(--forest); }
 .face-check-needs_review { border-left-color: var(--amber); }
 .face-check-poor { border-left-color: var(--coral); }
+.face-check-location-warning { border-left-color: var(--amber); }
+.location-reason-dialog { width: min(calc(100% - 2rem), 32rem); margin: auto; padding: 1.5rem; border: .0625rem solid var(--line); border-radius: .5rem; color: var(--ink); background: #fff; }
+.location-reason-dialog::backdrop { background: rgba(11, 24, 18, .58); }
+.location-reason-dialog form { display: grid; gap: .75rem; }
+.location-reason-dialog h2, .location-reason-dialog p { margin: 0; }
+.location-reason-dialog .clock-actions { justify-content: flex-end; gap: .625rem; padding-top: .75rem; border-top: 0; }
 .face-enrollment-frame { margin: 1rem 0 .625rem; }
 .consent-checkbox { display: flex; align-items: flex-start; gap: .625rem; line-height: 1.55; }
 .consent-checkbox input { width: 1.125rem; min-height: 1.125rem; flex: 0 0 auto; margin: .125rem 0 0; }

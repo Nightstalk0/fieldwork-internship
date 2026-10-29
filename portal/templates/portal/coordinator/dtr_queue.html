@@ -26,6 +26,9 @@
 							<strong>{{ capture.get_event_display }}</strong> at {{ capture.captured_at|date:"H:i:s" }} · {{ capture.get_face_status_display }}
 							{% if capture.face_score != None %}({{ capture.face_score|floatformat:3 }}){% endif %}
 							{% if capture.latitude != None and capture.longitude != None %}· Location {{ capture.latitude }}, {{ capture.longitude }}{% endif %}
+							{% if capture.location_status == 'inside' %}<span class="status status-good">Within worksite radius</span>{% elif capture.location_status == 'unknown' %}<span class="status status-neutral">Location status not recorded</span>{% else %}<span class="status">Location exception: {{ capture.get_location_status_display }}</span>{% endif %}
+							{% if capture.distance_meters != None %}· {{ capture.distance_meters|floatformat:0 }} m away (allowed {{ capture.allowed_radius_meters }} m){% endif %}
+							{% if capture.location_reason %}<p><strong>Intern explanation:</strong> {{ capture.location_reason }}</p>{% endif %}
 							· {{ capture.get_review_status_display }}
 							{% if capture.encrypted_image and capture.image_expires_at > now %}
 							<a href="{% url 'portal:attendance_face_capture_image' capture.pk %}" target="_blank" rel="noopener noreferrer">View capture</a>

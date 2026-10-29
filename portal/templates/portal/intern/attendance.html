@@ -22,7 +22,7 @@
 </section>
 <section class="panel">
   <h2>Face verification required</h2>
-  <p class="muted">Click Time in or Time out to open the camera. Fit your face inside the guide, then capture it. You can retake a poor or uncertain frame, or submit it for company/admin review. Every submitted time event waits for company/admin approval. Submitted camera images are encrypted and retained for up to 30 days. Face matching is not liveness detection.</p>
+  <p class="muted">Click Time in or Time out to open the camera. A face match within your assigned site's radius is approved automatically. If you are outside the radius or GPS is unavailable, provide a reason and submit it for supervisor review. Face exceptions also require review. Submitted camera images are encrypted and retained for up to 30 days. Face matching is not liveness detection.</p>
   <div class="clock-actions">
     <span id="camera-status" class="muted" aria-live="polite">Camera starts when you choose Time in or Time out.</span>
   </div>
@@ -41,6 +41,7 @@
       <h3 id="face-check-label"></h3>
       <p id="face-check-message"></p>
       <p id="face-check-score" class="muted"></p>
+      <p id="location-check-result" aria-live="polite"></p>
       <div class="clock-actions">
         <button class="button button-secondary" id="retake-face" type="button">Retake face</button>
         <button class="button button-primary" id="proceed-face" type="button">Submit for approval</button>
@@ -48,6 +49,18 @@
     </section>
   </div>
 </section>
+<dialog id="location-reason-dialog" class="location-reason-dialog">
+  <form id="location-reason-form">
+    <h2>Location exception</h2>
+    <p id="location-reason-prompt">Your location could not be confirmed within the assigned worksite. Explain why so your supervisor can review this attendance.</p>
+    <label for="location-reason">Required explanation</label>
+    <textarea id="location-reason" minlength="10" maxlength="1000" required rows="4"></textarea>
+    <div class="clock-actions">
+      <button class="button button-secondary" id="cancel-location-reason" type="button">Cancel</button>
+      <button class="button button-primary" type="submit">Submit for review</button>
+    </div>
+  </form>
+</dialog>
 <section class="panel attendance-panel">
   <div>
     <p class="eyebrow">{{ today|date:"l, F j" }}</p>
@@ -63,6 +76,7 @@
         <input type="hidden" name="action" value="clock_in">
         <input type="hidden" name="clock_in_latitude">
         <input type="hidden" name="clock_in_longitude">
+        <input type="hidden" name="clock_in_location_reason">
         <input type="hidden" name="face_image">
         <input type="hidden" name="notes">
         <button class="button button-primary" type="submit">Time in</button>
@@ -79,6 +93,7 @@
       <input type="hidden" name="action" value="clock_out">
       <input type="hidden" name="clock_out_latitude">
       <input type="hidden" name="clock_out_longitude">
+      <input type="hidden" name="clock_out_location_reason">
       <input type="hidden" name="face_image">
       <input type="hidden" name="notes">
       <button class="button button-primary" type="submit">Time out</button>
@@ -108,8 +123,8 @@
           <td>{{ log.hours_worked }}</td>
           <td>{{ log.get_clock_in_face_status_display }}{% if log.clock_in_face_score != None %} ({{ log.clock_in_face_score|floatformat:3 }}){% endif %}</td>
           <td>{{ log.get_clock_out_face_status_display }}{% if log.clock_out_face_score != None %} ({{ log.clock_out_face_score|floatformat:3 }}){% endif %}</td>
-          <td>{% if log.pending_time_in_face_capture %}<span class="status">Awaiting company/admin approval</span>{% elif not log.clock_in %}<span class="status status-neutral">Not recorded</span>{% elif log.time_in_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
-          <td>{% if log.pending_time_out_face_capture %}<span class="status">Awaiting company/admin approval</span>{% elif not log.clock_out %}<span class="status status-neutral">Not recorded</span>{% elif log.time_out_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
+          <td>{% if log.clock_in_within_location == False %}<span class="status">Location exception</span>{% endif %}{% if log.pending_time_in_face_capture %}<span class="status">Awaiting company/admin approval</span>{% elif not log.clock_in %}<span class="status status-neutral">Not recorded</span>{% elif log.time_in_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
+          <td>{% if log.clock_out_within_location == False %}<span class="status">Location exception</span>{% endif %}{% if log.pending_time_out_face_capture %}<span class="status">Awaiting company/admin approval</span>{% elif not log.clock_out %}<span class="status status-neutral">Not recorded</span>{% elif log.time_out_approved %}<span class="status status-good">Approved</span>{% else %}<span class="status">Pending</span>{% endif %}</td>
         </tr>
         {% empty %}
         <tr><td colspan="8" class="muted">No entries recorded.</td></tr>
@@ -136,11 +151,17 @@
   const checkLabel = document.getElementById("face-check-label");
   const checkMessage = document.getElementById("face-check-message");
   const checkScore = document.getElementById("face-check-score");
+  const locationCheckResult = document.getElementById("location-check-result");
+  const locationReasonDialog = document.getElementById("location-reason-dialog");
+  const locationReasonForm = document.getElementById("location-reason-form");
+  const locationReasonInput = document.getElementById("location-reason");
   const captureButton = document.getElementById("capture-face");
   const proceedButton = document.getElementById("proceed-face");
   let cameraStream = null;
   let currentForm = null;
   let pendingFaceImage = "";
+  let pendingLocationRequiresReason = true;
+  let pendingLocationStatus = "unavailable";
   let attendanceSubmitting = false;
   let stopFaceDetection = null;
 
@@ -212,17 +233,54 @@
     checkScore.textContent = result.similarity === null || result.similarity === undefined
       ? ""
       : `Face similarity: ${Number(result.similarity).toFixed(3)}. The company/admin makes the approval decision.`;
+    pendingLocationStatus = result.location_status || "unavailable";
+    pendingLocationRequiresReason = result.location_requires_reason !== false;
+    locationCheckResult.className = pendingLocationRequiresReason ? "status" : "status status-good";
+    if (pendingLocationRequiresReason) {
+      checkResult.classList.add("face-check-location-warning");
+      const locationText = pendingLocationStatus === "outside"
+        ? `Outside the allowed radius${result.distance_meters === null ? "" : ` (${Number(result.distance_meters).toFixed(0)} m away; allowed ${result.allowed_radius_meters} m)`}. A reason is required for supervisor review.`
+        : "GPS is unavailable. A reason is required for supervisor review.";
+      locationCheckResult.textContent = locationText;
+    } else {
+      locationCheckResult.textContent = "Within the assigned worksite radius.";
+    }
     captureActions.hidden = true;
     checkResult.hidden = false;
-    proceedButton.textContent = "Submit for approval";
+    proceedButton.textContent = pendingLocationRequiresReason
+      ? "Provide reason and submit"
+      : result.quality === "good" ? "Record attendance" : "Submit for review";
   };
+
+  const captureLocationForPreview = () => new Promise((resolve) => {
+    const latitudeField = currentForm.elements[`${currentForm.dataset.action}_latitude`];
+    const longitudeField = currentForm.elements[`${currentForm.dataset.action}_longitude`];
+    latitudeField.value = "";
+    longitudeField.value = "";
+    if (!navigator.geolocation) {
+      resolve(false);
+      return;
+    }
+    navigator.geolocation.getCurrentPosition((position) => {
+      latitudeField.value = position.coords.latitude.toFixed(6);
+      longitudeField.value = position.coords.longitude.toFixed(6);
+      resolve(true);
+    }, () => resolve(false), { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+  });
 
   const checkCapturedFrame = async (faceImage) => {
     const body = new FormData(currentForm);
     body.set("face_image", faceImage);
+    locationStatus.textContent = "Checking your location…";
     captureStatus.textContent = "Checking the face. Please wait…";
     captureButton.disabled = true;
     try {
+      const locationAvailable = await captureLocationForPreview();
+      body.set(`${currentForm.dataset.action}_latitude`, currentForm.elements[`${currentForm.dataset.action}_latitude`].value);
+      body.set(`${currentForm.dataset.action}_longitude`, currentForm.elements[`${currentForm.dataset.action}_longitude`].value);
+      locationStatus.textContent = locationAvailable
+        ? "Location captured. Checking the assigned worksite…"
+        : "GPS unavailable. You can submit an explanation for supervisor review.";
       const response = await fetch("{% url 'portal:attendance_face_preview' %}", {
         method: "POST",
         body,
@@ -231,6 +289,9 @@
       });
       const result = await window.readFaceApiResponse(response);
       pendingFaceImage = faceImage;
+      if (result.distance_meters !== null && result.distance_meters !== undefined) {
+        result.distance_meters = Number(result.distance_meters);
+      }
       showCheckResult(result);
     } catch (error) {
       pendingFaceImage = faceImage;
@@ -241,6 +302,8 @@
           ? error.message
           : "The system could not check this frame right now. Retake it or submit it as an exception for company/admin review.",
         similarity: null,
+        location_status: "unavailable",
+        location_requires_reason: true,
       });
     }
   };
@@ -254,27 +317,12 @@
       localStorage.removeItem(noteKey);
       currentForm.submit();
     };
-    if (!navigator.geolocation) {
-      locationStatus.textContent = "This device does not support location access. Attendance was not submitted.";
-      cameraStatus.textContent = "Location is required. Use a device with location services enabled to record attendance.";
-      attendanceSubmitting = false;
-      currentForm = null;
-      stopCamera();
-      return;
-    }
-    locationStatus.textContent = "Checking your location…";
-    navigator.geolocation.getCurrentPosition((position) => {
-      currentForm.elements[`${currentForm.dataset.action}_latitude`].value = position.coords.latitude.toFixed(6);
-      currentForm.elements[`${currentForm.dataset.action}_longitude`].value = position.coords.longitude.toFixed(6);
-      locationStatus.textContent = "Location captured. Submitting attendance…";
-      finishSubmission();
-    }, () => {
-      locationStatus.textContent = "Location access is required. Allow it in your browser and retry.";
-      cameraStatus.textContent = "Attendance was not submitted because location access is required. Start the camera and try again.";
-      attendanceSubmitting = false;
-      currentForm = null;
-      stopCamera();
-    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+    const reasonField = currentForm.elements[`${currentForm.dataset.action}_location_reason`];
+    reasonField.value = pendingLocationRequiresReason ? locationReasonInput.value.trim() : "";
+    locationStatus.textContent = pendingLocationRequiresReason
+      ? "Location exception submitted for supervisor review."
+      : "Location verified. Recording attendance…";
+    finishSubmission();
   };
 
   document.querySelectorAll(".clock-form").forEach((form) => form.addEventListener("submit", (event) => {
@@ -347,9 +395,31 @@
 
   proceedButton.addEventListener("click", () => {
     if (!currentForm || attendanceSubmitting) return;
-    cameraStatus.textContent = "Submitting your attendance for company/admin approval…";
+    if (pendingLocationRequiresReason) {
+      locationReasonInput.value = "";
+      locationReasonDialog.showModal();
+      locationReasonInput.focus();
+      return;
+    }
     submitAttendance(pendingFaceImage);
   });
+
+  locationReasonForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const reason = locationReasonInput.value.trim();
+    if (reason.length < 10) {
+      locationReasonInput.setCustomValidity("Please enter at least 10 characters explaining this location exception.");
+      locationReasonInput.reportValidity();
+      return;
+    }
+    locationReasonInput.setCustomValidity("");
+    locationReasonDialog.close();
+    cameraStatus.textContent = "Submitting your location exception for supervisor review…";
+    submitAttendance(pendingFaceImage);
+  });
+
+  locationReasonInput.addEventListener("input", () => locationReasonInput.setCustomValidity(""));
+  document.getElementById("cancel-location-reason").addEventListener("click", () => locationReasonDialog.close());
 
   document.getElementById("cancel-face-capture").addEventListener("click", () => {
     stopCamera();

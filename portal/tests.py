@@ -443,7 +443,7 @@ class PortalWorkflowTests(TestCase):
         self.assertRedirects(response, reverse("portal:attendance"))
         self.assertTrue(AttendanceLog.objects.filter(intern=self.intern).exists())
 
-    def test_attendance_requires_location_inside_an_assigned_worksite(self):
+    def test_outside_location_requires_reason_and_is_sent_for_supervisor_review(self):
         self._complete_intern_profile()
         self._enroll_attendance_location()
         self.client.force_login(self.intern_user)
@@ -469,16 +469,110 @@ class PortalWorkflowTests(TestCase):
             "portal.views._attendance_face_check",
             return_value=(AttendanceLog.FaceCheckStatus.MATCHED, 0.82, b"encrypted frame"),
         ):
-            inside = self.client.post(
+            flagged = self.client.post(
                 reverse("portal:attendance"),
-                self._attendance_payload("clock_in"),
+                self._attendance_payload(
+                    "clock_in",
+                    clock_in_latitude="14.700000",
+                    clock_in_location_reason="The office GPS signal was inaccurate today.",
+                ),
             )
 
-        self.assertRedirects(inside, reverse("portal:attendance"))
+        self.assertRedirects(flagged, reverse("portal:attendance"))
         log = AttendanceLog.objects.get(intern=self.intern)
-        self.assertEqual(str(log.clock_in_latitude), "14.600000")
+        self.assertEqual(str(log.clock_in_latitude), "14.700000")
         self.assertEqual(str(log.clock_in_longitude), "121.000000")
-        self.assertTrue(log.clock_in_within_location)
+        self.assertFalse(log.clock_in_within_location)
+        self.assertGreater(log.clock_in_distance_meters, log.clock_in_allowed_radius_meters)
+        self.assertEqual(log.clock_in_location_reason, "The office GPS signal was inaccurate today.")
+        self.assertFalse(log.time_in_approved)
+        capture = log.face_captures.get(event=AttendanceFaceCapture.Event.TIME_IN)
+        self.assertEqual(capture.location_status, AttendanceFaceCapture.LocationStatus.OUTSIDE)
+        self.assertEqual(capture.review_status, AttendanceFaceCapture.ReviewStatus.PENDING)
+        self.client.force_login(self.company_user)
+        self.assertContains(self.client.get(reverse("portal:company_dtr_queue")), "The office GPS signal was inaccurate today.")
+
+        coordinator = User.objects.create_user(username="location-approver", role=User.Role.COORDINATOR)
+        self.client.force_login(coordinator)
+        approved = self.client.post(
+            reverse("portal:review_attendance_face_capture", args=(capture.pk,)),
+            {"action": "approve"},
+        )
+        self.assertRedirects(approved, reverse("portal:dtr_queue"))
+        log.refresh_from_db()
+        self.assertTrue(log.time_in_approved)
+        self.assertFalse(log.clock_in_within_location)
+
+    def test_missing_gps_requires_reason_and_is_queued_as_location_exception(self):
+        self._complete_intern_profile()
+        self._enroll_attendance_location()
+        self.client.force_login(self.intern_user)
+
+        missing_reason = self.client.post(
+            reverse("portal:attendance"),
+            {
+                "action": "clock_in",
+                "clock_in_location_reason": " ",
+                "face_image": self._camera_data_url(),
+            },
+        )
+        self.assertRedirects(missing_reason, reverse("portal:attendance"))
+        self.assertFalse(AttendanceLog.objects.filter(intern=self.intern).exists())
+
+        with patch(
+            "portal.views._attendance_face_check",
+            return_value=(AttendanceLog.FaceCheckStatus.MATCHED, 0.82, b"encrypted frame"),
+        ):
+            flagged = self.client.post(
+                reverse("portal:attendance"),
+                {
+                    "action": "clock_in",
+                    "clock_in_location_reason": "Browser location permission was denied.",
+                },
+            )
+
+        self.assertRedirects(flagged, reverse("portal:attendance"))
+        log = AttendanceLog.objects.get(intern=self.intern)
+        capture = log.face_captures.get(event=AttendanceFaceCapture.Event.TIME_IN)
+        self.assertIsNone(log.clock_in_latitude)
+        self.assertIsNone(log.clock_in_distance_meters)
+        self.assertFalse(log.clock_in_within_location)
+        self.assertEqual(capture.location_status, AttendanceFaceCapture.LocationStatus.UNAVAILABLE)
+        self.assertEqual(capture.location_reason, "Browser location permission was denied.")
+        self.assertFalse(log.time_in_approved)
+        self.assertIsNotNone(log.clock_in)
+        self.assertEqual(capture.review_status, AttendanceFaceCapture.ReviewStatus.PENDING)
+
+    def test_attendance_face_preview_reports_location_state_and_reason_requirement(self):
+        self._complete_intern_profile()
+        self._enroll_attendance_location()
+        self.client.force_login(self.intern_user)
+        with patch(
+            "portal.views._attendance_face_check",
+            return_value=(AttendanceLog.FaceCheckStatus.MATCHED, 0.82, None),
+        ):
+            inside = self.client.post(
+                reverse("portal:attendance_face_preview"),
+                self._attendance_payload(
+                    "clock_in",
+                    face_image=self._camera_data_url(),
+                ),
+            )
+            outside = self.client.post(
+                reverse("portal:attendance_face_preview"),
+                self._attendance_payload(
+                    "clock_in",
+                    clock_in_latitude="14.700000",
+                    face_image=self._camera_data_url(),
+                ),
+            )
+
+        self.assertEqual(inside.status_code, 200)
+        self.assertEqual(inside.json()["location_status"], AttendanceFaceCapture.LocationStatus.INSIDE)
+        self.assertFalse(inside.json()["location_requires_reason"])
+        self.assertEqual(outside.status_code, 200)
+        self.assertEqual(outside.json()["location_status"], AttendanceFaceCapture.LocationStatus.OUTSIDE)
+        self.assertTrue(outside.json()["location_requires_reason"])
 
     def test_attendance_face_preview_classifies_capture_without_recording_attendance(self):
         self._complete_intern_profile()
@@ -772,8 +866,10 @@ class PortalWorkflowTests(TestCase):
         self.assertNotContains(response, "Capture face for attendance")
         self.assertContains(response, "Capture and check")
         self.assertContains(response, 'name="face_image"')
+        self.assertContains(response, 'id="location-reason-dialog"')
+        self.assertContains(response, 'minlength="10"')
 
-    def test_successful_face_match_waits_for_approval_before_each_clock_event(self):
+    def test_successful_face_matches_inside_worksite_auto_approve_each_event(self):
         self._complete_intern_profile()
         self._enroll_attendance_location()
         self.client.force_login(self.intern_user)
@@ -791,63 +887,29 @@ class PortalWorkflowTests(TestCase):
             self.assertRedirects(time_in_response, reverse("portal:attendance"))
             log = AttendanceLog.objects.get(intern=self.intern)
             time_in_capture = log.face_captures.get(event=AttendanceFaceCapture.Event.TIME_IN)
-            self.assertEqual(time_in_capture.review_status, AttendanceFaceCapture.ReviewStatus.PENDING)
-            self.assertFalse(log.time_in_approved)
+            self.assertEqual(time_in_capture.review_status, AttendanceFaceCapture.ReviewStatus.NOT_REQUIRED)
+            self.assertTrue(log.time_in_approved)
 
-            blocked_time_out = self.client.post(
-                reverse("portal:attendance"),
-                self._attendance_payload("clock_out"),
-            )
-            self.assertRedirects(blocked_time_out, reverse("portal:attendance"))
-            log.refresh_from_db()
-            self.assertIsNone(log.clock_out)
-
-            coordinator = User.objects.create_user(username="attendance-approver", role=User.Role.COORDINATOR)
-            self.client.force_login(coordinator)
-            queue = self.client.get(reverse("portal:dtr_queue"))
-            self.assertContains(queue, "Approve time in")
-            self.assertEqual(queue.context["logs"][0].pending_time_in_face_capture, time_in_capture)
-            bypass = self.client.post(
-                reverse("portal:approve_dtr", args=(log.pk,)),
-                {"event": "time_in"},
-            )
-            self.assertRedirects(bypass, reverse("portal:dtr_queue"))
-            log.refresh_from_db()
-            self.assertFalse(log.time_in_approved)
-            approved_time_in = self.client.post(
-                reverse("portal:review_attendance_face_capture", args=(time_in_capture.pk,)),
-                {"action": "approve"},
-            )
-            self.assertRedirects(approved_time_in, reverse("portal:dtr_queue"))
-            self.client.force_login(self.intern_user)
             time_out_response = self.client.post(
                 reverse("portal:attendance"),
                 self._attendance_payload("clock_out"),
             )
+            self.assertRedirects(time_out_response, reverse("portal:attendance"))
 
         self.assertRedirects(time_out_response, reverse("portal:attendance"))
         log.refresh_from_db()
         time_out_capture = log.face_captures.get(event=AttendanceFaceCapture.Event.TIME_OUT)
         self.assertIsNotNone(log.clock_in)
         self.assertIsNotNone(log.clock_out)
-        self.assertFalse(log.time_out_approved)
-        self.assertEqual(time_out_capture.review_status, AttendanceFaceCapture.ReviewStatus.PENDING)
-
-        self.client.force_login(coordinator)
-        approved_time_out = self.client.post(
-            reverse("portal:review_attendance_face_capture", args=(time_out_capture.pk,)),
-            {"action": "approve"},
-        )
-        self.assertRedirects(approved_time_out, reverse("portal:dtr_queue"))
-        log.refresh_from_db()
         self.assertTrue(log.time_in_approved)
         self.assertTrue(log.time_out_approved)
         self.assertTrue(log.clock_in_within_location)
         self.assertTrue(log.clock_out_within_location)
+        self.assertEqual(time_out_capture.review_status, AttendanceFaceCapture.ReviewStatus.NOT_REQUIRED)
         self.assertEqual(log.face_captures.count(), 2)
         self.assertEqual(
             set(log.face_captures.values_list("review_status", flat=True)),
-            {AttendanceFaceCapture.ReviewStatus.APPROVED},
+            {AttendanceFaceCapture.ReviewStatus.NOT_REQUIRED},
         )
 
     @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
@@ -1395,7 +1457,12 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(log.notes, "Started inventory review")
         self.assertEqual(str(log.clock_in_latitude), "14.600000")
         self.assertTrue(log.clock_in_within_location)
+        self.assertEqual(log.clock_in_distance_meters, 0)
+        self.assertEqual(log.clock_in_allowed_radius_meters, 100)
+        self.assertTrue(log.time_in_approved)
         self.assertEqual(log.clock_in_face_status, AttendanceLog.FaceCheckStatus.MATCHED)
+        capture = log.face_captures.get(event=AttendanceFaceCapture.Event.TIME_IN)
+        self.assertEqual(capture.review_status, AttendanceFaceCapture.ReviewStatus.NOT_REQUIRED)
 
     def test_clock_out_without_clock_in_does_not_create_empty_record(self):
         self._complete_intern_profile()
