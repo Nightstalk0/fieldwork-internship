@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}User Directory | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">PROGRAM OPERATIONS</p>
+    <h1>User Directory</h1>
+    <p class="muted">Manage intern profiles, face enrollment, worksites, and approved OJT hours.</p>
+  </div>
+</div>
+<section class="panel">
+  <form method="get" class="dtr-filter-form">
+    <label for="directory-search">Search name, email, or student ID</label>
+    <input id="directory-search" type="search" name="q" value="{{ search }}" placeholder="Name, email, student ID">
+    <label for="directory-role">Role</label>
+    <select id="directory-role" name="role">
+      <option value="">All roles</option>
+      {% for value, label in role_choices %}
+      <option value="{{ value }}"{% if selected_role == value %} selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <label for="directory-placement">Placement type</label>
+    <select id="directory-placement" name="placement">
+      <option value="">All placements</option>
+      {% for value, label in placement_choices %}
+      <option value="{{ value }}"{% if selected_placement == value %} selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <label for="directory-face">Face enrollment</label>
+    <select id="directory-face" name="face">
+      <option value="">All statuses</option>
+      {% for value, label in face_choices %}
+      <option value="{{ value }}"{% if selected_face == value %} selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <button class="button button-primary" type="submit">Apply filters</button>
+  </form>
+</section>
+<section class="panel">
+  <div class="section-heading">
+    <h2>Registered users</h2>
+    <span class="muted">{{ users_page.paginator.count }} user{{ users_page.paginator.count|pluralize }}</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>User name &amp; email</th>
+          <th>Role &amp; placement</th>
+          <th>Associated company</th>
+          <th>Face enrollment</th>
+          <th>Approved hours</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for user in users_page %}
+        <tr>
+          <td>
+            <strong>{{ user.get_full_name|default:user.username }}</strong><br>
+            <span class="muted">{{ user.email|default:"No email" }}</span>
+            {% if user.directory_intern and user.directory_intern.student_id %}<br><small class="muted">ID: {{ user.directory_intern.student_id }}</small>{% endif %}
+          </td>
+          <td>
+            <span class="status {% if user.directory_role == 'Admin' %}status-neutral{% elif user.directory_role == 'Intern' %}status-good{% endif %}">{{ user.directory_role }}</span><br>
+            <span class="muted">{{ user.directory_placement }}</span>
+          </td>
+          <td>{{ user.directory_company_name }}</td>
+          <td>
+            {% if user.directory_intern %}
+              {% if user.directory_face_enrolled %}<span class="status status-good">Enrolled</span>{% else %}<span class="status status-neutral">Not enrolled</span>{% endif %}
+            {% else %}<span class="muted">Not applicable</span>{% endif %}
+          </td>
+          <td>
+            {% if user.directory_intern %}
+              {{ user.directory_hours|floatformat:2 }} / {{ rendered_hours_cap }} h
+              <progress max="{{ rendered_hours_cap }}" value="{{ user.directory_hours }}" aria-label="{{ user.username }} approved OJT hours"></progress>
+            {% else %}<span class="muted">—</span>{% endif %}
+          </td>
+          <td>
+            {% if user.directory_intern %}
+            <div class="directory-actions">
+              <a class="button button-small button-secondary" href="{% url 'portal:coordinator_dtr_detail' user.directory_intern.pk %}">View DTR</a>
+              {% if user.directory_face_enrolled %}
+              <form method="post" action="{% url 'portal:coordinator_reset_user_face' user.directory_intern.pk %}" onsubmit="return confirm('Reset this face enrollment? This also deletes its associated attendance face captures.');">
+                {% csrf_token %}
+                <button class="button button-small button-secondary" type="submit">Reset Face</button>
+              </form>
+              {% endif %}
+              {% if user.directory_resettable_worksite %}
+              <form method="post" action="{% url 'portal:coordinator_reset_user_worksite' user.directory_intern.pk %}" onsubmit="return confirm('Reset this intern’s active or pending worksite location?');">
+                {% csrf_token %}
+                <button class="button button-small button-secondary" type="submit">Reset Worksite</button>
+              </form>
+              {% endif %}
+            </div>
+            {% else %}<span class="muted">—</span>{% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="6" class="muted">No users match these filters.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if users_page.has_other_pages %}
+  <nav class="pagination" aria-label="User directory pages">
+    {% if users_page.has_previous %}<a class="button button-small button-secondary" href="?{% if query_string %}{{ query_string }}&amp;{% endif %}page={{ users_page.previous_page_number }}">Previous</a>{% endif %}
+    <span>Page {{ users_page.number }} of {{ users_page.paginator.num_pages }}</span>
+    {% if users_page.has_next %}<a class="button button-small button-secondary" href="?{% if query_string %}{{ query_string }}&amp;{% endif %}page={{ users_page.next_page_number }}">Next</a>{% endif %}
+  </nav>
+  {% endif %}
+</section>
+{% endblock %}

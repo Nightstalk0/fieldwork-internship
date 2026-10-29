@@ -72,6 +72,8 @@ The intern attendance page groups entries into Monday–Sunday weeks and display
 
 Configure academic grading ranges in Django admin under **Academic periods**. Create one date-range record for each Prelim, Midterm, Pre-Final, and Final period, with an academic-year label; ranges must not overlap. The DTR period filter assigns attendance dates to these ranges. Existing attendance remains in **All periods** even if it falls outside configured dates.
 
+Coordinators can open **User Directory** at `/coordinator/users/` to search/filter interns, company supervisors, and admins. Intern rows show face-enrollment status and approved hours against the same 486-hour cap, with links to their DTR and coordinator reset actions. Resetting face enrollment also deletes its associated attendance face captures; resetting a worksite deactivates active locations and rejects pending requests.
+
 To test locally with Chrome/Edge location emulation:
 
 1. Start the Django server and sign in as an intern with an accepted company placement or an external placement.

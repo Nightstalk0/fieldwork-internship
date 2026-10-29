@@ -196,6 +196,9 @@ textarea { resize: vertical; line-height: 1.45; }
 .dtr-week td small { display: block; color: var(--muted); }
 .pagination { display: flex; align-items: center; justify-content: center; gap: 1rem; padding-top: 1rem; }
 .pagination span { color: var(--muted); }
+.directory-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+.directory-actions form { margin: 0; }
+.directory-actions progress { width: 7rem; max-width: 100%; height: .5rem; display: block; accent-color: var(--forest); }
 .table-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr)); gap: .75rem; margin-bottom: .875rem; }
 .table-filters label { min-width: 0; }
 .table-filters input, .table-filters select { margin-top: .375rem; }

@@ -479,6 +479,148 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(external_filter.context["intern_page"].paginator.count, 1)
         self.assertContains(external_filter, "Northside Training")
 
+    def test_coordinator_user_directory_filters_mixed_roles_and_lists_company(self):
+        self._complete_intern_details()
+        self.intern.student_id = "DIRECTORY-100"
+        self.intern.save(update_fields=("student_id",))
+        Application.objects.create(
+            intern=self.intern,
+            posting=self.posting,
+            status=Application.Status.ACCEPTED,
+        )
+        FaceEnrollment.objects.create(
+            intern=self.intern,
+            encrypted_embedding=b"encrypted",
+            enrolled_by=self.intern_user,
+            consent_confirmed_at=timezone.now(),
+        )
+        WorksiteLocation.objects.create(
+            intern=self.intern,
+            name="Directory site",
+            address="1 Directory Road",
+            latitude="14.600000",
+            longitude="121.000000",
+            approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+            is_active=True,
+        )
+        coordinator = User.objects.create_user(username="directory-admin", role=User.Role.COORDINATOR)
+        self.client.force_login(coordinator)
+        url = reverse("portal:coordinator_users")
+
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["users_page"].paginator.per_page, 15)
+        self.assertContains(response, "User Directory")
+        self.assertContains(response, "DIRECTORY-100")
+        self.assertContains(response, self.company.organization)
+        self.assertContains(response, "Enrolled")
+        self.assertContains(response, "View DTR")
+        self.assertContains(response, "Reset Face")
+        self.assertContains(response, "Reset Worksite")
+
+        search = self.client.get(url, {"q": "DIRECTORY-100"})
+        self.assertEqual(search.context["users_page"].paginator.count, 1)
+        self.assertEqual(search.context["users_page"].object_list[0].pk, self.intern_user.pk)
+        company_filter = self.client.get(url, {"role": User.Role.COMPANY})
+        self.assertEqual(company_filter.context["users_page"].paginator.count, 1)
+        admin_filter = self.client.get(url, {"role": "admin"})
+        self.assertEqual(admin_filter.context["users_page"].paginator.count, 1)
+        self.assertEqual(admin_filter.context["users_page"].object_list[0].pk, coordinator.pk)
+        placement_filter = self.client.get(url, {"placement": InternProfile.PlacementType.EXTERNAL})
+        self.assertEqual(placement_filter.context["users_page"].paginator.count, 0)
+        enrolled_filter = self.client.get(url, {"face": "enrolled"})
+        self.assertEqual(enrolled_filter.context["users_page"].paginator.count, 1)
+        face_filter = self.client.get(url, {"face": "not_enrolled"})
+        self.assertNotIn(self.intern_user.pk, [user.pk for user in face_filter.context["users_page"]])
+
+    def test_coordinator_user_directory_paginates_at_fifteen(self):
+        for index in range(14):
+            User.objects.create_user(username=f"directory-intern-{index}", role=User.Role.INTERN)
+        coordinator = User.objects.create_user(username="directory-paginator", role=User.Role.COORDINATOR)
+        self.client.force_login(coordinator)
+
+        first_page = self.client.get(reverse("portal:coordinator_users"))
+
+        self.assertEqual(first_page.context["users_page"].paginator.count, 17)
+        self.assertEqual(len(first_page.context["users_page"].object_list), 15)
+        self.assertContains(first_page, "Page 1 of 2")
+        second_page = self.client.get(reverse("portal:coordinator_users"), {"page": 2})
+        self.assertEqual(len(second_page.context["users_page"].object_list), 2)
+
+    def test_coordinator_user_directory_reset_actions(self):
+        self._complete_intern_details(external=True)
+        enrollment = FaceEnrollment.objects.create(
+            intern=self.intern,
+            encrypted_embedding=b"encrypted",
+            enrolled_by=self.intern_user,
+            consent_confirmed_at=timezone.now(),
+        )
+        log = AttendanceLog.objects.create(
+            intern=self.intern,
+            clock_in_face_status=AttendanceLog.FaceCheckStatus.MATCHED,
+            clock_in_face_score=0.8,
+        )
+        capture = AttendanceFaceCapture.objects.create(
+            attendance_log=log,
+            event=AttendanceFaceCapture.Event.TIME_IN,
+            face_status=AttendanceLog.FaceCheckStatus.MATCHED,
+            encrypted_image=b"encrypted image",
+        )
+        active_site = WorksiteLocation.objects.create(
+            intern=self.intern,
+            name="Approved site",
+            address="1 Road",
+            latitude="14.600000",
+            longitude="121.000000",
+            approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+            is_active=True,
+        )
+        pending_site = WorksiteLocation.objects.create(
+            intern=self.intern,
+            name="Pending site",
+            address="2 Road",
+            latitude="14.610000",
+            longitude="121.010000",
+            approval_status=WorksiteLocation.ApprovalStatus.PENDING,
+            is_active=False,
+        )
+        coordinator = User.objects.create_user(username="directory-reset-admin", role=User.Role.COORDINATOR)
+        self.client.force_login(coordinator)
+
+        reset_face = self.client.post(
+            reverse("portal:coordinator_reset_user_face", args=(self.intern.pk,)),
+        )
+
+        self.assertRedirects(reset_face, reverse("portal:coordinator_users"))
+        self.assertFalse(FaceEnrollment.objects.filter(pk=enrollment.pk).exists())
+        self.assertFalse(AttendanceFaceCapture.objects.filter(pk=capture.pk).exists())
+        log.refresh_from_db()
+        self.assertEqual(log.clock_in_face_status, AttendanceLog.FaceCheckStatus.NOT_ATTEMPTED)
+        self.assertIsNone(log.clock_in_face_score)
+
+        reset_worksite = self.client.post(
+            reverse("portal:coordinator_reset_user_worksite", args=(self.intern.pk,)),
+        )
+
+        self.assertRedirects(reset_worksite, reverse("portal:coordinator_users"))
+        active_site.refresh_from_db()
+        pending_site.refresh_from_db()
+        self.assertFalse(active_site.is_active)
+        self.assertFalse(pending_site.is_active)
+        self.assertEqual(pending_site.approval_status, WorksiteLocation.ApprovalStatus.REJECTED)
+
+    def test_user_directory_and_reset_actions_are_coordinator_only(self):
+        self.client.force_login(self.intern_user)
+
+        response = self.client.get(reverse("portal:coordinator_users"))
+        reset = self.client.post(
+            reverse("portal:coordinator_reset_user_worksite", args=(self.intern.pk,)),
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(reset.status_code, 403)
+
     def test_company_dtr_detail_is_limited_to_accepted_company_interns(self):
         self._complete_intern_details()
         Application.objects.create(

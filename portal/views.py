@@ -1020,21 +1020,7 @@ def coordinator_face_enrollment(request):
         action = request.POST.get("action")
         intern = get_object_or_404(InternProfile.objects.select_related("user"), pk=request.POST.get("intern_id"))
         if action == "delete":
-            enrollment = FaceEnrollment.objects.filter(intern=intern).first()
-            if enrollment:
-                with transaction.atomic():
-                    AttendanceFaceCapture.objects.filter(attendance_log__intern=intern).delete()
-                    enrollment.delete()
-                    AttendanceLog.objects.filter(intern=intern).update(
-                        clock_in_face_status=AttendanceLog.FaceCheckStatus.NOT_ATTEMPTED,
-                        clock_in_face_score=None,
-                        clock_out_face_status=AttendanceLog.FaceCheckStatus.NOT_ATTEMPTED,
-                        clock_out_face_score=None,
-                    )
-                audit(request.user, "face_enrollment.deleted", intern)
-                messages.success(request, "Face enrollment and its associated attendance captures were deleted.")
-            else:
-                messages.info(request, "This intern has no face enrollment.")
+            _delete_intern_face_enrollment(request, intern)
             return redirect("portal:coordinator_face_enrollment")
         if action != "enroll":
             return HttpResponseBadRequest("Unknown face-enrollment action.")
@@ -1072,6 +1058,25 @@ def coordinator_face_enrollment(request):
         "user__username",
     )
     return render(request, "portal/coordinator/face_enrollment.html", {"interns": interns})
+
+
+def _delete_intern_face_enrollment(request, intern):
+    enrollment = FaceEnrollment.objects.filter(intern=intern).first()
+    if enrollment:
+        with transaction.atomic():
+            AttendanceFaceCapture.objects.filter(attendance_log__intern=intern).delete()
+            enrollment.delete()
+            AttendanceLog.objects.filter(intern=intern).update(
+                clock_in_face_status=AttendanceLog.FaceCheckStatus.NOT_ATTEMPTED,
+                clock_in_face_score=None,
+                clock_out_face_status=AttendanceLog.FaceCheckStatus.NOT_ATTEMPTED,
+                clock_out_face_score=None,
+            )
+        audit(request.user, "face_enrollment.deleted", intern)
+        messages.success(request, "Face enrollment and its associated attendance captures were deleted.")
+        return True
+    messages.info(request, "This intern has no face enrollment.")
+    return False
 
 
 
@@ -1361,6 +1366,189 @@ def company_dtr_detail(request, intern_id):
 def coordinator_dtr_detail(request, intern_id):
     intern = get_object_or_404(InternProfile.objects.select_related("user"), pk=intern_id)
     return _render_dtr_detail(request, intern, coordinator=True)
+
+
+@role_required(User.Role.COORDINATOR)
+def coordinator_users(request):
+    users = User.objects.filter(
+        Q(role__in=(User.Role.INTERN, User.Role.COMPANY, User.Role.COORDINATOR))
+        | Q(is_staff=True),
+    )
+    role_filter = request.GET.get("role", "")
+    role_values = {
+        User.Role.INTERN,
+        User.Role.COMPANY,
+        "admin",
+    }
+    if role_filter and role_filter not in role_values:
+        return HttpResponseBadRequest("Invalid user role filter.")
+    if role_filter == "admin":
+        users = users.filter(Q(is_staff=True) | Q(role=User.Role.COORDINATOR))
+    elif role_filter:
+        users = users.filter(role=role_filter, is_staff=False)
+
+    placement_filter = request.GET.get("placement", "")
+    if placement_filter not in {"", *InternProfile.PlacementType.values}:
+        return HttpResponseBadRequest("Invalid placement type filter.")
+    if placement_filter:
+        users = users.filter(
+            role=User.Role.INTERN,
+            intern_profile__placement_type=placement_filter,
+        )
+
+    face_filter = request.GET.get("face", "")
+    if face_filter not in {"", "enrolled", "not_enrolled"}:
+        return HttpResponseBadRequest("Invalid face-enrollment filter.")
+    if face_filter:
+        enrollment_is_null = face_filter == "not_enrolled"
+        users = users.filter(
+            role=User.Role.INTERN,
+            intern_profile__face_enrollment__isnull=enrollment_is_null,
+        )
+
+    search = request.GET.get("q", "").strip()
+    if search:
+        users = users.filter(
+            Q(first_name__icontains=search)
+            | Q(last_name__icontains=search)
+            | Q(email__icontains=search)
+            | Q(intern_profile__student_id__icontains=search)
+        )
+
+    users = users.order_by("last_name", "first_name", "username").distinct().select_related(
+        "intern_profile__face_enrollment",
+        "company_profile",
+    ).prefetch_related(
+        "intern_profile__applications__posting__company",
+        "intern_profile__attendance_worksites",
+    )
+    page = Paginator(users, 15).get_page(request.GET.get("page"))
+    page_users = list(page.object_list)
+    interns_by_user = {}
+    companies_by_user = {}
+    for user in page_users:
+        try:
+            interns_by_user[user.pk] = user.intern_profile
+        except InternProfile.DoesNotExist:
+            pass
+        try:
+            companies_by_user[user.pk] = user.company_profile
+        except CompanyProfile.DoesNotExist:
+            pass
+    hours_by_intern = _approved_hours_by_intern(
+        [intern.pk for intern in interns_by_user.values()],
+    )
+    for user in page_users:
+        intern = interns_by_user.get(user.pk)
+        company = companies_by_user.get(user.pk)
+        user.directory_intern = intern
+        user.directory_company = company
+        user.directory_role = (
+            "Admin"
+            if user.is_staff or user.role == User.Role.COORDINATOR
+            else "Company Supervisor"
+            if user.role == User.Role.COMPANY
+            else "Intern"
+        )
+        user.directory_placement = (
+            (
+                "Internal"
+                if intern.placement_type == InternProfile.PlacementType.PLATFORM
+                else "External"
+            )
+            if intern
+            else "—"
+        )
+        if company:
+            user.directory_company_name = company.organization
+        elif intern and intern.placement_type == InternProfile.PlacementType.EXTERNAL:
+            user.directory_company_name = intern.external_host or "External placement"
+        elif intern:
+            user.directory_company_name = ", ".join(sorted({
+                application.posting.company.organization
+                for application in intern.applications.all()
+                if application.status == Application.Status.ACCEPTED
+            })) or "—"
+        else:
+            user.directory_company_name = "—"
+        user.directory_face_enrolled = bool(
+            intern and hasattr(intern, "face_enrollment")
+        )
+        user.directory_hours = hours_by_intern.get(intern.pk, 0) if intern else None
+        user.directory_resettable_worksite = (
+            any(
+                worksite.is_active
+                or worksite.approval_status == WorksiteLocation.ApprovalStatus.PENDING
+                for worksite in intern.attendance_worksites.all()
+            )
+            if intern
+            else False
+        )
+    query_params = request.GET.copy()
+    query_params.pop("page", None)
+    return render(request, "portal/coordinator/users.html", {
+        "users_page": page,
+        "search": search,
+        "selected_role": role_filter,
+        "selected_placement": placement_filter,
+        "selected_face": face_filter,
+        "role_choices": (
+            (User.Role.INTERN, "Intern"),
+            (User.Role.COMPANY, "Company Supervisor"),
+            ("admin", "Admin"),
+        ),
+        "placement_choices": (
+            (InternProfile.PlacementType.PLATFORM, "Internal"),
+            (InternProfile.PlacementType.EXTERNAL, "External"),
+        ),
+        "face_choices": (
+            ("enrolled", "Enrolled"),
+            ("not_enrolled", "Not Enrolled"),
+        ),
+        "query_string": query_params.urlencode(),
+        "rendered_hours_cap": OJT_RENDERED_HOURS_CAP,
+    })
+
+
+@role_required(User.Role.COORDINATOR)
+@require_POST
+def coordinator_reset_user_face(request, intern_id):
+    intern = get_object_or_404(InternProfile.objects.select_related("user"), pk=intern_id)
+    _delete_intern_face_enrollment(request, intern)
+    return redirect("portal:coordinator_users")
+
+
+@role_required(User.Role.COORDINATOR)
+@require_POST
+def coordinator_reset_user_worksite(request, intern_id):
+    intern = get_object_or_404(InternProfile.objects.select_related("user"), pk=intern_id)
+    worksites = list(
+        WorksiteLocation.objects.filter(intern=intern).filter(
+            Q(is_active=True)
+            | Q(approval_status=WorksiteLocation.ApprovalStatus.PENDING)
+        )
+    )
+    if not worksites:
+        messages.info(request, "This intern has no active or pending worksite to reset.")
+        return redirect("portal:coordinator_users")
+
+    with transaction.atomic():
+        reviewed_at = timezone.now()
+        for worksite in worksites:
+            worksite.is_active = False
+            if worksite.approval_status == WorksiteLocation.ApprovalStatus.PENDING:
+                worksite.approval_status = WorksiteLocation.ApprovalStatus.REJECTED
+            worksite.reviewed_by = request.user
+            worksite.reviewed_at = reviewed_at
+            worksite.save(update_fields=(
+                "is_active",
+                "approval_status",
+                "reviewed_by",
+                "reviewed_at",
+            ))
+            audit(request.user, "worksite.reset_by_coordinator", worksite)
+    messages.success(request, f"Worksite access for {intern.user.get_full_name() or intern.user.username} was reset.")
+    return redirect("portal:coordinator_users")
 
 
 def company_attendance_logs(company):

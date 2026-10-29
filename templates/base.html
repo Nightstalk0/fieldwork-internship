@@ -26,6 +26,7 @@
           <a href="{% url 'portal:dtr_queue' %}" data-icon="◷" {% if request.resolver_match.url_name == 'dtr_queue' %}class="nav-link-active" aria-current="page"{% endif %}>DTR queue{% if pending_dtr_count %}<span class="nav-count">{{ pending_dtr_count }}</span>{% endif %}</a>
           <a href="{% url 'portal:coordinator_daily_reports' %}" data-icon="☷" {% if request.resolver_match.url_name == 'coordinator_daily_reports' %}class="nav-link-active" aria-current="page"{% endif %}>Daily reports{% if pending_daily_report_count %}<span class="nav-count">{{ pending_daily_report_count }}</span>{% endif %}</a>
           <a href="{% url 'portal:coordinator_face_enrollment' %}" data-icon="◎" {% if request.resolver_match.url_name == 'coordinator_face_enrollment' %}class="nav-link-active" aria-current="page"{% endif %}>Face enrollment</a>
+          <a href="{% url 'portal:coordinator_users' %}" data-icon="♙" {% if request.resolver_match.url_name == 'coordinator_users' %}class="nav-link-active" aria-current="page"{% endif %}>User Directory</a>
           <a href="{% url 'portal:coordinator_external_worksites' %}" data-icon="⌖" {% if request.resolver_match.url_name == 'coordinator_external_worksites' %}class="nav-link-active" aria-current="page"{% endif %}>External worksites</a>
         {% elif request.user.role == 'company' %}
           <a href="{% url 'portal:company_dashboard' %}" data-icon="▦" {% if request.resolver_match.url_name == 'company_dashboard' %}class="nav-link-active" aria-current="page"{% endif %}>Overview</a>
