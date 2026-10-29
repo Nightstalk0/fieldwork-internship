@@ -6,17 +6,20 @@
   <div>
     <p class="eyebrow">INTERN WORKSPACE</p>
     <h1>Attendance</h1>
-    <p class="muted">Time entries use server time. Location is optional and only attached when your browser grants permission.</p>
+    <p class="muted">Attendance uses server time, face recognition, and your assigned worksite location.</p>
   </div>
   <a class="button button-secondary" href="{% url 'portal:attendance_export' %}">Download DTR PDF</a>
 </div>
-{% if not ojt_ready %}
-<section class="panel requirement-notice">
-  <strong>Attendance is not available yet</strong>
-  <p>Submit the required OJT documents and wait for coordinator approval before recording your first time-in.</p>
-  <a href="{% url 'portal:ojt_requirements' %}">Open OJT requirements</a>
+<section class="panel requirement-notice {% if location_enrolled %}requirement-notice-good{% endif %}">
+  {% if location_enrolled %}
+  <strong>Worksite location is enrolled</strong>
+  <p>Allow location access when submitting time-in and time-out. Your position must be within the radius set for your assigned worksite.</p>
+  {% for worksite in worksite_locations %}<p><strong>{{ worksite.name }}</strong> · {{ worksite.radius_meters }} m radius</p>{% endfor %}
+  {% else %}
+  <strong>Worksite location is not set up</strong>
+  <p>Attendance is unavailable until your host company enrolls a worksite or your coordinator assigns one.</p>
+  {% endif %}
 </section>
-{% endif %}
 <section class="panel">
   <h2>Face verification required</h2>
   <p class="muted">Click Time in or Time out to open the camera. Fit your face inside the guide, then capture it. You can retake a poor or uncertain frame, or submit it for company/admin review. Every submitted time event waits for company/admin approval. Submitted camera images are encrypted and retained for up to 30 days. Face matching is not liveness detection.</p>
@@ -54,7 +57,7 @@
   <label class="note-label">Optional work note<input id="attendance-note" type="text" maxlength="255" placeholder="Add a short note for this entry" value="{{ today_log.notes }}"></label>
   <div class="clock-actions">
     {% if not today_log.clock_in and 'time_in' not in pending_face_events %}
-      {% if ojt_ready %}
+      {% if location_enrolled %}
       <form method="post" class="clock-form" data-action="clock_in">
         {% csrf_token %}
         <input type="hidden" name="action" value="clock_in">
@@ -65,11 +68,12 @@
         <button class="button button-primary" type="submit">Time in</button>
       </form>
       {% else %}
-      <button class="button button-primary" type="button" disabled>Time in</button>
+      <button class="button button-primary" type="button" disabled>Time in unavailable</button>
       {% endif %}
     {% elif 'time_in' in pending_face_events %}
       <span class="status">Time in pending company/admin approval</span>
     {% elif not today_log.clock_out and 'time_out' not in pending_face_events %}
+    {% if location_enrolled %}
     <form method="post" class="clock-form" data-action="clock_out">
       {% csrf_token %}
       <input type="hidden" name="action" value="clock_out">
@@ -79,12 +83,15 @@
       <input type="hidden" name="notes">
       <button class="button button-primary" type="submit">Time out</button>
     </form>
+    {% else %}
+    <button class="button button-primary" type="button" disabled>Time out unavailable</button>
+    {% endif %}
     {% elif 'time_out' in pending_face_events %}
     <span class="status">Time out pending company/admin approval</span>
     {% else %}
     <span class="status status-good">Today's attendance is complete</span>
     {% endif %}
-    <span id="location-status" class="muted" aria-live="polite">Location is optional.</span>
+    <span id="location-status" class="muted" aria-live="polite">Location access is required.</span>
   </div>
 </section>
 <section class="panel">
@@ -248,20 +255,26 @@
       currentForm.submit();
     };
     if (!navigator.geolocation) {
-      locationStatus.textContent = "Location unavailable; continuing.";
-      finishSubmission();
+      locationStatus.textContent = "This device does not support location access. Attendance was not submitted.";
+      cameraStatus.textContent = "Location is required. Use a device with location services enabled to record attendance.";
+      attendanceSubmitting = false;
+      currentForm = null;
+      stopCamera();
       return;
     }
-    locationStatus.textContent = "Requesting optional location…";
+    locationStatus.textContent = "Checking your location…";
     navigator.geolocation.getCurrentPosition((position) => {
       currentForm.elements[`${currentForm.dataset.action}_latitude`].value = position.coords.latitude.toFixed(6);
       currentForm.elements[`${currentForm.dataset.action}_longitude`].value = position.coords.longitude.toFixed(6);
-      locationStatus.textContent = "Location attached.";
+      locationStatus.textContent = "Location captured. Submitting attendance…";
       finishSubmission();
     }, () => {
-      locationStatus.textContent = "Location not shared; continuing.";
-      finishSubmission();
-    }, { enableHighAccuracy: true, timeout: 3000, maximumAge: 60000 });
+      locationStatus.textContent = "Location access is required. Allow it in your browser and retry.";
+      cameraStatus.textContent = "Attendance was not submitted because location access is required. Start the camera and try again.";
+      attendanceSubmitting = false;
+      currentForm = null;
+      stopCamera();
+    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
   };
 
   document.querySelectorAll(".clock-form").forEach((form) => form.addEventListener("submit", (event) => {

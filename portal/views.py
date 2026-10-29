@@ -10,7 +10,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
-from django.db.models import Avg, Count, Prefetch, Q
+from django.db.models import Avg, Count, Q
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -25,9 +25,9 @@ from zipfile import BadZipFile, LargeZipFile, ZipFile
 
 from accounts.models import User
 
-from .forms import CompanyProfileForm, CompanyRequirementForm, DailyReportForm, InternProfileForm, OJTRequirementUploadForm, PostingForm, ScorecardForm, WeeklyReportForm
-from .models import Application, AttendanceFaceCapture, AttendanceLog, AuditLog, CompanyProfile, CompanyRequirement, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, InternProfile, OJTRequirement, Posting, RiskAssessment, Scorecard, WeeklyReport, assign_accepted_company_ojt_requirements, assign_company_ojt_requirements, baseline_ojt_requirements_approved, pending_attendance_approval_count
-from .utils import attendance_pdf, audit, certificate_pdf
+from .forms import CompanyProfileForm, DailyReportForm, ExternalWorksiteLocationForm, InternProfileForm, PostingForm, ScorecardForm, WorksiteLocationForm
+from .models import Application, AttendanceFaceCapture, AttendanceLog, AuditLog, CompanyProfile, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, InternProfile, Posting, RiskAssessment, Scorecard, WorksiteLocation, pending_attendance_approval_count
+from .utils import attendance_pdf, audit, certificate_pdf, haversine_distance_km
 from ml_engine.face_capture import FaceCaptureError, decode_camera_image, encode_camera_image
 from ml_engine.face_detector import detect_faces
 from ml_engine.face_recognition import (
@@ -58,22 +58,7 @@ def role_required(*roles):
     return decorate
 
 
-def intern_onboarding_required(*, requirements_approved=False):
-    def decorate(view):
-        @wraps(view)
-        def wrapped(request, *args, **kwargs):
-            intern = get_object_or_404(InternProfile, user=request.user)
-            if requirements_approved and not baseline_ojt_requirements_approved(intern):
-                messages.info(request, "Submit your required documents and wait for coordinator approval before continuing.")
-                return redirect("portal:ojt_requirements")
-            return view(request, *args, **kwargs)
-
-        return wrapped
-
-    return decorate
-
-
-def intern_api_required(*, requirements_approved=False):
+def intern_api_required():
     def decorate(view):
         @wraps(view)
         @require_POST
@@ -83,12 +68,8 @@ def intern_api_required(*, requirements_approved=False):
             if request.user.is_staff or request.user.role != User.Role.INTERN:
                 return JsonResponse({"error": "Only interns can use face capture."}, status=403)
 
-            try:
-                intern = InternProfile.objects.get(user=request.user)
-            except InternProfile.DoesNotExist:
+            if not InternProfile.objects.filter(user=request.user).exists():
                 return JsonResponse({"error": "Complete your intern profile before face capture."}, status=404)
-            if requirements_approved and not baseline_ojt_requirements_approved(intern):
-                return JsonResponse({"error": "Wait for approval of your required OJT documents before attendance."}, status=409)
             return view(request, *args, **kwargs)
 
         return wrapped
@@ -107,31 +88,18 @@ def dashboard(request):
 
 
 @role_required(User.Role.INTERN)
-@intern_onboarding_required(requirements_approved=True)
 def intern_dashboard(request):
     intern = get_object_or_404(InternProfile, user=request.user)
-    required_requirements = intern.ojt_requirements.filter(is_required=True, company__isnull=True)
-    ojt_ready = baseline_ojt_requirements_approved(intern)
     completed_hours = round(sum(
         log.hours_worked
         for log in intern.attendance_logs.filter(time_in_approved=True, time_out_approved=True)
     ), 2)
-    target_hours = OJT_TARGET_HOURS
     context = {
         "intern": intern,
         "recent_attendance": intern.attendance_logs.all()[:7],
-        "recent_reports": intern.weekly_reports.all()[:4],
         "recent_daily_reports": intern.daily_reports.all()[:4],
-        "application_count": intern.applications.count(),
-        "latest_risk": intern.risk_assessments.first(),
         "today": timezone.localdate(),
         "completed_hours": completed_hours,
-        "target_hours": target_hours,
-        "progress_percent": min(100, round(completed_hours / target_hours * 100)),
-        "ojt_ready": ojt_ready,
-        "ojt_requirements_remaining": required_requirements.exclude(
-            status=OJTRequirement.Status.APPROVED
-        ).count(),
     }
     return render(request, "portal/intern/dashboard.html", context)
 
@@ -144,7 +112,6 @@ def profile(request):
         try:
             with transaction.atomic():
                 profile_instance = form.save()
-                assign_accepted_company_ojt_requirements(profile_instance)
                 audit(request.user, "profile.updated", profile_instance)
         except Exception:
             LOGGER.exception("Profile update failed for intern user %s.", request.user.pk)
@@ -157,6 +124,83 @@ def profile(request):
         "intern": intern,
         "face_enrollment": enrollment,
         "face_enrollment_current": enrollment is not None and enrollment.consent_text_version == FACE_CONSENT_VERSION,
+    })
+
+
+@role_required(User.Role.COMPANY)
+def company_worksites(request):
+    company = get_object_or_404(CompanyProfile, user=request.user)
+    if request.method == "POST" and request.POST.get("action") == "deactivate":
+        worksite = get_object_or_404(company.worksites, pk=request.POST.get("worksite_id"))
+        worksite.is_active = False
+        worksite.save(update_fields=("is_active",))
+        audit(request.user, "worksite.deactivated", worksite)
+        messages.success(request, f"{worksite.name} was deactivated.")
+        return redirect("portal:company_worksites")
+
+    form = WorksiteLocationForm(request.POST or None)
+    if request.method == "POST" and request.POST.get("action") == "create":
+        if form.is_valid():
+            worksite = form.save(commit=False)
+            worksite.company = company
+            worksite.created_by = request.user
+            worksite.save()
+            audit(request.user, "worksite.enrolled", worksite)
+            messages.success(request, f"{worksite.name} was enrolled as an attendance location.")
+            return redirect("portal:company_worksites")
+    elif request.method == "POST":
+        messages.error(request, "Choose a valid worksite action.")
+
+    return render(request, "portal/worksite_locations.html", {
+        "form": form,
+        "worksites": company.worksites.all(),
+        "is_coordinator": False,
+        "page_title": "Worksite locations",
+        "page_description": "Enroll each approved workplace. Interns accepted by your company must record attendance within one of your active worksite radii.",
+    })
+
+
+@role_required(User.Role.COORDINATOR)
+def coordinator_external_worksites(request):
+    if request.method == "POST" and request.POST.get("action") == "deactivate":
+        worksite = get_object_or_404(
+            WorksiteLocation.objects.filter(
+                company__isnull=True,
+                intern__placement_type=InternProfile.PlacementType.EXTERNAL,
+            ),
+            pk=request.POST.get("worksite_id"),
+        )
+        worksite.is_active = False
+        worksite.save(update_fields=("is_active",))
+        audit(request.user, "worksite.deactivated", worksite)
+        messages.success(request, f"{worksite.name} was deactivated.")
+        return redirect("portal:coordinator_external_worksites")
+
+    form = ExternalWorksiteLocationForm(request.POST or None)
+    if request.method == "POST" and request.POST.get("action") == "create":
+        if form.is_valid():
+            worksite = form.save(commit=False)
+            worksite.created_by = request.user
+            worksite.save()
+            audit(request.user, "worksite.assigned_to_external_intern", worksite)
+            messages.success(
+                request,
+                f"{worksite.name} was assigned to {worksite.intern.user.get_full_name() or worksite.intern.user.username}.",
+            )
+            return redirect("portal:coordinator_external_worksites")
+    elif request.method == "POST":
+        messages.error(request, "Choose a valid worksite action.")
+
+    worksites = WorksiteLocation.objects.filter(
+        company__isnull=True,
+        intern__placement_type=InternProfile.PlacementType.EXTERNAL,
+    ).select_related("intern__user", "created_by")
+    return render(request, "portal/worksite_locations.html", {
+        "form": form,
+        "worksites": worksites,
+        "is_coordinator": True,
+        "page_title": "External intern worksites",
+        "page_description": "Assign an approved worksite and attendance radius to each external-placement intern.",
     })
 
 
@@ -194,7 +238,6 @@ def intern_face_enrollment(request):
 
 
 @role_required(User.Role.INTERN)
-@intern_onboarding_required(requirements_approved=True)
 def postings(request):
     intern = get_object_or_404(InternProfile, user=request.user)
     if intern.placement_type == InternProfile.PlacementType.EXTERNAL:
@@ -213,7 +256,6 @@ def postings(request):
 
 
 @role_required(User.Role.INTERN)
-@intern_onboarding_required(requirements_approved=True)
 @require_POST
 def apply_to_posting(request, posting_id):
     intern = get_object_or_404(InternProfile, user=request.user)
@@ -255,6 +297,40 @@ def _coordinates(request, prefix):
     if not Decimal("-90") <= latitude_value <= Decimal("90") or not Decimal("-180") <= longitude_value <= Decimal("180"):
         return None, None
     return latitude_value, longitude_value
+
+
+def _worksites_for_attendance(intern):
+    locations = WorksiteLocation.objects.filter(is_active=True)
+    if intern.placement_type == InternProfile.PlacementType.EXTERNAL:
+        return locations.filter(company__isnull=True, intern=intern)
+
+    accepted_companies = CompanyProfile.objects.filter(
+        postings__applications__intern=intern,
+        postings__applications__status=Application.Status.ACCEPTED,
+    )
+    return locations.filter(
+        company__in=accepted_companies,
+        intern__isnull=True,
+    ).distinct()
+
+
+def _attendance_location_error(worksites, latitude, longitude):
+    if not worksites.exists():
+        return "No active worksite is assigned to your placement. Ask your coordinator or host company to enroll one."
+    if latitude is None or longitude is None:
+        return "Location access is required to record attendance. Allow location access and try again."
+
+    for worksite in worksites:
+        distance_meters = haversine_distance_km(
+            latitude,
+            longitude,
+            worksite.latitude,
+            worksite.longitude,
+        ) * 1000
+        if distance_meters <= worksite.radius_meters:
+            return None
+
+    return "You are outside the allowed radius of your assigned worksite. Attendance was not recorded."
 
 
 def _attendance_face_check(request, intern, *, retain_image=True):
@@ -324,7 +400,7 @@ def _face_check_feedback(face_status):
     }
 
 
-@intern_api_required(requirements_approved=True)
+@intern_api_required()
 def attendance_face_preview(request):
     action = request.POST.get("action")
     if action not in {"clock_in", "clock_out"}:
@@ -333,8 +409,11 @@ def attendance_face_preview(request):
     intern = InternProfile.objects.get(user=request.user)
     today = timezone.localdate()
     log = AttendanceLog.objects.filter(intern=intern, work_date=today).first()
-    if action == "clock_in" and not baseline_ojt_requirements_approved(intern):
-        return JsonResponse({"error": "Your required OJT documents must be approved before time-in."}, status=400)
+    if not _worksites_for_attendance(intern).exists():
+        return JsonResponse(
+            {"error": "No active worksite is assigned to your placement. Ask your coordinator or host company to enroll one."},
+            status=409,
+        )
     if action == "clock_out" and (
         not log or not log.clock_in or not log.time_in_approved
     ):
@@ -403,18 +482,14 @@ def face_enrollment_preview(request):
 
 
 @role_required(User.Role.INTERN)
-@intern_onboarding_required(requirements_approved=True)
 def attendance(request):
     intern = get_object_or_404(InternProfile, user=request.user)
-    ojt_ready = baseline_ojt_requirements_approved(intern)
+    worksite_locations = _worksites_for_attendance(intern)
     today = timezone.localdate()
     if request.method == "POST":
         action = request.POST.get("action")
         if action not in {"clock_in", "clock_out"}:
             return HttpResponseBadRequest("Unknown attendance action.")
-        if action == "clock_in" and not ojt_ready:
-            messages.error(request, "Your required OJT documents must be approved before you can start attendance.")
-            return redirect("portal:ojt_requirements")
         if action == "clock_out":
             existing_log = AttendanceLog.objects.filter(intern=intern, work_date=today).first()
             if not existing_log or not existing_log.clock_in:
@@ -424,6 +499,10 @@ def attendance(request):
                 messages.error(request, "Your time-in must be approved by the company/admin before you can time out.")
                 return redirect("portal:attendance")
         latitude, longitude = _coordinates(request, action)
+        location_error = _attendance_location_error(worksite_locations, latitude, longitude)
+        if location_error:
+            messages.error(request, location_error)
+            return redirect("portal:attendance")
         event = AttendanceFaceCapture.Event.TIME_IN if action == "clock_in" else AttendanceFaceCapture.Event.TIME_OUT
         existing_log = AttendanceLog.objects.filter(intern=intern, work_date=today).first()
         if existing_log and existing_log.face_captures.filter(
@@ -523,7 +602,8 @@ def attendance(request):
         "today_log": today_log,
         "logs": logs,
         "today": today,
-        "ojt_ready": ojt_ready,
+        "location_enrolled": worksite_locations.exists(),
+        "worksite_locations": worksite_locations,
         "pending_face_events": pending_face_events,
     })
 
@@ -588,258 +668,32 @@ def coordinator_face_enrollment(request):
     return render(request, "portal/coordinator/face_enrollment.html", {"interns": interns})
 
 
-def _ojt_requirements_context(intern, bound_requirement=None, bound_form=None):
-    requirements = intern.ojt_requirements.all()
-    rows = []
-    for requirement in requirements:
-        rows.append({
-            "requirement": requirement,
-            "form": bound_form if requirement.pk == getattr(bound_requirement, "pk", None) else OJTRequirementUploadForm(),
-        })
-    required = requirements.filter(is_required=True, company__isnull=True)
-    approved_required = required.filter(status=OJTRequirement.Status.APPROVED).count()
-    return {
-        "requirement_rows": rows,
-        "required_count": required.count(),
-        "approved_required_count": approved_required,
-        "ojt_ready": baseline_ojt_requirements_approved(intern),
-    }
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 @role_required(User.Role.INTERN)
-@intern_onboarding_required()
-def ojt_requirements(request):
-    intern = get_object_or_404(InternProfile, user=request.user)
-    return render(
-        request,
-        "portal/intern/requirements.html",
-        _ojt_requirements_context(intern),
-    )
-
-
-@role_required(User.Role.INTERN)
-@intern_onboarding_required()
-@require_POST
-def ojt_requirement_upload(request, requirement_id):
-    intern = get_object_or_404(InternProfile, user=request.user)
-    requirement = get_object_or_404(intern.ojt_requirements, pk=requirement_id)
-    if requirement.status in {OJTRequirement.Status.SUBMITTED, OJTRequirement.Status.APPROVED}:
-        messages.info(request, "This document is already awaiting review or has been approved.")
-        return redirect("portal:ojt_requirements")
-
-    form = OJTRequirementUploadForm(request.POST, request.FILES, instance=requirement)
-    if form.is_valid():
-        requirement = form.save(commit=False)
-        requirement.status = OJTRequirement.Status.SUBMITTED
-        requirement.reviewer = None
-        requirement.review_note = ""
-        requirement.submitted_at = timezone.now()
-        requirement.reviewed_at = None
-        requirement.save()
-        audit(request.user, "ojt_requirement.submitted", requirement)
-        messages.success(request, f"{requirement.title} uploaded for coordinator review.")
-        return redirect("portal:ojt_requirements")
-
-    return render(
-        request,
-        "portal/intern/requirements.html",
-        _ojt_requirements_context(intern, requirement, form),
-    )
-
-
-@role_required(User.Role.COORDINATOR)
-def coordinator_ojt_requirements(request):
-    requirements = OJTRequirement.objects.filter(
-        status=OJTRequirement.Status.SUBMITTED
-    ).select_related("intern__user").order_by("submitted_at")
-    return render(request, "portal/coordinator/requirements.html", {
-        "requirements": _mark_requirement_preview_support(requirements),
-    })
-
-
-@role_required(User.Role.COORDINATOR)
-@require_POST
-def review_ojt_requirement(request, requirement_id):
-    requirement = get_object_or_404(
-        OJTRequirement.objects.select_related("intern__user"),
-        pk=requirement_id,
-        status=OJTRequirement.Status.SUBMITTED,
-    )
-    decision = request.POST.get("decision")
-    if decision not in {"approve", "reject"}:
-        return HttpResponseBadRequest("Unknown document review decision.")
-    review_note = request.POST.get("review_note", "").strip()
-    if decision == "reject" and not review_note:
-        messages.error(request, "Add a note explaining what the intern needs to correct.")
-        return redirect("portal:coordinator_ojt_requirements")
-
-    requirement.status = (
-        OJTRequirement.Status.APPROVED if decision == "approve" else OJTRequirement.Status.REJECTED
-    )
-    requirement.reviewer = request.user
-    requirement.review_note = review_note
-    requirement.reviewed_at = timezone.now()
-    requirement.save(update_fields=("status", "reviewer", "review_note", "reviewed_at"))
-    if decision == "approve" and requirement.company_id is None:
-        assign_accepted_company_ojt_requirements(requirement.intern)
-    outcome = "approved" if decision == "approve" else "rejected"
-    audit(request.user, f"ojt_requirement.{outcome}", requirement)
-    messages.success(request, f"{requirement.title} {outcome}.")
-    return redirect("portal:coordinator_ojt_requirements")
-
-
-@login_required
-def ojt_requirement_document(request, requirement_id, mode="download"):
-    if mode not in {"preview", "download"}:
-        return HttpResponseBadRequest("Invalid document action.")
-    requirement = get_object_or_404(OJTRequirement, pk=requirement_id)
-    can_review = request.user.is_staff or request.user.role == User.Role.COORDINATOR
-    is_owner = (
-        request.user.role == User.Role.INTERN
-        and requirement.intern.user_id == request.user.pk
-    )
-    can_view_as_company = False
-    if request.user.role == User.Role.COMPANY and requirement.intern.placement_type == InternProfile.PlacementType.PLATFORM:
-        company = get_object_or_404(CompanyProfile, user=request.user)
-        can_view_as_company = (
-            requirement.intern.applications.filter(
-                posting__company=company,
-                status=Application.Status.ACCEPTED,
-            ).exists()
-            and requirement.company_id in (None, company.pk)
-        )
-    if not (can_review or is_owner or can_view_as_company):
-        return render(request, "errors/403.html", status=403)
-    if not requirement.document:
-        raise Http404("No document has been uploaded.")
-
-    content_type = mimetypes.guess_type(requirement.document.name)[0] or "application/octet-stream"
-    is_docx = Path(requirement.document.name).suffix.lower() == ".docx"
-    if mode == "preview" and is_docx:
-        try:
-            with requirement.document.open("rb") as document_file:
-                document = Document(document_file)
-        except (BadZipFile, PackageNotFoundError, XMLSyntaxError, KeyError, ValueError, OSError):
-            return HttpResponseBadRequest("This DOCX document could not be previewed. Download the original file instead.")
-
-        preview_blocks = _docx_preview_blocks(document)
-        response = render(request, "portal/company/document_preview.html", {
-            "title": requirement.title,
-            "intern": requirement.intern,
-            "filename": Path(requirement.document.name).name,
-            "preview_blocks": preview_blocks,
-            "archive_entries": None,
-            "download_url": reverse("portal:ojt_requirement_document", args=(requirement.pk,)),
-        })
-        response["Cache-Control"] = "private, no-store"
-        response["Content-Security-Policy"] = "default-src 'none'; style-src 'self'; sandbox"
-        return response
-
-    is_zip = Path(requirement.document.name).suffix.lower() == ".zip"
-    if mode == "preview" and is_zip:
-        try:
-            with requirement.document.open("rb") as document_file:
-                with ZipFile(document_file) as archive:
-                    entries = archive.infolist()
-                    archive_entries = [
-                        {"name": entry.filename, "size": entry.file_size}
-                        for entry in entries[:200]
-                        if not entry.is_dir()
-                    ]
-        except (BadZipFile, LargeZipFile, OSError):
-            return HttpResponseBadRequest("This ZIP document could not be previewed. Download the original file instead.")
-
-        response = render(request, "portal/company/document_preview.html", {
-            "title": requirement.title,
-            "intern": requirement.intern,
-            "filename": Path(requirement.document.name).name,
-            "preview_blocks": [],
-            "archive_entries": archive_entries,
-            "archive_entry_count": len(entries),
-            "archive_truncated": len(entries) > 200,
-            "download_url": reverse("portal:ojt_requirement_document", args=(requirement.pk,)),
-        })
-        response["Cache-Control"] = "private, no-store"
-        response["Content-Security-Policy"] = "default-src 'none'; style-src 'self'; sandbox"
-        return response
-
-    preview_content_types = {"application/pdf", "image/jpeg", "image/png", "image/webp", "text/plain"}
-    if mode == "preview" and content_type not in preview_content_types:
-        return HttpResponseBadRequest("This document type cannot be previewed in a browser. Download the original file instead.")
-
-    response = FileResponse(
-        requirement.document.open("rb"),
-        as_attachment=mode == "download",
-        filename=Path(requirement.document.name).name,
-        content_type=content_type,
-    )
-    response["Cache-Control"] = "private, no-store"
-    response["X-Content-Type-Options"] = "nosniff"
-    response["Content-Security-Policy"] = "default-src 'none'; sandbox"
-    return response
-
-
-def _docx_preview_blocks(document):
-    preview_blocks = []
-    for item in document.iter_inner_content():
-        if isinstance(item, Paragraph):
-            if item.text.strip():
-                preview_blocks.append({
-                    "kind": "paragraph",
-                    "text": item.text,
-                    "heading": item.style.name == "Title" or item.style.name.startswith("Heading"),
-                })
-        elif isinstance(item, Table):
-            rows = [[cell.text for cell in row.cells] for row in item.rows]
-            if any(text.strip() for row in rows for text in row):
-                preview_blocks.append({"kind": "table", "rows": rows})
-    return preview_blocks
-
-
-@role_required(User.Role.INTERN)
-@intern_onboarding_required(requirements_approved=True)
 def attendance_export(request):
     intern = get_object_or_404(InternProfile, user=request.user)
     document = attendance_pdf(intern, intern.attendance_logs.all()[:90])
     return FileResponse(document, as_attachment=True, filename="attendance-record.pdf", content_type="application/pdf")
 
 
-@role_required(User.Role.INTERN)
-@intern_onboarding_required(requirements_approved=True)
-def reports(request):
-    intern = get_object_or_404(InternProfile, user=request.user)
-    if intern.placement_type == InternProfile.PlacementType.EXTERNAL:
-        messages.info(request, "External placements submit a daily report to the OJT coordinator.")
-        return redirect("portal:daily_report")
-    today = timezone.localdate()
-    week_start = today - timedelta(days=today.weekday())
-    existing = WeeklyReport.objects.filter(intern=intern, week_start=week_start).first()
-    form = WeeklyReportForm(request.POST or None, instance=existing)
-    if request.method == "POST" and form.is_valid():
-        report = form.save(commit=False)
-        report.intern = intern
-        report.week_start = week_start
-        report.status = WeeklyReport.Status.SUBMITTED
-        report.submitted_at = timezone.now()
-        try:
-            with transaction.atomic():
-                report.save()
-        except IntegrityError:
-            messages.error(request, "A report for this week already exists. Refresh and edit the saved report.")
-        else:
-            audit(request.user, "weekly_report.submitted", report)
-            messages.success(request, "Weekly report submitted.")
-            return redirect(f"{reverse('portal:reports')}?saved=1")
-    return render(request, "portal/intern/reports.html", {"form": form, "reports": intern.weekly_reports.all()[:12], "week_start": week_start})
 
 
 @role_required(User.Role.INTERN)
-@intern_onboarding_required(requirements_approved=True)
 def daily_report(request):
     intern = get_object_or_404(InternProfile, user=request.user)
-    if intern.placement_type != InternProfile.PlacementType.EXTERNAL:
-        messages.info(request, "Daily admin reports are for external placements. Use your weekly reports instead.")
-        return redirect("portal:reports")
     today = timezone.localdate()
     existing = DailyReport.objects.filter(intern=intern, work_date=today).first()
     if request.method == "POST" and existing and existing.status == DailyReport.Status.REVIEWED:
@@ -867,7 +721,7 @@ def daily_report(request):
             messages.error(request, "Today's report was just saved. Refresh and try again.")
         else:
             audit(request.user, "daily_report.submitted", report)
-            messages.success(request, "Daily report submitted to your OJT coordinator.")
+            messages.success(request, "Daily report submitted for coordinator review.")
             return redirect("portal:daily_report")
     return render(request, "portal/intern/daily_report.html", {
         "form": form,
@@ -892,17 +746,6 @@ def coordinator_daily_reports(request):
     })
 
 
-@role_required(User.Role.COORDINATOR)
-def coordinator_weekly_reports(request):
-    reports = WeeklyReport.objects.select_related(
-        "intern__user",
-        "intern",
-    ).filter(
-        intern__placement_type=InternProfile.PlacementType.PLATFORM,
-    )[:100]
-    return render(request, "portal/coordinator/weekly_reports.html", {
-        "reports": reports,
-    })
 
 
 @role_required(User.Role.COORDINATOR)
@@ -938,7 +781,6 @@ def review_daily_report(request, report_id):
 
 
 @role_required(User.Role.INTERN)
-@intern_onboarding_required(requirements_approved=True)
 def accreditation(request):
     intern = get_object_or_404(InternProfile, user=request.user)
     completed_hours = sum(
@@ -997,18 +839,10 @@ def company_attendance_export(request):
 @role_required(User.Role.COMPANY)
 def company_dashboard(request):
     company = get_object_or_404(CompanyProfile, user=request.user)
-    company_applications = Application.objects.filter(posting__company=company)
-    pending_applications = company_applications.filter(
-        status__in=(Application.Status.SUBMITTED, Application.Status.REVIEWING)
-    )
     return render(request, "portal/company/dashboard.html", {
         "company": company,
-        "postings": company.postings.all()[:8],
-        "open_posting_count": company.postings.filter(status=Posting.Status.PUBLISHED).count(),
-        "application_count": company_applications.count(),
-        "pending_application_count": pending_applications.count(),
-        "pending_applications": pending_applications.select_related("intern__user", "posting")[:8],
         "pending_dtr_count": pending_attendance_approval_count(company_attendance_logs(company)),
+        "active_worksite_count": company.worksites.filter(is_active=True).count(),
     })
 
 
@@ -1024,46 +858,6 @@ def company_profile(request):
     return render(request, "portal/company/profile.html", {"form": form, "company": company})
 
 
-@role_required(User.Role.COMPANY)
-def company_requirements(request):
-    company = get_object_or_404(CompanyProfile, user=request.user)
-    if request.method == "POST" and "delete_requirement" in request.POST:
-        requirement = get_object_or_404(
-            CompanyRequirement,
-            pk=request.POST["delete_requirement"],
-            company=company,
-        )
-        audit(request.user, "company_requirement.deleted", requirement)
-        requirement.delete()
-        messages.success(request, "Company requirement removed.")
-        return redirect("portal:company_requirements")
-
-    form = CompanyRequirementForm(request.POST or None)
-    form.instance.company = company
-    if request.method == "POST" and form.is_valid():
-        requirement = form.save(commit=False)
-        requirement.company = company
-        try:
-            with transaction.atomic():
-                requirement.save()
-                accepted_interns = InternProfile.objects.filter(
-                    placement_type=InternProfile.PlacementType.PLATFORM,
-                    applications__posting__company=company,
-                    applications__status=Application.Status.ACCEPTED,
-                ).distinct()
-                for intern in accepted_interns:
-                    assign_company_ojt_requirements(intern, company)
-        except IntegrityError:
-            messages.error(request, "That requirement already exists. Refresh and try again.")
-        else:
-            audit(request.user, "company_requirement.created", requirement)
-            messages.success(request, "Company requirement saved.")
-            return redirect("portal:company_requirements")
-    return render(request, "portal/company/requirements.html", {
-        "company": company,
-        "requirements": company.requirements.all(),
-        "form": form,
-    })
 
 
 @role_required(User.Role.COMPANY)
@@ -1105,41 +899,8 @@ def _mark_resume_preview_support(applications):
     return applications
 
 
-def _mark_requirement_preview_support(requirements):
-    preview_content_types = {
-        "application/pdf",
-        "image/jpeg",
-        "image/png",
-        "image/webp",
-        "text/plain",
-    }
-    for requirement in requirements:
-        content_type = mimetypes.guess_type(requirement.document.name)[0] if requirement.document else None
-        requirement.document_previewable = (
-            content_type in preview_content_types
-            or Path(requirement.document.name).suffix.lower() in {".docx", ".zip"}
-        ) if requirement.document else False
-    return requirements
 
 
-@role_required(User.Role.COMPANY)
-def company_intern_documents(request):
-    company = get_object_or_404(CompanyProfile, user=request.user)
-    requirements = OJTRequirement.objects.filter(
-        intern__placement_type=InternProfile.PlacementType.PLATFORM,
-        intern__applications__posting__company=company,
-        intern__applications__status=Application.Status.ACCEPTED,
-        document__gt="",
-    ).filter(
-        Q(company__isnull=True) | Q(company=company)
-    ).select_related("intern__user", "company").distinct().order_by(
-        "intern__user__last_name",
-        "intern__user__first_name",
-        "title",
-    )
-    return render(request, "portal/company/intern_documents.html", {
-        "requirements": _mark_requirement_preview_support(requirements[:200]),
-    })
 
 
 @role_required(User.Role.COMPANY)
@@ -1447,8 +1208,6 @@ def application_decide(request, application_id, decision):
 
     application.status = decisions[decision]
     application.save(update_fields=("status", "updated_at"))
-    if application.status == Application.Status.ACCEPTED:
-        assign_company_ojt_requirements(application.intern, company)
     audit(request.user, f"application.{application.status}", application)
     messages.success(request, f"Application {application.get_status_display().lower()}.")
     return redirect("portal:applicant_screening")
@@ -1456,51 +1215,17 @@ def application_decide(request, application_id, decision):
 
 @role_required(User.Role.COORDINATOR)
 def coordinator_dashboard(request):
-    interns = InternProfile.objects.select_related("user").prefetch_related(
-        "applications__posting__company",
-        "risk_assessments",
-        Prefetch(
-            "attendance_logs",
-            queryset=AttendanceLog.objects.filter(
-                time_in_approved=True,
-                time_out_approved=True,
-            ).only("intern_id", "clock_in", "clock_out"),
-        ),
-    ).order_by("user__last_name", "user__first_name")[:100]
-    intern_rows = []
-    for intern in interns:
-        application = next(iter(intern.applications.all()), None)
-        risk = next(iter(intern.risk_assessments.all()), None)
-        if intern.placement_type == InternProfile.PlacementType.EXTERNAL:
-            placement = intern.external_host
-        else:
-            placement = application.posting.company.organization if application else "No placement selected"
-        completed_hours = round(sum(log.hours_worked for log in intern.attendance_logs.all()), 2)
-        intern_rows.append({
-            "intern": intern,
-            "company": placement,
-            "company_search": placement.lower(),
-            "placement_type": intern.get_placement_type_display(),
-            "status": application.status if application else "none",
-            "status_display": application.get_status_display() if application else "No application",
-            "risk": risk.level if risk else "none",
-            "risk_display": risk.get_level_display() if risk else "No assessment",
-            "risk_score": risk.risk_score if risk else None,
-            "completed_hours": completed_hours,
-            "progress_percent": min(100, round(completed_hours / OJT_TARGET_HOURS * 100)),
-        })
+    external_interns = InternProfile.objects.filter(
+        placement_type=InternProfile.PlacementType.EXTERNAL,
+    )
     context = {
         "intern_count": InternProfile.objects.count(),
-        "company_count": CompanyProfile.objects.count(),
-        "open_posting_count": Posting.objects.filter(status=Posting.Status.PUBLISHED).count(),
         "pending_dtr_count": pending_attendance_approval_count(AttendanceLog.objects.all()),
-        "pending_report_count": WeeklyReport.objects.filter(status=WeeklyReport.Status.SUBMITTED).count(),
         "pending_daily_report_count": DailyReport.objects.filter(status=DailyReport.Status.SUBMITTED).count(),
-        "pending_ojt_requirement_count": OJTRequirement.objects.filter(
-            status=OJTRequirement.Status.SUBMITTED
-        ).count(),
-        "high_risk_count": RiskAssessment.objects.filter(level=RiskAssessment.Level.HIGH).count(),
-        "intern_rows": intern_rows,
+        "external_interns_without_worksite_count": external_interns.exclude(
+            attendance_worksites__is_active=True,
+        ).distinct().count(),
+        "active_worksite_count": WorksiteLocation.objects.filter(is_active=True).count(),
     }
     return render(request, "portal/coordinator/dashboard.html", context)
 

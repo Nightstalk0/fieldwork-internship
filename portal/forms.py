@@ -1,6 +1,6 @@
 from django import forms
 
-from .models import CompanyProfile, CompanyRequirement, DailyReport, InternProfile, OJTRequirement, Posting, Scorecard, WeeklyReport
+from .models import CompanyProfile, DailyReport, InternProfile, Posting, Scorecard, WorksiteLocation
 
 
 class CompanyProfileForm(forms.ModelForm):
@@ -9,15 +9,43 @@ class CompanyProfileForm(forms.ModelForm):
         fields = ("organization", "website", "address")
 
 
-class CompanyRequirementForm(forms.ModelForm):
+class WorksiteLocationForm(forms.ModelForm):
     class Meta:
-        model = CompanyRequirement
-        fields = ("title", "description")
-        widgets = {"description": forms.Textarea(attrs={"rows": 3})}
-        help_texts = {
-            "title": "Interns accepted into one of your placements will be asked to submit this document.",
-            "description": "Explain what the document should contain.",
+        model = WorksiteLocation
+        fields = ("name", "address", "latitude", "longitude", "radius_meters")
+        widgets = {
+            "latitude": forms.NumberInput(attrs={"step": "0.000001", "readonly": True}),
+            "longitude": forms.NumberInput(attrs={"step": "0.000001", "readonly": True}),
+            "radius_meters": forms.NumberInput(attrs={"min": 10, "max": 5000}),
         }
+        help_texts = {
+            "latitude": "Use the location button to capture the worksite coordinates.",
+            "longitude": "Use the location button to capture the worksite coordinates.",
+            "radius_meters": "Attendance is allowed within this distance of the saved coordinates.",
+        }
+
+    def clean_latitude(self):
+        latitude = self.cleaned_data["latitude"]
+        if not -90 <= latitude <= 90:
+            raise forms.ValidationError("Latitude must be between -90 and 90 degrees.")
+        return latitude
+
+    def clean_longitude(self):
+        longitude = self.cleaned_data["longitude"]
+        if not -180 <= longitude <= 180:
+            raise forms.ValidationError("Longitude must be between -180 and 180 degrees.")
+        return longitude
+
+
+class ExternalWorksiteLocationForm(WorksiteLocationForm):
+    class Meta(WorksiteLocationForm.Meta):
+        fields = ("intern", *WorksiteLocationForm.Meta.fields)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["intern"].queryset = InternProfile.objects.filter(
+            placement_type=InternProfile.PlacementType.EXTERNAL,
+        ).select_related("user").order_by("user__last_name", "user__first_name", "user__username")
 
 
 class InternProfileForm(forms.ModelForm):
@@ -52,34 +80,16 @@ class InternProfileForm(forms.ModelForm):
         return cleaned_data
 
 
-class OJTRequirementUploadForm(forms.ModelForm):
-    class Meta:
-        model = OJTRequirement
-        fields = ("document",)
-
-
 class PostingForm(forms.ModelForm):
     class Meta:
         model = Posting
         fields = ("title", "description", "location", "remote", "openings", "start_date", "end_date", "status")
         widgets = {"description": forms.Textarea(attrs={"rows": 5}), "openings": forms.NumberInput(attrs={"min": 1}), "start_date": forms.DateInput(attrs={"type": "date"}), "end_date": forms.DateInput(attrs={"type": "date"})}
         help_texts = {
-            "description": "Describe the responsibilities, required skills, and any OJT-hour expectations.",
+            "description": "Describe the responsibilities, required skills, and placement expectations.",
             "openings": "Enter the number of interns this placement can accept.",
             "start_date": "The expected placement start date.",
             "end_date": "The expected placement end date, if known.",
-        }
-
-
-class WeeklyReportForm(forms.ModelForm):
-    class Meta:
-        model = WeeklyReport
-        fields = ("accomplishments", "challenges", "next_week_plan")
-        widgets = {field: forms.Textarea(attrs={"rows": 4}) for field in fields}
-        help_texts = {
-            "accomplishments": "Summarize work completed and skills practiced during this reporting week.",
-            "challenges": "Note blockers or support needed; leave blank when there were none.",
-            "next_week_plan": "List your planned tasks and learning goals for next week.",
         }
 
 

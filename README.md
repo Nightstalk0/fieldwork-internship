@@ -34,7 +34,7 @@ The command prints JSON containing `face_detected`, `face_count`, and a `detecti
 
 ## Face-verified attendance
 
-New interns start by uploading baseline school and legal/health credentials under OJT requirements and waiting for admin/coordinator approval. Profile details and face enrollment can be completed later from Profile. Approval of the required baseline documents gates attendance and other internship activities; profile setup and face enrollment are not prerequisites for accessing requirements or those activities.
+Interns use the Attendance page for face-verified time-in and time-out and the Daily reports page to submit their progress for coordinator review. OJT document approval is not required for these workflows.
 
 Interns can create or update their own face enrollment from Profile after informed consent. The enrollment camera uses the same face guide as attendance, runs live YOLO detection (green outline for one detected face, white when none is detected, red for multiple faces or a detection error), and permits capture feedback before saving. Only an encrypted face embedding is stored; the enrollment image is discarded after processing.
 
@@ -56,11 +56,13 @@ Set it in the deployment's secret environment variables; do not commit the key. 
 
 `python manage.py seed_demo_data --password <temporary-password>` creates an example intern, company, and published opportunity. Without the option, the demo accounts are created with unusable passwords.
 
-## OJT document readiness
+## Worksite enrollment and location-verified attendance
 
-Newly registered interns receive seven required school, academic, legal, and health documents. Coordinators review and approve these baseline documents before an intern can record their first time-in. Partner companies can maintain their own required-document list; those items are assigned only after the baseline is approved and the company accepts the intern, and they do not block attendance. The coordinator reviews the submissions. Accepted partner companies can preview or download their interns' submitted OJT documents; interns and coordinators can access their respective documents as well. Uploads are limited to supported document formats and 5 MB.
+Company users enroll each of their worksites from **Worksite locations**, using a device at the worksite to capture its coordinates. Each worksite has its own allowed radius, defaulting to 100 meters. Interns accepted by a Fieldwork company can record attendance only when their submitted location is within an active worksite for that company. Coordinators enroll and assign locations to external-placement interns. A location must be assigned before attendance is available; browser location permission is required for both time-in and time-out.
 
-Interns can set their placement type in their profile. For external companies that do not use Fieldwork, the intern enters the host name, records attendance in Fieldwork, and submits a daily progress report for coordinator review. Coordinators review external interns' attendance, daily reports, and OJT documents and can monitor approved OJT hours in the intern directory. Partner-company interns continue using company supervisor attendance and weekly report workflows; coordinators can monitor all interns and their progress. The current section is highlighted in the navigation.
+The server checks the submitted coordinates against the saved worksite coordinates and radius. Browser-provided GPS is not tamper-proof and should not be treated as independent proof of a user's physical location. Use face review, attendance review, and appropriate organizational controls for consequential decisions.
+
+All interns can submit one daily report per workday for coordinator review. Historical OJT document records remain in the database, but OJT pages have been retired and their old URLs redirect to the relevant core workflow. New interns are not given default requirements, and OJT approval does not block attendance or reports.
 
 Run the project checks and tests with:
 

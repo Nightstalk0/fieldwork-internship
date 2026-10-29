@@ -128,65 +128,6 @@ class OJTRequirement(models.Model):
         return f"{self.title} — {self.intern}"
 
 
-OJT_REQUIREMENT_DEFAULTS = (
-    (
-        OJTRequirement.Category.SCHOOL,
-        "Endorsement / recommendation letter",
-        "A letter from your OJT coordinator or department head endorsing you for training.",
-        True,
-    ),
-    (
-        OJTRequirement.Category.SCHOOL,
-        "School–HTE Memorandum of Agreement (MOA)",
-        "The agreement between your school and host training establishment.",
-        True,
-    ),
-    (
-        OJTRequirement.Category.SCHOOL,
-        "Certificate of Enrollment / Registration (COR)",
-        "Proof of enrollment in the designated OJT or practicum subject.",
-        True,
-    ),
-    (
-        OJTRequirement.Category.SCHOOL,
-        "Transcript of Records / evaluation of grades",
-        "Your school record showing that you meet the program prerequisites.",
-        True,
-    ),
-    (
-        OJTRequirement.Category.SCHOOL,
-        "Student accident insurance",
-        "Proof of active student accident insurance for your training period.",
-        True,
-    ),
-    (
-        OJTRequirement.Category.LEGAL,
-        "Notarized parent / guardian consent and waiver",
-        "The notarized consent and waiver required by your school or host.",
-        True,
-    ),
-    (
-        OJTRequirement.Category.LEGAL,
-        "Medical certificate",
-        "A certificate from a licensed clinic or physician confirming fitness for training.",
-        True,
-    ),
-)
-
-
-def ensure_default_ojt_requirements(intern):
-    for category, title, description, is_required in OJT_REQUIREMENT_DEFAULTS:
-        OJTRequirement.objects.get_or_create(
-            intern=intern,
-            title=title,
-            defaults={
-                "category": category,
-                "description": description,
-                "is_required": is_required,
-            },
-        )
-
-
 class CompanyProfile(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="company_profile")
     organization = models.CharField(max_length=180)
@@ -196,6 +137,54 @@ class CompanyProfile(models.Model):
 
     def __str__(self):
         return self.organization
+
+
+class WorksiteLocation(models.Model):
+    company = models.ForeignKey(
+        CompanyProfile,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="worksites",
+    )
+    intern = models.ForeignKey(
+        InternProfile,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="attendance_worksites",
+    )
+    name = models.CharField(max_length=120)
+    address = models.CharField(max_length=255)
+    latitude = models.DecimalField(max_digits=9, decimal_places=6)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6)
+    radius_meters = models.PositiveSmallIntegerField(
+        default=100,
+        validators=[MinValueValidator(10), MaxValueValidator(5000)],
+    )
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="worksite_locations_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("name",)
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    Q(company__isnull=False, intern__isnull=True)
+                    | Q(company__isnull=True, intern__isnull=False)
+                ),
+                name="worksite_has_one_owner",
+            ),
+        ]
+
+    def __str__(self):
+        return self.name
 
 
 class CompanyRequirement(models.Model):
@@ -257,40 +246,6 @@ class Application(models.Model):
     class Meta:
         constraints = [models.UniqueConstraint(fields=("intern", "posting"), name="uniq_application_intern_posting")]
         ordering = ("-submitted_at",)
-
-
-def baseline_ojt_requirements_approved(intern):
-    required = intern.ojt_requirements.filter(is_required=True, company__isnull=True)
-    return required.exists() and not required.exclude(status=OJTRequirement.Status.APPROVED).exists()
-
-
-def assign_company_ojt_requirements(intern, company):
-    if intern.placement_type != InternProfile.PlacementType.PLATFORM:
-        return
-    if not baseline_ojt_requirements_approved(intern):
-        return
-    for requirement in company.requirements.filter(is_active=True):
-        OJTRequirement.objects.get_or_create(
-            intern=intern,
-            company=company,
-            title=requirement.title,
-            defaults={
-                "category": OJTRequirement.Category.ROLE_SPECIFIC,
-                "description": requirement.description,
-                "is_required": True,
-            },
-        )
-
-
-def assign_accepted_company_ojt_requirements(intern):
-    if intern.placement_type != InternProfile.PlacementType.PLATFORM:
-        return
-    accepted_companies = CompanyProfile.objects.filter(
-        postings__applications__intern=intern,
-        postings__applications__status=Application.Status.ACCEPTED,
-    ).distinct()
-    for company in accepted_companies:
-        assign_company_ojt_requirements(intern, company)
 
 
 class AttendanceLog(models.Model):

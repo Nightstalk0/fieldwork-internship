@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}{{ page_title }} | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">{% if is_coordinator %}COORDINATOR WORKSPACE{% else %}HOST ORGANIZATION{% endif %}</p>
+    <h1>{{ page_title }}</h1>
+    <p class="muted">{{ page_description }}</p>
+  </div>
+</div>
+<section class="panel form-panel">
+  <h2>{% if is_coordinator %}Assign external intern worksite{% else %}Enroll a company worksite{% endif %}</h2>
+  <p class="muted">Use your device while physically at the worksite. Attendance is accepted only when the intern is within the saved radius.</p>
+  <form method="post" class="stack-form" id="worksite-form">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="create">
+    {{ form.as_p }}
+    <div class="clock-actions">
+      <button class="button button-secondary" type="button" id="capture-worksite-location">Use this device's location</button>
+      <span class="muted" id="worksite-location-status" aria-live="polite">Location has not been captured.</span>
+    </div>
+    <div class="form-actions">
+      <button class="button button-primary" type="submit">Enroll worksite</button>
+    </div>
+  </form>
+</section>
+<section class="panel">
+  <div class="section-heading">
+    <h2>Enrolled locations</h2>
+    <span class="muted">{{ worksites|length }} location{{ worksites|length|pluralize }}</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          {% if is_coordinator %}<th>Intern</th>{% endif %}
+          <th>Worksite</th><th>Address</th><th>Coordinates</th><th>Radius</th><th>Status</th><th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for worksite in worksites %}
+        <tr>
+          {% if is_coordinator %}<td>{{ worksite.intern.user.get_full_name|default:worksite.intern.user.username }}</td>{% endif %}
+          <td>{{ worksite.name }}</td>
+          <td>{{ worksite.address }}</td>
+          <td>{{ worksite.latitude }}, {{ worksite.longitude }}</td>
+          <td>{{ worksite.radius_meters }} m</td>
+          <td>{% if worksite.is_active %}<span class="status status-good">Active</span>{% else %}<span class="status">Inactive</span>{% endif %}</td>
+          <td>
+            {% if worksite.is_active %}
+            <form method="post">
+              {% csrf_token %}
+              <input type="hidden" name="action" value="deactivate">
+              <input type="hidden" name="worksite_id" value="{{ worksite.pk }}">
+              <button class="button button-small button-secondary" type="submit">Deactivate</button>
+            </form>
+            {% else %}<span class="muted">—</span>{% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="{% if is_coordinator %}7{% else %}6{% endif %}" class="muted">No worksites are enrolled yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+  const captureLocationButton = document.getElementById("capture-worksite-location");
+  const locationStatus = document.getElementById("worksite-location-status");
+  const latitudeInput = document.getElementById("id_latitude");
+  const longitudeInput = document.getElementById("id_longitude");
+
+  captureLocationButton.addEventListener("click", () => {
+    if (!navigator.geolocation) {
+      locationStatus.textContent = "This device does not support location access.";
+      return;
+    }
+    captureLocationButton.disabled = true;
+    locationStatus.textContent = "Requesting current location…";
+    navigator.geolocation.getCurrentPosition((position) => {
+      latitudeInput.value = position.coords.latitude.toFixed(6);
+      longitudeInput.value = position.coords.longitude.toFixed(6);
+      locationStatus.textContent = "Location captured. Check that you are at the correct worksite before saving.";
+      captureLocationButton.disabled = false;
+    }, () => {
+      locationStatus.textContent = "Could not get the location. Allow location access and try again.";
+      captureLocationButton.disabled = false;
+    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+  });
+</script>
+{% endblock %}

@@ -3,15 +3,13 @@ def portal_context(request):
         return {
             "pending_dtr_count": 0,
             "pending_daily_report_count": 0,
-            "pending_requirement_count": 0,
         }
-    from .models import AttendanceLog, DailyReport, OJTRequirement, pending_attendance_approval_count
+    from .models import AttendanceLog, DailyReport, pending_attendance_approval_count
 
     if request.user.is_staff or request.user.role == "coordinator":
         return {
             "pending_dtr_count": pending_attendance_approval_count(AttendanceLog.objects.all()),
             "pending_daily_report_count": DailyReport.objects.filter(status=DailyReport.Status.SUBMITTED).count(),
-            "pending_requirement_count": OJTRequirement.objects.filter(status=OJTRequirement.Status.SUBMITTED).count(),
         }
     if request.user.role == "company":
         from .models import Application
@@ -24,10 +22,8 @@ def portal_context(request):
         return {
             "pending_dtr_count": pending_attendance_approval_count(company_logs),
             "pending_daily_report_count": 0,
-            "pending_requirement_count": 0,
         }
     return {
         "pending_dtr_count": 0,
         "pending_daily_report_count": 0,
-        "pending_requirement_count": 0,
     }

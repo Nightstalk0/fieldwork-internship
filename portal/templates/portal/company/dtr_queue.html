@@ -29,6 +29,7 @@
             <div>
               <strong>{{ capture.get_event_display }}</strong> at {{ capture.captured_at|date:"H:i:s" }} · {{ capture.get_face_status_display }}
               {% if capture.face_score != None %}({{ capture.face_score|floatformat:3 }}){% endif %}
+              {% if capture.latitude != None and capture.longitude != None %}· Location {{ capture.latitude }}, {{ capture.longitude }}{% endif %}
               · {{ capture.get_review_status_display }}
               {% if capture.encrypted_image and capture.image_expires_at > now %}
               <a href="{% url 'portal:attendance_face_capture_image' capture.pk %}" target="_blank" rel="noopener noreferrer">View capture</a>

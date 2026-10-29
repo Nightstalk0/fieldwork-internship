@@ -1,10 +1,66 @@
 {% extends "base.html" %}
 {% block title %}Intern overview | Fieldwork{% endblock %}
 {% block content %}
-<div class="page-heading"><div><p class="eyebrow">INTERN WORKSPACE</p><h1>Welcome, {{ request.user.first_name|default:request.user.username }}</h1><p class="muted">Your placement activity at a glance.</p></div>{% if ojt_ready %}<a class="button button-primary" href="{% url 'portal:attendance' %}">Open attendance</a>{% else %}<a class="button button-primary" href="{% url 'portal:ojt_requirements' %}">Complete OJT requirements</a>{% endif %}</div>
-{% if not ojt_ready %}<section class="panel requirement-notice"><strong>Before you start OJT</strong><p>{{ ojt_requirements_remaining }} required document{{ ojt_requirements_remaining|pluralize }} still need coordinator approval.</p><a href="{% url 'portal:ojt_requirements' %}">Review your requirements</a></section>{% endif %}
-<section class="panel progress-panel" aria-labelledby="ojt-progress-title"><div class="section-heading"><h2 id="ojt-progress-title">OJT hour progress</h2><strong>{{ progress_percent }}%</strong></div><progress max="{{ target_hours }}" value="{{ completed_hours }}" aria-label="{{ completed_hours }} of {{ target_hours }} approved OJT hours"></progress><p class="muted">{{ completed_hours }} of {{ target_hours }} approved hours completed</p></section>
-<section class="metric-grid"><div class="metric"><span>Applications</span><strong>{{ application_count }}</strong><small>Submitted opportunities</small></div><div class="metric"><span>Today's attendance</span><strong>{% if recent_attendance.0.work_date == today %}Recorded{% else %}Not started{% endif %}</strong><small>{{ today|date:"M j, Y" }}</small></div><div class="metric"><span>Latest risk check</span><strong>{% if latest_risk %}{{ latest_risk.get_level_display }}{% else %}Pending{% endif %}</strong><small>{% if latest_risk %}{{ latest_risk.risk_score }} / 100{% else %}No assessment yet{% endif %}</small></div></section>
-<div class="content-grid"><section class="panel"><div class="section-heading"><h2>Recent attendance</h2><a href="{% url 'portal:attendance' %}">View all</a></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>In</th><th>Out</th><th>Hours</th></tr></thead><tbody>{% for log in recent_attendance %}<tr><td>{{ log.work_date }}</td><td>{{ log.clock_in|date:"H:i"|default:"—" }}</td><td>{{ log.clock_out|date:"H:i"|default:"—" }}</td><td>{{ log.hours_worked }}</td></tr>{% empty %}<tr><td colspan="4" class="muted">No attendance entries yet.</td></tr>{% endfor %}</tbody></table></div></section>
-{% if intern.placement_type == 'external' %}<section class="panel"><div class="section-heading"><h2>Daily reports</h2><a href="{% url 'portal:daily_report' %}">Submit today's report</a></div><ul class="plain-list">{% for report in recent_daily_reports %}<li><span>{{ report.work_date }}</span><span class="status">{{ report.get_status_display }}</span></li>{% empty %}<li class="muted">Your reports to the OJT coordinator will appear here.</li>{% endfor %}</ul><div class="panel-rule"></div><p class="muted">Host: {{ intern.external_host }}</p></section>{% else %}<section class="panel"><div class="section-heading"><h2>Weekly reports</h2><a href="{% url 'portal:reports' %}">Open reports</a></div><ul class="plain-list">{% for report in recent_reports %}<li><span>Week of {{ report.week_start }}</span><span class="status">{{ report.get_status_display }}</span></li>{% empty %}<li class="muted">Your submitted reports will appear here.</li>{% endfor %}</ul><div class="panel-rule"></div><a class="button button-secondary" href="{% url 'portal:postings' %}">Browse opportunities</a></section>{% endif %}</div>
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">INTERN WORKSPACE</p>
+    <h1>Welcome, {{ request.user.first_name|default:request.user.username }}</h1>
+    <p class="muted">Attendance and daily reports in one place.</p>
+  </div>
+</div>
+<section class="metric-grid">
+  <div class="metric">
+    <span>Today's attendance</span>
+    <strong>{% if recent_attendance.0.work_date == today %}Recorded{% else %}Not started{% endif %}</strong>
+    <small>{{ today|date:"M j, Y" }}</small>
+  </div>
+  <div class="metric">
+    <span>Approved hours</span>
+    <strong>{{ completed_hours }}</strong>
+    <small>Based on approved time in and out</small>
+  </div>
+  <div class="metric">
+    <span>Daily reports</span>
+    <strong>{{ recent_daily_reports|length }}</strong>
+    <small>Recent submissions</small>
+  </div>
+</section>
+<div class="content-grid">
+  <section class="panel">
+    <div class="section-heading">
+      <h2>Recent attendance</h2>
+      <a href="{% url 'portal:attendance' %}">Open attendance</a>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Date</th><th>Time in</th><th>Time out</th><th>Hours</th></tr></thead>
+        <tbody>
+          {% for log in recent_attendance %}
+          <tr>
+            <td>{{ log.work_date }}</td>
+            <td>{{ log.clock_in|date:"H:i"|default:"—" }}</td>
+            <td>{{ log.clock_out|date:"H:i"|default:"—" }}</td>
+            <td>{{ log.hours_worked }}</td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="4" class="muted">No attendance entries yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  <section class="panel">
+    <div class="section-heading">
+      <h2>Daily reports</h2>
+      <a href="{% url 'portal:daily_report' %}">Submit today's report</a>
+    </div>
+    <ul class="plain-list">
+      {% for report in recent_daily_reports %}
+      <li><span>{{ report.work_date }}</span><span class="status">{{ report.get_status_display }}</span></li>
+      {% empty %}
+      <li class="muted">Your submitted reports will appear here.</li>
+      {% endfor %}
+    </ul>
+  </section>
+</div>
 {% endblock %}

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
-{% block title %}Daily OJT reports | Fieldwork{% endblock %}
+{% block title %}Daily reports | Fieldwork{% endblock %}
 {% block content %}
-<div class="page-heading"><div><p class="eyebrow">EXTERNAL PLACEMENT</p><h1>Daily OJT report</h1><p class="muted">Send today's progress directly to your OJT coordinator for review.</p></div></div>
+<div class="page-heading"><div><p class="eyebrow">INTERN WORKSPACE</p><h1>Daily report</h1><p class="muted">Send today's work and progress to your coordinator for review.</p></div></div>
 <section class="panel form-panel">
   <div class="section-heading"><h2>Report for {{ today|date:"l, F j, Y" }}</h2>{% if report %}<span class="status {% if report.status == 'reviewed' %}status-good{% elif report.status == 'changes_requested' %}status-risk{% endif %}">{{ report.get_status_display }}</span>{% endif %}</div>
   {% if report.supervisor_feedback %}<p class="requirement-feedback"><strong>Coordinator feedback:</strong> {{ report.supervisor_feedback }}</p>{% endif %}

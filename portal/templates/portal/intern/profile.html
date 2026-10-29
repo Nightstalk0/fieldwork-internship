@@ -14,7 +14,7 @@
   <p class="status">Not enrolled</p>
   <p class="muted">Only an encrypted face template is saved; this enrollment photo is processed in memory and discarded.</p>
   {% endif %}
-  <p class="muted">Profile details and face enrollment are optional during onboarding and can be completed later. Attendance still requires approved OJT documents; without an enrollment, face matching will be unavailable and your capture will need reviewer attention.</p>
+  <p class="muted">Complete face enrollment to use face matching during attendance. Only an encrypted face template is stored.</p>
   <p class="muted">Attendance captures you submit are encrypted, can be viewed by authorized company/admin reviewers, and are deleted after 30 days. Face matching is not liveness detection.</p>
   <div class="face-camera-frame face-enrollment-frame">
     <video id="enrollment-camera" aria-label="Camera preview. Position your face inside the oval guide." autoplay muted playsinline hidden></video>
@@ -39,8 +39,7 @@
       </div>
     </section>
   </form>
-  {% if face_enrollment_current %}<p class="form-footnote">Face enrollment is complete.</p>{% else %}<p class="form-footnote">You can finish profile setup and face enrollment later.</p>{% endif %}
-  <a class="button button-primary" href="{% url 'portal:ojt_requirements' %}">Go to OJT requirements</a>
+  {% if face_enrollment_current %}<p class="form-footnote">Face enrollment is complete.</p>{% else %}<p class="form-footnote">Complete face enrollment before recording attendance.</p>{% endif %}
 </section>
 {% endblock %}
 {% block scripts %}<script>
