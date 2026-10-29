@@ -458,6 +458,13 @@ class PortalWorkflowTests(TestCase):
         self.assertRedirects(outside, reverse("portal:attendance"))
         self.assertFalse(AttendanceLog.objects.filter(intern=self.intern).exists())
 
+        invalid_coordinates = self.client.post(
+            reverse("portal:attendance"),
+            self._attendance_payload("clock_in", clock_in_latitude="NaN"),
+        )
+        self.assertRedirects(invalid_coordinates, reverse("portal:attendance"))
+        self.assertFalse(AttendanceLog.objects.filter(intern=self.intern).exists())
+
         with patch(
             "portal.views._attendance_face_check",
             return_value=(AttendanceLog.FaceCheckStatus.MATCHED, 0.82, b"encrypted frame"),
@@ -471,6 +478,7 @@ class PortalWorkflowTests(TestCase):
         log = AttendanceLog.objects.get(intern=self.intern)
         self.assertEqual(str(log.clock_in_latitude), "14.600000")
         self.assertEqual(str(log.clock_in_longitude), "121.000000")
+        self.assertTrue(log.clock_in_within_location)
 
     def test_attendance_face_preview_classifies_capture_without_recording_attendance(self):
         self._complete_intern_profile()
@@ -649,11 +657,45 @@ class PortalWorkflowTests(TestCase):
         self.assertRedirects(response, reverse("portal:attendance"))
         log = AttendanceLog.objects.get(intern=self.intern)
         self.assertIsNone(log.clock_in)
+        self.assertEqual(str(log.clock_in_latitude), "14.600000")
+        self.assertTrue(log.clock_in_within_location)
         self.assertEqual(log.clock_in_face_status, AttendanceLog.FaceCheckStatus.NOT_MATCHED)
         self.assertEqual(log.clock_in_face_score, 0.21)
         capture = log.face_captures.get(event=AttendanceFaceCapture.Event.TIME_IN)
         self.assertEqual(capture.review_status, AttendanceFaceCapture.ReviewStatus.PENDING)
         self.assertEqual(bytes(capture.encrypted_image), b"encrypted test capture")
+
+    def test_rejecting_face_exception_preserves_the_location_verified_state(self):
+        self._complete_intern_profile()
+        self._enroll_attendance_location()
+        self.client.force_login(self.intern_user)
+
+        with patch(
+            "portal.views._attendance_face_check",
+            return_value=(AttendanceLog.FaceCheckStatus.NOT_MATCHED, 0.21, b"encrypted test capture"),
+        ):
+            self.client.post(
+                reverse("portal:attendance"),
+                self._attendance_payload("clock_in"),
+            )
+
+        log = AttendanceLog.objects.get(intern=self.intern)
+        capture = log.face_captures.get(event=AttendanceFaceCapture.Event.TIME_IN)
+        self.assertTrue(log.clock_in_within_location)
+        self.assertEqual(str(log.clock_in_latitude), "14.600000")
+
+        coordinator = User.objects.create_user(username="location-reviewer", role=User.Role.COORDINATOR)
+        self.client.force_login(coordinator)
+        rejected = self.client.post(
+            reverse("portal:review_attendance_face_capture", args=(capture.pk,)),
+            {"action": "reject"},
+        )
+
+        self.assertRedirects(rejected, reverse("portal:dtr_queue"))
+        log.refresh_from_db()
+        self.assertTrue(log.clock_in_within_location)
+        self.assertEqual(str(log.clock_in_latitude), "14.600000")
+        self.assertEqual(str(log.clock_in_longitude), "121.000000")
 
     def test_company_can_approve_no_camera_time_in_without_server_error(self):
         Application.objects.create(
@@ -688,6 +730,7 @@ class PortalWorkflowTests(TestCase):
         log.refresh_from_db()
         capture.refresh_from_db()
         self.assertIsNotNone(log.clock_in)
+        self.assertTrue(log.clock_in_within_location)
         self.assertTrue(log.time_in_approved)
         self.assertEqual(capture.review_status, AttendanceFaceCapture.ReviewStatus.APPROVED)
 
@@ -775,6 +818,8 @@ class PortalWorkflowTests(TestCase):
         log.refresh_from_db()
         self.assertTrue(log.time_in_approved)
         self.assertTrue(log.time_out_approved)
+        self.assertTrue(log.clock_in_within_location)
+        self.assertTrue(log.clock_out_within_location)
         self.assertEqual(log.face_captures.count(), 2)
         self.assertEqual(
             set(log.face_captures.values_list("review_status", flat=True)),
@@ -1325,6 +1370,7 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(log.clock_in, fixed_now)
         self.assertEqual(log.notes, "Started inventory review")
         self.assertEqual(str(log.clock_in_latitude), "14.600000")
+        self.assertTrue(log.clock_in_within_location)
         self.assertEqual(log.clock_in_face_status, AttendanceLog.FaceCheckStatus.MATCHED)
 
     def test_clock_out_without_clock_in_does_not_create_empty_record(self):

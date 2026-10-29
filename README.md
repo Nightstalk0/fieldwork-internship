@@ -62,6 +62,8 @@ Company users enroll each of their worksites from **Worksite locations**, using 
 
 The server checks the submitted coordinates against the saved worksite coordinates and radius. Browser-provided GPS is not tamper-proof and should not be treated as independent proof of a user's physical location. Use face review, attendance review, and appropriate organizational controls for consequential decisions.
 
+Each time-in and time-out log stores its submitted coordinates and whether that event passed the worksite-radius check. Older attendance records retain an unknown (`NULL`) location-check status.
+
 All interns can submit one daily report per workday for coordinator review. Historical OJT document records remain in the database, but OJT pages have been retired and their old URLs redirect to the relevant core workflow. New interns are not given default requirements, and OJT approval does not block attendance or reports.
 
 Run the project checks and tests with:

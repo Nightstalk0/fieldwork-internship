@@ -294,6 +294,8 @@ def _coordinates(request, prefix):
         latitude_value, longitude_value = Decimal(latitude), Decimal(longitude)
     except InvalidOperation:
         return None, None
+    if not latitude_value.is_finite() or not longitude_value.is_finite():
+        return None, None
     if not Decimal("-90") <= latitude_value <= Decimal("90") or not Decimal("-180") <= longitude_value <= Decimal("180"):
         return None, None
     return latitude_value, longitude_value
@@ -525,10 +527,24 @@ def attendance(request):
                         return redirect("portal:attendance")
                 else:
                     log, _ = AttendanceLog.objects.select_for_update().get_or_create(intern=intern, work_date=today)
-                timestamp_field, latitude_field, longitude_field, face_status_field, face_score_field = (
-                    ("clock_in", "clock_in_latitude", "clock_in_longitude", "clock_in_face_status", "clock_in_face_score")
+                timestamp_field, latitude_field, longitude_field, within_location_field, face_status_field, face_score_field = (
+                    (
+                        "clock_in",
+                        "clock_in_latitude",
+                        "clock_in_longitude",
+                        "clock_in_within_location",
+                        "clock_in_face_status",
+                        "clock_in_face_score",
+                    )
                     if action == "clock_in"
-                    else ("clock_out", "clock_out_latitude", "clock_out_longitude", "clock_out_face_status", "clock_out_face_score")
+                    else (
+                        "clock_out",
+                        "clock_out_latitude",
+                        "clock_out_longitude",
+                        "clock_out_within_location",
+                        "clock_out_face_status",
+                        "clock_out_face_score",
+                    )
                 )
                 if log.face_captures.filter(
                     event=event,
@@ -553,20 +569,26 @@ def attendance(request):
                 )
                 setattr(log, face_status_field, face_status)
                 setattr(log, face_score_field, face_score)
+                setattr(log, latitude_field, latitude)
+                setattr(log, longitude_field, longitude)
+                setattr(log, within_location_field, True)
                 log.notes = request.POST.get("notes", "").strip()[:255] or log.notes
                 if action == "clock_in":
                     if face_status == AttendanceLog.FaceCheckStatus.MATCHED:
                         log.clock_in = captured_at
-                        setattr(log, latitude_field, latitude)
-                        setattr(log, longitude_field, longitude)
                 else:
                     if face_status == AttendanceLog.FaceCheckStatus.MATCHED:
                         log.clock_out = captured_at
-                        setattr(log, latitude_field, latitude)
-                        setattr(log, longitude_field, longitude)
-                update_fields = [face_status_field, face_score_field, "notes"]
+                update_fields = [
+                    face_status_field,
+                    face_score_field,
+                    "notes",
+                    latitude_field,
+                    longitude_field,
+                    within_location_field,
+                ]
                 if face_status == AttendanceLog.FaceCheckStatus.MATCHED:
-                    update_fields.extend((timestamp_field, latitude_field, longitude_field))
+                    update_fields.append(timestamp_field)
                 log.save(update_fields=update_fields)
                 if face_status == AttendanceLog.FaceCheckStatus.MATCHED:
                     audit(
@@ -1012,17 +1034,31 @@ def _review_face_capture(request, capture_id, queue_name, audit_action):
         reviewed_at = timezone.now()
         capture.reviewed_by = request.user
         capture.reviewed_at = reviewed_at
-        timestamp_field, approval_field, latitude_field, longitude_field, face_status_field, face_score_field = (
-            ("clock_in", "time_in_approved", "clock_in_latitude", "clock_in_longitude", "clock_in_face_status", "clock_in_face_score")
+        timestamp_field, approval_field, latitude_field, longitude_field, within_location_field, face_status_field, face_score_field = (
+            (
+                "clock_in",
+                "time_in_approved",
+                "clock_in_latitude",
+                "clock_in_longitude",
+                "clock_in_within_location",
+                "clock_in_face_status",
+                "clock_in_face_score",
+            )
             if capture.event == AttendanceFaceCapture.Event.TIME_IN
-            else ("clock_out", "time_out_approved", "clock_out_latitude", "clock_out_longitude", "clock_out_face_status", "clock_out_face_score")
+            else (
+                "clock_out",
+                "time_out_approved",
+                "clock_out_latitude",
+                "clock_out_longitude",
+                "clock_out_within_location",
+                "clock_out_face_status",
+                "clock_out_face_score",
+            )
         )
         if action == "reject":
             if getattr(log, timestamp_field) == capture.captured_at and not getattr(log, approval_field):
                 setattr(log, timestamp_field, None)
-                setattr(log, latitude_field, None)
-                setattr(log, longitude_field, None)
-                log.save(update_fields=(timestamp_field, latitude_field, longitude_field))
+                log.save(update_fields=(timestamp_field,))
             capture.review_status = AttendanceFaceCapture.ReviewStatus.REJECTED
             capture.save(update_fields=("review_status", "reviewed_by", "reviewed_at"))
             audit(request.user, f"{audit_action}.face_exception_rejected", log, capture_id=capture.pk)
@@ -1042,6 +1078,7 @@ def _review_face_capture(request, capture_id, queue_name, audit_action):
             setattr(log, timestamp_field, capture.captured_at)
             setattr(log, latitude_field, capture.latitude)
             setattr(log, longitude_field, capture.longitude)
+        setattr(log, within_location_field, True)
         setattr(log, approval_field, True)
         setattr(log, face_status_field, capture.face_status)
         setattr(log, face_score_field, capture.face_score)
@@ -1050,6 +1087,7 @@ def _review_face_capture(request, capture_id, queue_name, audit_action):
             approval_field,
             latitude_field,
             longitude_field,
+            within_location_field,
             face_status_field,
             face_score_field,
         ))
