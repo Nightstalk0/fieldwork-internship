@@ -12,7 +12,7 @@ python manage.py createsuperuser
 python manage.py runserver
 ```
 
-The local default enables `DEBUG` and uses SQLite. Production requires `SECRET_KEY`, `DATABASE_URL`, and a non-empty `ALLOWED_HOSTS`. Render deployment is configured in `render.yaml` and runs migrations during the build.
+The local default enables `DEBUG` and uses SQLite. Production requires `SECRET_KEY`, `DATABASE_URL`, and a non-empty `ALLOWED_HOSTS`. On Render, set `DATABASE_URL` to the database's internal connection string when the web service and database share a region. The build collects static files with a temporary in-memory SQLite configuration; `start.sh` verifies the configured database connection before applying migrations and starting Gunicorn.
 
 ## Roles and services
 

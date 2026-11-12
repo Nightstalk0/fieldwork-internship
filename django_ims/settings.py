@@ -70,15 +70,24 @@ TEMPLATES = [
 WSGI_APPLICATION = "django_ims.wsgi.application"
 ASGI_APPLICATION = "django_ims.asgi.application"
 database_url = os.getenv("DATABASE_URL")
-if not DEBUG and not database_url:
+static_build_only = os.getenv("STATIC_BUILD_ONLY") == "1"
+if not DEBUG and not database_url and not static_build_only:
     raise ImproperlyConfigured("Set DATABASE_URL when DEBUG is disabled.")
-DATABASES = {
-    "default": dj_database_url.config(
-        default=database_url or f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
-        conn_max_age=int(os.getenv("DB_CONN_MAX_AGE", "600")),
-        conn_health_checks=True,
-    )
-}
+if static_build_only:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": ":memory:",
+        }
+    }
+else:
+    DATABASES = {
+        "default": dj_database_url.config(
+            default=database_url or f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
+            conn_max_age=60,
+            conn_health_checks=True,
+        )
+    }
 
 AUTH_USER_MODEL = "accounts.User"
 AXES_ENABLED = False
