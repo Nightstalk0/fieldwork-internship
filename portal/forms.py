@@ -6,7 +6,17 @@ from .models import CompanyProfile, DailyReport, InternProfile, Posting, Scoreca
 class CompanyProfileForm(forms.ModelForm):
     class Meta:
         model = CompanyProfile
-        fields = ("organization", "website", "address")
+        fields = (
+            "company_name",
+            "company_address",
+            "industry_type",
+            "contact_person_name",
+            "contact_person_position",
+            "official_email",
+            "contact_number",
+            "company_website",
+            "moa_reference_number",
+        )
 
 
 class WorksiteLocationForm(forms.ModelForm):

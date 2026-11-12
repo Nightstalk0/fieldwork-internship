@@ -3,12 +3,55 @@
 {% block content %}
 <section class="auth-layout register-layout">
   <div class="auth-copy"><p class="eyebrow">GET STARTED</p><h1>Build the next step into your work.</h1><p>One shared workspace for interns and their host organizations.</p></div>
-  <div class="auth-panel"><h2>Create account</h2>
+  <div class="auth-panel register-panel"><h2>Create account</h2>
     <div class="role-tabs" role="tablist" aria-label="Account type">
       <button type="button" role="tab" aria-selected="true" data-role="intern">Intern</button>
       <button type="button" role="tab" aria-selected="false" data-role="company">Company</button>
     </div>
-    <form method="post" class="stack-form">{% csrf_token %}{{ form.non_field_errors }}{{ form.as_p }}<button class="button button-primary" type="submit">Create account</button></form>
+    <form method="post" class="stack-form register-form">
+      {% csrf_token %}
+      {{ form.non_field_errors }}
+      {{ form.role }}
+      <section class="registration-section" aria-labelledby="account-details-heading">
+        <h3 id="account-details-heading">Account details</h3>
+        <div class="registration-grid">
+          <p class="registration-account-field">{{ form.username.label_tag }}{{ form.username }}{{ form.username.errors }}{% if form.username.help_text %}<span class="helptext">{{ form.username.help_text|safe }}</span>{% endif %}</p>
+          <p>{{ form.password1.label_tag }}{{ form.password1 }}{{ form.password1.errors }}{% if form.password1.help_text %}<span class="helptext">{{ form.password1.help_text|safe }}</span>{% endif %}</p>
+          <p>{{ form.password2.label_tag }}{{ form.password2 }}{{ form.password2.errors }}{% if form.password2.help_text %}<span class="helptext">{{ form.password2.help_text|safe }}</span>{% endif %}</p>
+        </div>
+      </section>
+      <section class="registration-section" data-intern-profile aria-labelledby="academic-details-heading">
+        <h3 id="academic-details-heading">Academic profile</h3>
+        <div class="registration-grid">
+          <p>{{ form.first_name.label_tag }}{{ form.first_name }}{{ form.first_name.errors }}</p>
+          <p>{{ form.last_name.label_tag }}{{ form.last_name }}{{ form.last_name.errors }}</p>
+          <p>{{ form.email.label_tag }}{{ form.email }}{{ form.email.errors }}</p>
+          <p>{{ form.phone.label_tag }}{{ form.phone }}{{ form.phone.errors }}</p>
+          <p>{{ form.student_id.label_tag }}{{ form.student_id }}{{ form.student_id.errors }}</p>
+          <p>{{ form.university.label_tag }}{{ form.university }}{{ form.university.errors }}</p>
+          <p>{{ form.course.label_tag }}{{ form.course }}{{ form.course.errors }}</p>
+          <p>{{ form.year_level.label_tag }}{{ form.year_level }}{{ form.year_level.errors }}</p>
+          <p>{{ form.placement_type.label_tag }}{{ form.placement_type }}{{ form.placement_type.errors }}</p>
+          <p class="registration-bio">{{ form.bio.label_tag }}{{ form.bio }}{{ form.bio.errors }}</p>
+        </div>
+      </section>
+      <section class="registration-section" data-company-profile aria-labelledby="company-details-heading">
+        <h3 id="company-details-heading">Host organization credentials</h3>
+        <p class="muted">Provide your organization details and an authorized representative's contact information.</p>
+        <div class="registration-grid">
+          <p>{{ form.company_name.label_tag }}{{ form.company_name }}{{ form.company_name.errors }}</p>
+          <p>{{ form.industry_type.label_tag }}{{ form.industry_type }}{{ form.industry_type.errors }}</p>
+          <p class="registration-bio">{{ form.company_address.label_tag }}{{ form.company_address }}{{ form.company_address.errors }}</p>
+          <p>{{ form.contact_person_name.label_tag }}{{ form.contact_person_name }}{{ form.contact_person_name.errors }}</p>
+          <p>{{ form.contact_person_position.label_tag }}{{ form.contact_person_position }}{{ form.contact_person_position.errors }}</p>
+          <p>{{ form.official_email.label_tag }}{{ form.official_email }}{{ form.official_email.errors }}</p>
+          <p>{{ form.contact_number.label_tag }}{{ form.contact_number }}{{ form.contact_number.errors }}</p>
+          <p>{{ form.company_website.label_tag }}{{ form.company_website }}{{ form.company_website.errors }}</p>
+          <p>{{ form.moa_reference_number.label_tag }}{{ form.moa_reference_number }}{{ form.moa_reference_number.errors }}</p>
+        </div>
+      </section>
+      <button class="button button-primary" type="submit">Create account</button>
+    </form>
     <p class="form-footnote">Already registered? <a href="{% url 'accounts:login' %}">Sign in</a></p>
   </div>
 </section>
@@ -16,12 +59,31 @@
 {% block scripts %}<script>
   const roleSelect = document.getElementById("id_role");
   const roleTabs = document.querySelectorAll("[data-role]");
+  const internProfile = document.querySelector("[data-intern-profile]");
+  const companyProfile = document.querySelector("[data-company-profile]");
+  const internProfileInputs = internProfile.querySelectorAll("input, select, textarea");
+  const companyProfileInputs = companyProfile.querySelectorAll("input, select, textarea");
   if (!roleSelect.value) roleSelect.value = "intern";
+  const updateRegistrationRole = () => {
+    const isIntern = roleSelect.value === "intern";
+    internProfile.hidden = !isIntern;
+    internProfile.setAttribute("aria-hidden", String(!isIntern));
+    internProfileInputs.forEach((input) => {
+      input.required = isIntern && input.name !== "bio";
+    });
+    companyProfile.hidden = isIntern;
+    companyProfile.setAttribute("aria-hidden", String(isIntern));
+    companyProfileInputs.forEach((input) => {
+      input.required = !isIntern && !["company_website", "moa_reference_number"].includes(input.name);
+    });
+  };
   roleTabs.forEach((tab) => {
     tab.setAttribute("aria-selected", String(tab.dataset.role === roleSelect.value));
     tab.addEventListener("click", () => {
       roleSelect.value = tab.dataset.role;
       roleTabs.forEach((item) => item.setAttribute("aria-selected", String(item === tab)));
+      updateRegistrationRole();
     });
   });
+  updateRegistrationRole();
 </script>{% endblock %}

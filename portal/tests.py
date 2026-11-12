@@ -1592,9 +1592,15 @@ class PortalWorkflowTests(TestCase):
         response = self.client.post(
             reverse("portal:company_profile"),
             {
-                "organization": "Updated Host Organization",
-                "website": "https://example.org",
-                "address": "12 Fieldwork Road",
+                "company_name": "Updated Host Organization",
+                "company_address": "12 Fieldwork Road",
+                "industry_type": "it",
+                "contact_person_name": "Jamie Smith",
+                "contact_person_position": "HR Manager",
+                "official_email": "host@example.org",
+                "contact_number": "555-0101",
+                "company_website": "https://example.org",
+                "moa_reference_number": "MOA-2026-002",
             },
         )
 
@@ -1603,6 +1609,8 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(self.company.organization, "Updated Host Organization")
         self.assertEqual(self.company.website, "https://example.org")
         self.assertEqual(self.company.address, "12 Fieldwork Road")
+        self.assertEqual(self.company.official_email, "host@example.org")
+        self.assertEqual(self.company.contact_number, "555-0101")
 
     def test_applicant_screening_shows_pending_applications(self):
         self.intern.course = "Information Systems"

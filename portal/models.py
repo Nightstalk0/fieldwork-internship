@@ -167,14 +167,39 @@ class OJTRequirement(models.Model):
 
 
 class CompanyProfile(models.Model):
+    class IndustryType(models.TextChoices):
+        IT = "it", "IT"
+        GOVERNMENT = "government", "Government"
+        MANUFACTURING = "manufacturing", "Manufacturing"
+        CORPORATE = "corporate", "Corporate"
+        OTHER = "other", "Other"
+
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="company_profile")
     organization = models.CharField(max_length=180)
     website = models.URLField(blank=True)
     address = models.CharField(max_length=255, blank=True)
+    company_name = models.CharField(max_length=180, blank=True)
+    company_address = models.TextField(blank=True)
+    industry_type = models.CharField(max_length=32, choices=IndustryType.choices, blank=True)
+    contact_person_name = models.CharField(max_length=180, blank=True)
+    contact_person_position = models.CharField(max_length=120, blank=True)
+    official_email = models.EmailField(blank=True)
+    contact_number = models.CharField(max_length=32, blank=True)
+    company_website = models.URLField(blank=True)
+    moa_reference_number = models.CharField(max_length=120, blank=True)
     verified = models.BooleanField(default=False)
 
+    def save(self, *args, **kwargs):
+        self.company_name = self.company_name or self.organization
+        self.organization = self.company_name
+        self.company_address = self.company_address or self.address
+        self.address = self.company_address
+        self.company_website = self.company_website or self.website
+        self.website = self.company_website
+        super().save(*args, **kwargs)
+
     def __str__(self):
-        return self.organization
+        return self.company_name or self.organization
 
 
 class WorksiteLocation(models.Model):
