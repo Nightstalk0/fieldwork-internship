@@ -222,13 +222,14 @@ textarea { resize: vertical; line-height: 1.45; }
 .role-tabs { display: grid; grid-template-columns: 1fr 1fr; margin: 1.25rem 0; border-bottom: .0625rem solid var(--line); }
 .role-tabs button { padding: .625rem; border: 0; border-bottom: .125rem solid transparent; color: var(--muted); background: transparent; font-weight: 700; cursor: pointer; }
 .role-tabs button[aria-selected="true"] { color: var(--forest); border-color: var(--forest); }
-.register-panel { width: min(100%, 42rem); }
+.register-layout { grid-template-columns: minmax(0, 1fr) minmax(28rem, 42rem); max-width: 90rem; }
+.register-panel { width: 100%; max-height: 80vh; overflow-y: auto; padding-right: 1.25rem; }
 .register-form { gap: 1.25rem; }
 .registration-section { padding-top: .875rem; border-top: .0625rem solid var(--line); }
 .registration-section h3 { margin-bottom: .75rem; font-size: var(--font-lg); }
-.registration-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .875rem 1rem; }
+.registration-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; }
 .registration-grid p { min-width: 0; margin: 0; }
-.registration-bio { grid-column: 1 / -1; }
+.registration-full-width { grid-column: 1 / -1; }
 .registration-section > .muted { margin: -.25rem 0 .875rem; font-size: var(--font-sm); }
 .quick-links { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); gap: .75rem; }
 .quick-links a { display: flex; justify-content: space-between; padding: 1.125rem; border: .0625rem solid var(--line); border-radius: .375rem; color: var(--ink); background: #fff; text-decoration: none; font-size: var(--font-base); font-weight: 700; }
@@ -270,6 +271,9 @@ input:focus, select:focus, textarea:focus { outline: .1875rem solid rgba(31, 96,
 @media (max-width: 53.75rem) {
   .auth-layout { max-width: 40rem; grid-template-columns: minmax(0, 1fr); gap: 1rem; }
 }
+@media (min-width: 48.001rem) {
+  .registration-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+}
 @media (max-width: 48rem) {
   .topbar { position: sticky; top: 0; z-index: 20; min-height: var(--mobile-header-height); justify-content: space-between; padding: .5rem 1rem; }
   .topbar.sidebar { inset: 0 0 auto; width: 100%; height: var(--mobile-header-height); min-height: var(--mobile-header-height); flex-direction: row; align-items: center; padding: .5rem 1rem; border-right: 0; border-bottom: .0625rem solid var(--line); }
@@ -300,8 +304,10 @@ input:focus, select:focus, textarea:focus { outline: .1875rem solid rgba(31, 96,
   .page-shell { width: calc(100% - 1.25rem); }
   .panel { padding: 1rem; }
   .metric-grid { grid-template-columns: minmax(0, 1fr); }
+  .register-layout { grid-template-columns: minmax(0, 1fr); }
+  .register-panel { max-height: 80vh; }
   .registration-grid { grid-template-columns: minmax(0, 1fr); }
-  .registration-bio { grid-column: auto; }
+  .registration-full-width { grid-column: auto; }
   .table-wrap table:not(.attendance-summary-table) { min-width: 34rem; }
   .guest-nav { gap: .75rem; }
   .guest-nav a { font-size: var(--font-sm); }

@@ -8,7 +8,7 @@
       <button type="button" role="tab" aria-selected="true" data-role="intern">Intern</button>
       <button type="button" role="tab" aria-selected="false" data-role="company">Company</button>
     </div>
-    <form method="post" class="stack-form register-form">
+    <form method="post" class="stack-form register-form register-form-scroll">
       {% csrf_token %}
       {{ form.non_field_errors }}
       {{ form.role }}
@@ -31,8 +31,7 @@
           <p>{{ form.university.label_tag }}{{ form.university }}{{ form.university.errors }}</p>
           <p>{{ form.course.label_tag }}{{ form.course }}{{ form.course.errors }}</p>
           <p>{{ form.year_level.label_tag }}{{ form.year_level }}{{ form.year_level.errors }}</p>
-          <p>{{ form.placement_type.label_tag }}{{ form.placement_type }}{{ form.placement_type.errors }}</p>
-          <p class="registration-bio">{{ form.bio.label_tag }}{{ form.bio }}{{ form.bio.errors }}</p>
+          <p class="registration-full-width">{{ form.placement_type.label_tag }}{{ form.placement_type }}{{ form.placement_type.errors }}</p>
         </div>
       </section>
       <section class="registration-section" data-company-profile aria-labelledby="company-details-heading">
@@ -41,7 +40,7 @@
         <div class="registration-grid">
           <p>{{ form.company_name.label_tag }}{{ form.company_name }}{{ form.company_name.errors }}</p>
           <p>{{ form.industry_type.label_tag }}{{ form.industry_type }}{{ form.industry_type.errors }}</p>
-          <p class="registration-bio">{{ form.company_address.label_tag }}{{ form.company_address }}{{ form.company_address.errors }}</p>
+          <p class="registration-full-width">{{ form.company_address.label_tag }}{{ form.company_address }}{{ form.company_address.errors }}</p>
           <p>{{ form.contact_person_name.label_tag }}{{ form.contact_person_name }}{{ form.contact_person_name.errors }}</p>
           <p>{{ form.contact_person_position.label_tag }}{{ form.contact_person_position }}{{ form.contact_person_position.errors }}</p>
           <p>{{ form.official_email.label_tag }}{{ form.official_email }}{{ form.official_email.errors }}</p>
@@ -69,7 +68,7 @@
     internProfile.hidden = !isIntern;
     internProfile.setAttribute("aria-hidden", String(!isIntern));
     internProfileInputs.forEach((input) => {
-      input.required = isIntern && input.name !== "bio";
+      input.required = isIntern;
     });
     companyProfile.hidden = isIntern;
     companyProfile.setAttribute("aria-hidden", String(isIntern));

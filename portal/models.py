@@ -70,7 +70,6 @@ class InternProfile(models.Model):
         default=PlacementType.PLATFORM,
     )
     external_host = models.CharField(max_length=180, blank=True)
-    bio = models.TextField(blank=True)
     resume = models.FileField(upload_to="resumes/%Y/%m/", blank=True, validators=[FileSizeAndTypeValidator()])
     created_at = models.DateTimeField(auto_now_add=True)
 

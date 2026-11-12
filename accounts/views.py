@@ -32,7 +32,6 @@ def register(request):
                 "course",
                 "year_level",
                 "placement_type",
-                "bio",
             ):
                 setattr(profile, field_name, form.cleaned_data[field_name])
             profile.save()

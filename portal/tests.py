@@ -659,7 +659,6 @@ class PortalWorkflowTests(TestCase):
                 "university": "Example University",
                 "course": "Design",
                 "year_level": 4,
-                "bio": "",
             },
             instance=self.intern,
         )
@@ -677,7 +676,6 @@ class PortalWorkflowTests(TestCase):
                 "university": "Example University",
                 "course": "Design",
                 "year_level": 4,
-                "bio": "",
             },
             instance=profile,
         )
@@ -694,7 +692,6 @@ class PortalWorkflowTests(TestCase):
             "year_level": "",
             "placement_type": InternProfile.PlacementType.PLATFORM,
             "external_host": "",
-            "bio": "",
         })
 
         self.assertRedirects(response, reverse("portal:profile"))
@@ -715,7 +712,6 @@ class PortalWorkflowTests(TestCase):
             "year_level": 3,
             "placement_type": InternProfile.PlacementType.PLATFORM,
             "external_host": "",
-            "bio": "",
         })
 
         self.assertRedirects(response, reverse("portal:profile"))
@@ -738,7 +734,6 @@ class PortalWorkflowTests(TestCase):
                         "year_level": 3,
                         "placement_type": InternProfile.PlacementType.PLATFORM,
                         "external_host": "",
-                        "bio": "",
                     })
 
         self.assertIn("Profile update failed for intern user", captured_logs.output[0])

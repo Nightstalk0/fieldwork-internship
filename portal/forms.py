@@ -97,15 +97,12 @@ class InternProfileForm(forms.ModelForm):
             "year_level",
             "placement_type",
             "external_host",
-            "bio",
             "resume",
         )
-        widgets = {"bio": forms.Textarea(attrs={"rows": 4})}
         help_texts = {
             "year_level": "Enter your current year level as a number.",
             "placement_type": "Choose whether your host company has a Fieldwork account.",
             "external_host": "Add your host's name when known; it can be added or updated later.",
-            "bio": "Summarize your skills, interests, and the type of placement you are seeking.",
             "resume": "Upload a PDF or DOCX resume within the listed file-size limit.",
         }
 

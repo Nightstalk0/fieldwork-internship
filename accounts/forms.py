@@ -26,7 +26,6 @@ class RegistrationForm(UserCreationForm):
     course = forms.CharField(max_length=180)
     year_level = forms.IntegerField(min_value=1)
     placement_type = forms.ChoiceField(choices=InternProfile.PlacementType.choices)
-    bio = forms.CharField(widget=forms.Textarea(attrs={"rows": 3}), required=False)
     company_name = forms.CharField(max_length=180)
     company_address = forms.CharField(widget=forms.Textarea(attrs={"rows": 3}))
     industry_type = forms.ChoiceField(choices=CompanyProfile.IndustryType.choices)
@@ -59,7 +58,6 @@ class RegistrationForm(UserCreationForm):
             "course",
             "year_level",
             "placement_type",
-            "bio",
             "company_name",
             "company_address",
             "industry_type",

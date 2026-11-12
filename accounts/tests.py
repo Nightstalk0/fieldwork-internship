@@ -25,7 +25,6 @@ class AccountFlowTests(TestCase):
         self.assertContains(response, 'name="course"')
         self.assertContains(response, 'name="year_level"')
         self.assertContains(response, 'name="placement_type"')
-        self.assertContains(response, 'name="bio"')
         self.assertContains(response, 'name="company_name"')
         self.assertContains(response, 'name="company_address"')
         self.assertContains(response, 'name="industry_type"')
