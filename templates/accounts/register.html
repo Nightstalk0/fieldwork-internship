@@ -2,53 +2,41 @@
 {% block title %}Create account | Fieldwork{% endblock %}
 {% block content %}
 <section class="auth-layout register-layout">
-  <div class="auth-copy"><p class="eyebrow">GET STARTED</p><h1>Build the next step into your work.</h1><p>One shared workspace for interns and their host organizations.</p></div>
+  <div class="auth-copy register-copy"><p class="eyebrow">GET STARTED</p><h1>Build the next step into your work.</h1><p>One shared workspace for interns and their host organizations.</p></div>
   <div class="auth-panel register-panel"><h2>Create account</h2>
     <div class="role-tabs" role="tablist" aria-label="Account type">
       <button type="button" role="tab" aria-selected="true" data-role="intern">Intern</button>
       <button type="button" role="tab" aria-selected="false" data-role="company">Company</button>
     </div>
-    <form method="post" class="stack-form register-form register-form-scroll">
+    <form method="post" class="stack-form register-form">
       {% csrf_token %}
       {{ form.non_field_errors }}
       {{ form.role }}
-      <section class="registration-section" aria-labelledby="account-details-heading">
-        <h3 id="account-details-heading">Account details</h3>
-        <div class="registration-grid">
-          <p class="registration-account-field">{{ form.username.label_tag }}{{ form.username }}{{ form.username.errors }}{% if form.username.help_text %}<span class="helptext">{{ form.username.help_text|safe }}</span>{% endif %}</p>
-          <p>{{ form.password1.label_tag }}{{ form.password1 }}{{ form.password1.errors }}{% if form.password1.help_text %}<span class="helptext">{{ form.password1.help_text|safe }}</span>{% endif %}</p>
-          <p>{{ form.password2.label_tag }}{{ form.password2 }}{{ form.password2.errors }}{% if form.password2.help_text %}<span class="helptext">{{ form.password2.help_text|safe }}</span>{% endif %}</p>
-        </div>
-      </section>
-      <section class="registration-section" data-intern-profile aria-labelledby="academic-details-heading">
-        <h3 id="academic-details-heading">Academic profile</h3>
-        <div class="registration-grid">
-          <p>{{ form.first_name.label_tag }}{{ form.first_name }}{{ form.first_name.errors }}</p>
-          <p>{{ form.last_name.label_tag }}{{ form.last_name }}{{ form.last_name.errors }}</p>
-          <p>{{ form.email.label_tag }}{{ form.email }}{{ form.email.errors }}</p>
-          <p>{{ form.phone.label_tag }}{{ form.phone }}{{ form.phone.errors }}</p>
-          <p>{{ form.student_id.label_tag }}{{ form.student_id }}{{ form.student_id.errors }}</p>
-          <p>{{ form.university.label_tag }}{{ form.university }}{{ form.university.errors }}</p>
-          <p>{{ form.course.label_tag }}{{ form.course }}{{ form.course.errors }}</p>
-          <p>{{ form.year_level.label_tag }}{{ form.year_level }}{{ form.year_level.errors }}</p>
-          <p class="registration-full-width">{{ form.placement_type.label_tag }}{{ form.placement_type }}{{ form.placement_type.errors }}</p>
-        </div>
-      </section>
-      <section class="registration-section" data-company-profile aria-labelledby="company-details-heading">
-        <h3 id="company-details-heading">Host organization credentials</h3>
-        <p class="muted">Provide your organization details and an authorized representative's contact information.</p>
-        <div class="registration-grid">
-          <p>{{ form.company_name.label_tag }}{{ form.company_name }}{{ form.company_name.errors }}</p>
-          <p>{{ form.industry_type.label_tag }}{{ form.industry_type }}{{ form.industry_type.errors }}</p>
-          <p class="registration-full-width">{{ form.company_address.label_tag }}{{ form.company_address }}{{ form.company_address.errors }}</p>
-          <p>{{ form.contact_person_name.label_tag }}{{ form.contact_person_name }}{{ form.contact_person_name.errors }}</p>
-          <p>{{ form.contact_person_position.label_tag }}{{ form.contact_person_position }}{{ form.contact_person_position.errors }}</p>
-          <p>{{ form.official_email.label_tag }}{{ form.official_email }}{{ form.official_email.errors }}</p>
-          <p>{{ form.contact_number.label_tag }}{{ form.contact_number }}{{ form.contact_number.errors }}</p>
-          <p>{{ form.company_website.label_tag }}{{ form.company_website }}{{ form.company_website.errors }}</p>
-          <p>{{ form.moa_reference_number.label_tag }}{{ form.moa_reference_number }}{{ form.moa_reference_number.errors }}</p>
-        </div>
-      </section>
+      <div class="registration-grid">
+        <p data-registration-field data-intern-order="1" data-company-order="10" data-intern-field>{{ form.first_name.label_tag }}{{ form.first_name }}{{ form.first_name.errors }}</p>
+        <p data-registration-field data-intern-order="2" data-company-order="11" data-intern-field>{{ form.last_name.label_tag }}{{ form.last_name }}{{ form.last_name.errors }}</p>
+        <p data-registration-field data-intern-order="3" data-company-order="1">{{ form.username.label_tag }}{{ form.username }}{{ form.username.errors }}{% if form.username.help_text %}<span class="helptext">{{ form.username.help_text|safe }}</span>{% endif %}</p>
+        <p data-registration-field data-intern-order="4" data-company-order="12" data-intern-field>{{ form.email.label_tag }}{{ form.email }}{{ form.email.errors }}</p>
+        <p data-registration-field data-intern-order="5" data-company-order="2">{{ form.password1.label_tag }}{{ form.password1 }}{{ form.password1.errors }}<span class="register-password-help" title="Passwords must be at least 8 characters, not be too similar to your personal information, be commonly used, or be entirely numeric.">8+ characters; not numeric-only.</span></p>
+        <p data-registration-field data-intern-order="6" data-company-order="19">{{ form.password2.label_tag }}{{ form.password2 }}{{ form.password2.errors }}</p>
+
+        <p data-registration-field data-intern-order="7" data-company-order="13" data-intern-field>{{ form.student_id.label_tag }}{{ form.student_id }}{{ form.student_id.errors }}</p>
+        <p data-registration-field data-intern-order="8" data-company-order="14" data-intern-field>{{ form.university.label_tag }}{{ form.university }}{{ form.university.errors }}</p>
+        <p data-registration-field data-intern-order="9" data-company-order="15" data-intern-field>{{ form.course.label_tag }}{{ form.course }}{{ form.course.errors }}</p>
+        <p data-registration-field data-intern-order="10" data-company-order="16" data-intern-field>{{ form.year_level.label_tag }}{{ form.year_level }}{{ form.year_level.errors }}</p>
+        <p data-registration-field data-intern-order="13" data-company-order="17" data-intern-field>{{ form.phone.label_tag }}{{ form.phone }}{{ form.phone.errors }}</p>
+        <p class="registration-full-width" data-registration-field data-intern-order="12" data-company-order="18" data-intern-field>{{ form.placement_type.label_tag }}{{ form.placement_type }}{{ form.placement_type.errors }}</p>
+
+        <p data-registration-field data-intern-order="13" data-company-order="4" data-company-field>{{ form.company_name.label_tag }}{{ form.company_name }}{{ form.company_name.errors }}</p>
+        <p data-registration-field data-intern-order="14" data-company-order="5" data-company-field>{{ form.industry_type.label_tag }}{{ form.industry_type }}{{ form.industry_type.errors }}</p>
+        <p class="registration-full-width registration-address" data-registration-field data-intern-order="15" data-company-order="6" data-company-field>{{ form.company_address.label_tag }}{{ form.company_address }}{{ form.company_address.errors }}</p>
+        <p data-registration-field data-intern-order="16" data-company-order="7" data-company-field>{{ form.contact_person_name.label_tag }}{{ form.contact_person_name }}{{ form.contact_person_name.errors }}</p>
+        <p data-registration-field data-intern-order="17" data-company-order="8" data-company-field>{{ form.contact_person_position.label_tag }}{{ form.contact_person_position }}{{ form.contact_person_position.errors }}</p>
+        <p data-registration-field data-intern-order="18" data-company-order="9" data-company-field>{{ form.official_email.label_tag }}{{ form.official_email }}{{ form.official_email.errors }}</p>
+        <p data-registration-field data-intern-order="19" data-company-order="10" data-company-field>{{ form.contact_number.label_tag }}{{ form.contact_number }}{{ form.contact_number.errors }}</p>
+        <p data-registration-field data-intern-order="20" data-company-order="11" data-company-field>{{ form.company_website.label_tag }}{{ form.company_website }}{{ form.company_website.errors }}</p>
+        <p data-registration-field data-intern-order="21" data-company-order="12" data-company-field>{{ form.moa_reference_number.label_tag }}{{ form.moa_reference_number }}{{ form.moa_reference_number.errors }}</p>
+      </div>
       <button class="button button-primary" type="submit">Create account</button>
     </form>
     <p class="form-footnote">Already registered? <a href="{% url 'accounts:login' %}">Sign in</a></p>
@@ -58,23 +46,31 @@
 {% block scripts %}<script>
   const roleSelect = document.getElementById("id_role");
   const roleTabs = document.querySelectorAll("[data-role]");
-  const internProfile = document.querySelector("[data-intern-profile]");
-  const companyProfile = document.querySelector("[data-company-profile]");
-  const internProfileInputs = internProfile.querySelectorAll("input, select, textarea");
-  const companyProfileInputs = companyProfile.querySelectorAll("input, select, textarea");
+  const registrationGrid = document.querySelector(".registration-grid");
+  const registrationFields = Array.from(registrationGrid.querySelectorAll("[data-registration-field]"));
+  const internProfileFields = registrationGrid.querySelectorAll("[data-intern-field]");
+  const companyProfileFields = registrationGrid.querySelectorAll("[data-company-field]");
   if (!roleSelect.value) roleSelect.value = "intern";
   const updateRegistrationRole = () => {
     const isIntern = roleSelect.value === "intern";
-    internProfile.hidden = !isIntern;
-    internProfile.setAttribute("aria-hidden", String(!isIntern));
-    internProfileInputs.forEach((input) => {
-      input.required = isIntern;
+    const role = isIntern ? "intern" : "company";
+    internProfileFields.forEach((field) => {
+      field.hidden = !isIntern;
+      field.setAttribute("aria-hidden", String(!isIntern));
+      field.querySelectorAll("input, select, textarea").forEach((input) => {
+        input.required = isIntern;
+      });
     });
-    companyProfile.hidden = isIntern;
-    companyProfile.setAttribute("aria-hidden", String(isIntern));
-    companyProfileInputs.forEach((input) => {
-      input.required = !isIntern && !["company_website", "moa_reference_number"].includes(input.name);
+    companyProfileFields.forEach((field) => {
+      field.hidden = isIntern;
+      field.setAttribute("aria-hidden", String(isIntern));
+      field.querySelectorAll("input, select, textarea").forEach((input) => {
+        input.required = !isIntern && !["company_website", "moa_reference_number"].includes(input.name);
+      });
     });
+    registrationFields
+      .sort((left, right) => Number(left.dataset[`${role}Order`]) - Number(right.dataset[`${role}Order`]))
+      .forEach((field) => registrationGrid.appendChild(field));
   };
   roleTabs.forEach((tab) => {
     tab.setAttribute("aria-selected", String(tab.dataset.role === roleSelect.value));
