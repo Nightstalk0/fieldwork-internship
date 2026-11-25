@@ -9,8 +9,16 @@
   </div>
 </div>
 <section class="metric-grid" aria-label="Attendance setup">
-  <div class="metric"><span>Pending attendance events</span><strong>{{ pending_dtr_count }}</strong><small>Waiting for review</small></div>
-  <div class="metric"><span>Active worksites</span><strong>{{ active_worksite_count }}</strong><small>Used to verify intern location</small></div>
+  <div class="metric">
+    <span><i class="metric-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></i>Pending attendance events</span>
+    <strong>{{ pending_dtr_count }}</strong>
+    <small>Waiting for review</small>
+  </div>
+  <div class="metric">
+    <span><i class="metric-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M5 21V7l7-4 7 4v14M10 21v-4h4v4"/></svg></i>Active worksites</span>
+    <strong>{{ active_worksite_count }}</strong>
+    <small>Used to verify intern location</small>
+  </div>
 </section>
 <div class="content-grid">
   <section class="panel">

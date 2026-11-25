@@ -10,17 +10,17 @@
 </div>
 <section class="metric-grid">
   <div class="metric">
-    <span>Today's attendance</span>
+    <span><i class="metric-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18M8 14h3"/></svg></i> Today's attendance</span>
     <strong>{% if recent_attendance.0.work_date == today %}<span class="status status-good">Recorded</span>{% else %}<span class="status status-neutral">Not started</span>{% endif %}</strong>
     <small>{{ today|date:"M j, Y" }}</small>
   </div>
   <div class="metric">
-    <span>Approved hours</span>
+    <span><i class="metric-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></i> Approved hours</span>
     <strong>{{ completed_hours }}</strong>
     <small>of 486 rendered OJT hours · {{ completion_percent }}% complete</small>
   </div>
   <div class="metric">
-    <span>Daily reports</span>
+    <span><i class="metric-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5M10 19V9M16 19V3M22 19v-7"/></svg></i> Daily reports</span>
     <strong>{{ recent_daily_reports|length }}</strong>
     <small>Recent submissions</small>
   </div>
@@ -43,7 +43,7 @@
             <td>{{ log.hours_worked }}</td>
           </tr>
           {% empty %}
-          <tr><td colspan="4" class="muted">No attendance entries yet.</td></tr>
+          <tr><td colspan="4" class="empty-state-cell"><span class="empty-state-icon" aria-hidden="true"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg></span><span>No attendance entries yet.</span></td></tr>
           {% endfor %}
         </tbody>
       </table>
@@ -58,7 +58,7 @@
       {% for report in recent_daily_reports %}
       <li><span>{{ report.work_date }}</span><span class="status">{{ report.get_status_display }}</span></li>
       {% empty %}
-      <li class="muted">Your submitted reports will appear here.</li>
+      <li class="empty-state-inline"><span class="empty-state-icon" aria-hidden="true"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg></span><span>Your submitted reports will appear here.</span></li>
       {% endfor %}
     </ul>
   </section>

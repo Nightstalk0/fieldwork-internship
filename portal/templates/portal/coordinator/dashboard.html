@@ -9,11 +9,31 @@
   </div>
 </div>
 <section class="metric-grid">
-  <div class="metric"><span>Interns</span><strong>{{ intern_count }}</strong><small>Registered profiles</small></div>
-  <div class="metric"><span>Pending DTR events</span><strong>{{ pending_dtr_count }}</strong><small><a href="{% url 'portal:dtr_queue' %}">Review attendance</a></small></div>
-  <div class="metric"><span>Daily reports to review</span><strong>{{ pending_daily_report_count }}</strong><small><a href="{% url 'portal:coordinator_daily_reports' %}">Review reports</a></small></div>
-  <div class="metric"><span>External interns without a worksite</span><strong>{{ external_interns_without_worksite_count }}</strong><small><a href="{% url 'portal:coordinator_external_worksites' %}">Assign locations</a></small></div>
-  <div class="metric"><span>Active worksites</span><strong>{{ active_worksite_count }}</strong><small>Company and external placements</small></div>
+  <div class="metric">
+    <span><i class="metric-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/><path d="M20 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></i>Interns</span>
+    <strong>{{ intern_count }}</strong>
+    <small>Registered profiles</small>
+  </div>
+  <div class="metric">
+    <span><i class="metric-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></i>Pending DTR events</span>
+    <strong>{{ pending_dtr_count }}</strong>
+    <small><a href="{% url 'portal:dtr_queue' %}">Review attendance</a></small>
+  </div>
+  <div class="metric">
+    <span><i class="metric-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h8"/></svg></i>Daily reports to review</span>
+    <strong>{{ pending_daily_report_count }}</strong>
+    <small><a href="{% url 'portal:coordinator_daily_reports' %}">Review reports</a></small>
+  </div>
+  <div class="metric">
+    <span><i class="metric-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 5-8 12-8 12S4 15 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2.5"/></svg></i>External interns without a worksite</span>
+    <strong>{{ external_interns_without_worksite_count }}</strong>
+    <small><a href="{% url 'portal:coordinator_external_worksites' %}">Assign locations</a></small>
+  </div>
+  <div class="metric">
+    <span><i class="metric-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M5 21V7l7-4 7 4v14M10 21v-4h4v4"/></svg></i>Active worksites</span>
+    <strong>{{ active_worksite_count }}</strong>
+    <small>Company and external placements</small>
+  </div>
 </section>
 <section class="quick-links">
   <a href="{% url 'portal:dtr_queue' %}">Review attendance <span>→</span></a>
