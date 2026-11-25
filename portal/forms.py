@@ -1,14 +1,41 @@
 from django import forms
+from django.utils import timezone
 
-from .models import CompanyProfile, DailyReport, InternProfile, Posting, Scorecard, WorksiteLocation
+from accounts.validators import normalize_philippine_phone_number, validate_person_name
+
+from .models import Application, CompanyProfile, DailyReport, InternProfile, Posting, Scorecard, WorksiteLocation
 
 
 class CompanyProfileForm(forms.ModelForm):
+    company_address = forms.CharField(
+        max_length=255,
+        label="Street, building, or office address",
+        widget=forms.Textarea(attrs={"rows": 2, "autocomplete": "street-address"}),
+    )
+    contact_person_name = forms.CharField(
+        max_length=180,
+        validators=[validate_person_name],
+    )
+    contact_number = forms.CharField(
+        max_length=32,
+        widget=forms.TextInput(attrs={
+            "type": "tel",
+            "inputmode": "tel",
+            "pattern": "[0-9+(). -]{7,32}",
+            "title": "Use a Philippine number with digits and standard separators.",
+            "autocomplete": "tel",
+        }),
+    )
+
     class Meta:
         model = CompanyProfile
         fields = (
             "company_name",
             "company_address",
+            "barangay",
+            "city_municipality",
+            "province",
+            "postal_code",
             "industry_type",
             "contact_person_name",
             "contact_person_position",
@@ -17,16 +44,50 @@ class CompanyProfileForm(forms.ModelForm):
             "company_website",
             "moa_reference_number",
         )
+        labels = {
+            "city_municipality": "City or municipality",
+        }
+        widgets = {
+            "postal_code": forms.TextInput(attrs={
+                "inputmode": "numeric",
+                "pattern": "[0-9]{4}",
+                "maxlength": 4,
+                "title": "Enter a 4-digit Philippine postal code.",
+            }),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for field_name in (
+            "company_name",
+            "company_address",
+            "barangay",
+            "city_municipality",
+            "province",
+            "industry_type",
+            "contact_person_name",
+            "contact_person_position",
+            "official_email",
+        ):
+            self.fields[field_name].required = True
+
+    def clean_contact_number(self):
+        return normalize_philippine_phone_number(self.cleaned_data["contact_number"])
 
 
 class WorksiteLocationForm(forms.ModelForm):
+    radius_meters = forms.IntegerField(
+        min_value=10,
+        max_value=5000,
+        widget=forms.NumberInput(attrs={"min": 10, "max": 5000, "step": 1}),
+    )
+
     class Meta:
         model = WorksiteLocation
         fields = ("name", "address", "latitude", "longitude", "radius_meters")
         widgets = {
             "latitude": forms.NumberInput(attrs={"step": "0.000001", "readonly": True}),
             "longitude": forms.NumberInput(attrs={"step": "0.000001", "readonly": True}),
-            "radius_meters": forms.NumberInput(attrs={"min": 10, "max": 5000}),
         }
         help_texts = {
             "latitude": "Use the location button to capture the worksite coordinates.",
@@ -62,6 +123,10 @@ class InternWorksiteRequestForm(forms.ModelForm):
     class Meta:
         model = WorksiteLocation
         fields = ("name", "address", "latitude", "longitude", "reported_accuracy_meters")
+        labels = {
+            "name": "Worksite name",
+            "address": "Address or site details",
+        }
         widgets = {
             "latitude": forms.HiddenInput(),
             "longitude": forms.HiddenInput(),
@@ -88,6 +153,13 @@ class InternWorksiteRequestForm(forms.ModelForm):
 
 
 class InternProfileForm(forms.ModelForm):
+    year_level = forms.TypedChoiceField(
+        required=False,
+        choices=InternProfile.YearLevel.choices,
+        coerce=int,
+        empty_value=None,
+    )
+
     class Meta:
         model = InternProfile
         fields = (
@@ -100,10 +172,13 @@ class InternProfileForm(forms.ModelForm):
             "resume",
         )
         help_texts = {
-            "year_level": "Enter your current year level as a number.",
+            "year_level": "Choose your current year level.",
             "placement_type": "Choose whether your host company has a Fieldwork account.",
             "external_host": "Add your host's name when known; it can be added or updated later.",
-            "resume": "Upload a PDF or DOCX resume within the listed file-size limit.",
+            "resume": "Upload a PDF, DOCX, PNG, JPG, or WEBP resume (maximum 5 MB).",
+        }
+        widgets = {
+            "resume": forms.FileInput(attrs={"accept": ".pdf,.docx,.png,.jpg,.jpeg,.webp"}),
         }
 
     def clean(self):
@@ -117,10 +192,20 @@ class InternProfileForm(forms.ModelForm):
 
 
 class PostingForm(forms.ModelForm):
+    openings = forms.IntegerField(
+        min_value=1,
+        max_value=32767,
+        widget=forms.NumberInput(attrs={"min": 1, "max": 32767, "step": 1}),
+    )
+
     class Meta:
         model = Posting
         fields = ("title", "description", "location", "remote", "openings", "start_date", "end_date", "status")
-        widgets = {"description": forms.Textarea(attrs={"rows": 5}), "openings": forms.NumberInput(attrs={"min": 1}), "start_date": forms.DateInput(attrs={"type": "date"}), "end_date": forms.DateInput(attrs={"type": "date"})}
+        widgets = {
+            "description": forms.Textarea(attrs={"rows": 5}),
+            "start_date": forms.DateInput(attrs={"type": "date"}),
+            "end_date": forms.DateInput(attrs={"type": "date"}),
+        }
         help_texts = {
             "description": "Describe the responsibilities, required skills, and placement expectations.",
             "openings": "Enter the number of interns this placement can accept.",
@@ -138,6 +223,65 @@ class DailyReportForm(forms.ModelForm):
             "accomplishments": "Summarize the tasks completed and skills practiced today.",
             "challenges": "Note any blockers or support needed; leave blank when there were none.",
         }
+
+
+class DailyReportReviewForm(forms.Form):
+    decision = forms.ChoiceField(
+        choices=(("review", "Mark reviewed"), ("request_changes", "Request changes")),
+        widget=forms.HiddenInput(),
+    )
+    supervisor_feedback = forms.CharField(
+        required=False,
+        max_length=1000,
+        widget=forms.Textarea(attrs={"rows": 3, "maxlength": 1000}),
+    )
+
+    def clean(self):
+        cleaned_data = super().clean()
+        if (
+            cleaned_data.get("decision") == "request_changes"
+            and not cleaned_data.get("supervisor_feedback", "").strip()
+        ):
+            self.add_error("supervisor_feedback", "Add feedback describing the requested changes.")
+        return cleaned_data
+
+
+class ApplicationSubmissionForm(forms.ModelForm):
+    cover_letter = forms.CharField(
+        required=False,
+        max_length=3000,
+        widget=forms.Textarea(attrs={"rows": 2, "maxlength": 3000}),
+    )
+
+    class Meta:
+        model = Application
+        fields = ("cover_letter", "resume")
+        widgets = {
+            "resume": forms.FileInput(attrs={
+                "accept": ".pdf,.docx,.png,.jpg,.jpeg,.webp",
+            }),
+        }
+
+
+class ScorecardSelectionForm(forms.Form):
+    intern_id = forms.ModelChoiceField(
+        queryset=InternProfile.objects.none(),
+        empty_label="Choose an intern",
+    )
+    week_start = forms.DateField(
+        label="Week begins",
+        widget=forms.DateInput(attrs={"type": "date"}),
+    )
+
+    def __init__(self, *args, interns, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["intern_id"].queryset = interns
+
+    def clean_week_start(self):
+        week_start = self.cleaned_data["week_start"]
+        if week_start > timezone.localdate():
+            raise forms.ValidationError("The week start date cannot be in the future.")
+        return week_start
 
 
 class ScorecardForm(forms.ModelForm):

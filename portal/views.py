@@ -1,7 +1,7 @@
 import csv
 import logging
 import mimetypes
-from datetime import date, timedelta
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from functools import wraps
 from pathlib import Path
@@ -28,7 +28,7 @@ from zipfile import BadZipFile, LargeZipFile, ZipFile
 
 from accounts.models import User
 
-from .forms import CompanyProfileForm, DailyReportForm, ExternalWorksiteLocationForm, InternProfileForm, InternWorksiteRequestForm, PostingForm, ScorecardForm, WorksiteLocationForm
+from .forms import ApplicationSubmissionForm, CompanyProfileForm, DailyReportForm, DailyReportReviewForm, ExternalWorksiteLocationForm, InternProfileForm, InternWorksiteRequestForm, PostingForm, ScorecardForm, ScorecardSelectionForm, WorksiteLocationForm
 from .models import AcademicPeriod, Application, AttendanceFaceCapture, AttendanceLog, AuditLog, CompanyProfile, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, InternProfile, OJT_RENDERED_HOURS_CAP, Posting, RiskAssessment, Scorecard, WorksiteLocation, pending_attendance_approval_count
 from .utils import attendance_pdf, audit, certificate_pdf, haversine_distance_km
 from ml_engine.face_capture import FaceCaptureError, decode_camera_image, encode_camera_image
@@ -236,10 +236,14 @@ def profile(request):
             raise
         messages.success(request, "Profile saved.")
         return redirect("portal:profile")
+    return render(request, "portal/intern/profile.html", _intern_profile_context(intern, form=form))
+
+
+def _intern_profile_context(intern, *, form=None, worksite_request_form=None):
     enrollment = FaceEnrollment.objects.filter(intern=intern).first()
-    return render(request, "portal/intern/profile.html", {
-        "form": form,
-        "worksite_request_form": InternWorksiteRequestForm(),
+    return {
+        "form": form or InternProfileForm(instance=intern),
+        "worksite_request_form": worksite_request_form or InternWorksiteRequestForm(),
         "intern": intern,
         "can_request_intern_worksite": (
             intern.placement_type == InternProfile.PlacementType.EXTERNAL
@@ -254,7 +258,7 @@ def profile(request):
             Q(approval_status=WorksiteLocation.ApprovalStatus.PENDING)
             | Q(approval_status=WorksiteLocation.ApprovalStatus.APPROVED, is_active=True)
         ).order_by("-created_at").first(),
-    })
+    }
 
 
 @role_required(User.Role.INTERN)
@@ -263,10 +267,14 @@ def intern_worksite_registration(request):
     form = InternWorksiteRequestForm(request.POST)
     intern = get_object_or_404(InternProfile, user=request.user)
     if not form.is_valid():
-        for field_errors in form.errors.values():
-            for error in field_errors:
-                messages.error(request, error)
-        return redirect("portal:profile")
+        return render(
+            request,
+            "portal/intern/profile.html",
+            _intern_profile_context(
+                intern,
+                worksite_request_form=form,
+            ),
+        )
 
     if intern.placement_type == InternProfile.PlacementType.PLATFORM:
         has_accepted_placement = Application.objects.filter(
@@ -512,9 +520,35 @@ def postings(request):
             "external_placement": True,
         })
     applied_ids = intern.applications.values_list("posting_id", flat=True)
-    available = Posting.objects.filter(status=Posting.Status.PUBLISHED).exclude(pk__in=applied_ids).select_related("company")
+    available = list(
+        Posting.objects.filter(status=Posting.Status.PUBLISHED)
+        .exclude(pk__in=applied_ids)
+        .select_related("company")
+    )
+    for posting in available:
+        posting.apply_form = ApplicationSubmissionForm()
     return render(request, "portal/intern/postings.html", {
         "postings": available,
+        "application_count": len(applied_ids),
+        "external_placement": False,
+    })
+
+
+def _render_postings_with_application_form(request, intern, posting, form):
+    applied_ids = intern.applications.values_list("posting_id", flat=True)
+    postings = list(
+        Posting.objects.filter(status=Posting.Status.PUBLISHED)
+        .exclude(pk__in=applied_ids)
+        .select_related("company")
+    )
+    if all(available_posting.pk != posting.pk for available_posting in postings):
+        postings.insert(0, posting)
+    for available_posting in postings:
+        available_posting.apply_form = (
+            form if available_posting.pk == posting.pk else ApplicationSubmissionForm()
+        )
+    return render(request, "portal/intern/postings.html", {
+        "postings": postings,
         "application_count": len(applied_ids),
         "external_placement": False,
     })
@@ -528,22 +562,27 @@ def apply_to_posting(request, posting_id):
         messages.error(request, "External placements work directly with the OJT coordinator and cannot apply to Fieldwork company opportunities.")
         return redirect("portal:postings")
     posting = get_object_or_404(Posting, pk=posting_id, status=Posting.Status.PUBLISHED)
-    application = Application(
-        intern=intern,
-        posting=posting,
-        cover_letter=request.POST.get("cover_letter", "").strip(),
-        resume=request.FILES.get("resume"),
-    )
+    form = ApplicationSubmissionForm(request.POST, request.FILES)
+    if not form.is_valid():
+        return _render_postings_with_application_form(request, intern, posting, form)
+    application = form.save(commit=False)
+    application.intern = intern
+    application.posting = posting
     try:
         application.full_clean(validate_unique=False, validate_constraints=False)
     except ValidationError as error:
-        messages.error(request, " ".join(error.messages))
-        return redirect("portal:postings")
+        if hasattr(error, "message_dict"):
+            for field_name, errors in error.message_dict.items():
+                form.add_error(field_name if field_name in form.fields else None, errors)
+        else:
+            form.add_error(None, error.messages)
+        return _render_postings_with_application_form(request, intern, posting, form)
     try:
         with transaction.atomic():
             application.save()
     except IntegrityError:
-        messages.info(request, "You have already applied for this opportunity.")
+        form.add_error(None, "You have already applied for this opportunity.")
+        return _render_postings_with_application_form(request, intern, posting, form)
     else:
         audit(request.user, "application.submitted", application)
         messages.success(request, "Application submitted.")
@@ -1167,13 +1206,22 @@ def review_daily_report(request, report_id):
         pk=report_id,
         status__in=(DailyReport.Status.SUBMITTED, DailyReport.Status.CHANGES_REQUESTED),
     )
-    decision = request.POST.get("decision")
-    if decision not in {"review", "request_changes"}:
-        return HttpResponseBadRequest("Unknown daily report review decision.")
-    feedback = request.POST.get("supervisor_feedback", "").strip()
-    if decision == "request_changes" and not feedback:
-        messages.error(request, "Add feedback describing the requested changes.")
-        return redirect("portal:coordinator_daily_reports")
+    form = DailyReportReviewForm(request.POST)
+    if not form.is_valid():
+        return render(request, "portal/coordinator/daily_reports.html", {
+            "reports": DailyReport.objects.select_related(
+                "intern__user",
+                "intern",
+                "reviewer",
+            ).filter(
+                status__in=(DailyReport.Status.SUBMITTED, DailyReport.Status.CHANGES_REQUESTED)
+            ).order_by("work_date", "intern__user__last_name")[:100],
+            "pending_count": DailyReport.objects.filter(status=DailyReport.Status.SUBMITTED).count(),
+            "review_form": form,
+            "review_report_id": report.pk,
+        })
+    decision = form.cleaned_data["decision"]
+    feedback = form.cleaned_data["supervisor_feedback"]
 
     report.status = (
         DailyReport.Status.REVIEWED if decision == "review" else DailyReport.Status.CHANGES_REQUESTED
@@ -1892,16 +1940,17 @@ def _approve_attendance_time(request, log, queue_name, audit_action):
 def company_scorecards(request):
     company = get_object_or_404(CompanyProfile, user=request.user)
     interns = accepted_company_interns(company).order_by("user__last_name", "user__first_name")
-    selected_intern = None
-    week_start = request.GET.get("week", "")
-    form = ScorecardForm()
+    _raise_for_unavailable_scorecard_intern(interns, request)
+    selection_form = ScorecardSelectionForm(
+        request.POST if request.method == "POST" else None,
+        interns=interns,
+        initial={"week_start": request.GET.get("week", "")},
+    )
+    form = ScorecardForm(request.POST if request.method == "POST" else None)
     if request.method == "POST":
-        selected_intern = get_object_or_404(interns, pk=request.POST.get("intern_id"))
-        try:
-            week_start = date.fromisoformat(request.POST.get("week_start", ""))
-        except (TypeError, ValueError):
-            messages.error(request, "Choose a valid week start date.")
-        else:
+        if selection_form.is_valid():
+            selected_intern = selection_form.cleaned_data["intern_id"]
+            week_start = selection_form.cleaned_data["week_start"]
             scorecard = Scorecard.objects.filter(
                 company=company,
                 intern=selected_intern,
@@ -1927,9 +1976,8 @@ def company_scorecards(request):
         "company": company,
         "interns": interns,
         "scorecards": Scorecard.objects.filter(company=company).select_related("intern__user", "reviewer")[:50],
+        "selection_form": selection_form,
         "form": form,
-        "selected_intern": selected_intern,
-        "week_start": week_start,
     })
 
 
@@ -2049,16 +2097,17 @@ def approve_dtr(request, log_id):
 @role_required(User.Role.COORDINATOR)
 def scorecards(request):
     interns = InternProfile.objects.select_related("user").order_by("user__last_name", "user__first_name")
-    selected_intern = None
-    week_start = request.GET.get("week", "")
-    form = ScorecardForm()
+    _raise_for_unavailable_scorecard_intern(interns, request)
+    selection_form = ScorecardSelectionForm(
+        request.POST if request.method == "POST" else None,
+        interns=interns,
+        initial={"week_start": request.GET.get("week", "")},
+    )
+    form = ScorecardForm(request.POST if request.method == "POST" else None)
     if request.method == "POST":
-        selected_intern = get_object_or_404(InternProfile, pk=request.POST.get("intern_id"))
-        try:
-            week_start = date.fromisoformat(request.POST.get("week_start", ""))
-        except ValueError:
-            messages.error(request, "Choose a valid week start date.")
-        else:
+        if selection_form.is_valid():
+            selected_intern = selection_form.cleaned_data["intern_id"]
+            week_start = selection_form.cleaned_data["week_start"]
             scorecard = Scorecard.objects.filter(
                 company__isnull=True,
                 intern=selected_intern,
@@ -2079,7 +2128,20 @@ def scorecards(request):
                     audit(request.user, "scorecard.saved", scorecard)
                     messages.success(request, "Scorecard saved.")
                     return redirect("portal:scorecards")
-    return render(request, "portal/coordinator/scorecards.html", {"interns": interns, "scorecards": Scorecard.objects.filter(company__isnull=True).select_related("intern__user", "reviewer")[:50], "form": form, "selected_intern": selected_intern, "week_start": week_start})
+    return render(request, "portal/coordinator/scorecards.html", {
+        "interns": interns,
+        "scorecards": Scorecard.objects.filter(company__isnull=True).select_related("intern__user", "reviewer")[:50],
+        "selection_form": selection_form,
+        "form": form,
+    })
+
+
+def _raise_for_unavailable_scorecard_intern(interns, request):
+    intern_id = request.POST.get("intern_id", "")
+    if intern_id.isdecimal() and len(intern_id) <= 19:
+        numeric_id = int(intern_id)
+        if numeric_id <= 9223372036854775807 and not interns.filter(pk=numeric_id).exists():
+            raise Http404
 
 
 @role_required(User.Role.COORDINATOR)

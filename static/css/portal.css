@@ -49,8 +49,8 @@
 }
 
 * { box-sizing: border-box; }
-html { min-width: 20rem; font-size: 14px; }
-body { margin: 0; min-width: 20rem; background: var(--paper); font-size: var(--font-base); line-height: 1.6; }
+html { font-size: 14px; }
+body { margin: 0; background: var(--paper); font-size: var(--font-base); line-height: 1.6; }
 a { color: var(--forest); text-decoration-thickness: .094rem; text-underline-offset: .1875rem; }
 button, input, select, textarea { font: inherit; }
 .topbar { min-height: 4.5rem; display: flex; align-items: center; gap: 1rem; padding: .75rem max(1.5rem, calc((100vw - 82rem) / 2)); border-bottom: .0625rem solid var(--line); background: var(--surface); }
@@ -75,7 +75,7 @@ button, input, select, textarea { font: inherit; }
 .profile-name { overflow: hidden; color: var(--ink); font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .user-menu form { margin: 0; }
 .guest-nav { display: flex; align-items: center; gap: 1.25rem; margin-left: auto; }
-.guest-nav a { min-height: 2.75rem; display: inline-flex; align-items: center; font-size: var(--font-sm); font-weight: 700; }
+.guest-nav a { width: auto; min-height: 2.75rem; display: inline-flex; flex: 0 0 auto; align-items: center; font-size: var(--font-sm); font-weight: 700; white-space: nowrap; }
 .guest-nav a { padding: 0; border-left: 0; }
 .guest-nav a::before { content: none; }
 .text-button { min-height: 2.75rem; display: flex; align-items: center; gap: .625rem; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: var(--font-sm); font-weight: 700; cursor: pointer; }
@@ -205,6 +205,12 @@ textarea { resize: vertical; line-height: 1.45; }
 .password-visibility-toggle { position: absolute; right: .25rem; width: 2.5rem; height: 2.5rem; display: grid; place-items: center; border: 0; border-radius: .25rem; color: var(--muted); background: transparent; cursor: pointer; }
 .password-visibility-toggle:hover, .password-visibility-toggle:focus-visible { color: var(--forest); background: var(--mint); }
 .password-visibility-toggle svg { width: 1.25rem; height: 1.25rem; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.password-visibility-toggle svg [hidden] { display: none !important; }
+.password-feedback { display: block; margin-top: .25rem; font-size: .75rem; line-height: 1.35; }
+.password-feedback:empty { display: none; }
+.password-feedback[data-state="invalid"] { color: var(--coral); }
+.password-feedback[data-state="valid"] { color: var(--forest); }
+.password-feedback[data-state="neutral"] { color: var(--muted); }
 .progress-panel { max-width: 100%; }
 .progress-panel .section-heading { align-items: center; }
 .progress-panel .section-heading strong { font-size: 1rem; }
@@ -251,12 +257,12 @@ textarea { resize: vertical; line-height: 1.45; }
 .role-tabs { display: grid; grid-template-columns: 1fr 1fr; margin: 1.25rem 0; border-bottom: .0625rem solid var(--line); }
 .role-tabs button { padding: .625rem; border: 0; border-bottom: .125rem solid transparent; color: var(--muted); background: transparent; font-weight: 700; cursor: pointer; }
 .role-tabs button[aria-selected="true"] { color: var(--forest); border-color: var(--forest); }
-.register-layout { min-height: calc(100vh - 3rem); align-items: start; grid-template-columns: minmax(0, 1fr) minmax(28rem, 42rem); max-width: 90rem; }
+.register-layout { min-height: calc(100vh - 3rem); align-items: start; grid-template-columns: minmax(16rem, .9fr) minmax(28rem, 1.1fr); max-width: 90rem; }
 .register-copy { position: sticky; top: 1.5rem; height: calc(100vh - 3rem); display: flex; flex-direction: column; justify-content: center; }
 .register-panel { width: 100%; padding: 1.875rem; border-radius: var(--radius-md); }
 .register-form { gap: 1.25rem; }
 .registration-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 1.25rem; row-gap: 1rem; }
-.registration-grid p { min-width: 0; margin: 0; }
+.registration-grid > [data-registration-field] { min-width: 0; margin: 0; }
 .register-form input:not([type="hidden"]), .register-form select { height: 2.75rem; min-height: 2.75rem; margin-top: .375rem; padding: .5rem .75rem; border: .0625rem solid var(--border); border-radius: var(--radius-md); }
 .register-form textarea { height: 3.75rem; min-height: 3.75rem; margin-top: .375rem; padding: .375rem .75rem; border: .0625rem solid var(--border); border-radius: var(--radius-md); }
 .register-form input:focus, .register-form select:focus, .register-form textarea:focus { outline: .125rem solid rgba(72, 38, 63, .12); border-color: var(--primary); }
@@ -264,6 +270,10 @@ textarea { resize: vertical; line-height: 1.45; }
 .register-form [hidden] { display: none; }
 .registration-full-width { grid-column: 1 / -1; }
 .registration-address textarea { resize: none; }
+.company-profile-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .875rem 1.25rem; }
+.company-profile-grid > p { min-width: 0; margin: 0; }
+.company-profile-grid > p label { display: block; margin-bottom: .3125rem; }
+.company-location-summary { margin: 0 0 1rem; }
 .quick-links { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: 0 1.5rem; }
 .quick-links a { display: flex; justify-content: space-between; padding: .875rem .25rem; border: 0; border-bottom: .0625rem solid var(--line); border-radius: 0; color: var(--ink); background: transparent; text-decoration: none; font-size: var(--font-base); font-weight: 700; }
 .quick-links a span { color: var(--forest); }
@@ -297,7 +307,7 @@ input:focus, select:focus, textarea:focus { outline: .1875rem solid rgba(72, 38,
 .panel, .listing, .quick-links a { transition: box-shadow .18s ease, border-color .18s ease, transform .18s ease; }
 .quick-links a:hover { color: var(--primary); background: var(--surface-soft); }
 .table-wrap table:not(.attendance-summary-table) { min-width: 36rem; }
-.auth-layout { width: 100%; max-width: 65rem; }
+.auth-layout { width: 100%; }
 .auth-copy h1 { font-size: clamp(2rem, 3.5vw, 2.875rem); }
 .auth-panel h2 { font-size: var(--font-xl); }
 
@@ -312,6 +322,10 @@ input:focus, select:focus, textarea:focus { outline: .1875rem solid rgba(72, 38,
 }
 @media (max-width: 48rem) {
   .topbar { position: sticky; top: 0; z-index: 20; min-height: var(--mobile-header-height); justify-content: space-between; padding: .5rem 1rem; }
+  .topbar:not(.sidebar) { gap: .5rem; }
+  .topbar:not(.sidebar) .sidebar-brand-row { width: auto; flex: 0 0 auto; }
+  .topbar:not(.sidebar) .guest-nav { flex: 0 0 auto; }
+  .guest-nav { gap: .625rem; }
   .topbar.sidebar { inset: 0 0 auto; width: 100%; height: var(--mobile-header-height); min-height: var(--mobile-header-height); flex-direction: row; align-items: center; padding: .5rem 1rem; border-right: 0; border-bottom: .0625rem solid var(--line); }
   .sidebar-brand-row { width: 100%; padding: 0; }
   .menu-toggle { width: 2.75rem; height: 2.75rem; display: grid; align-content: center; justify-items: center; gap: .3rem; padding: .5rem; border: .0625rem solid var(--line); border-radius: .5rem; background: #fff; cursor: pointer; }
@@ -340,6 +354,9 @@ input:focus, select:focus, textarea:focus { outline: .1875rem solid rgba(72, 38,
   .button, .button-small, .text-button { min-height: 2.75rem; }
 }
 @media (max-width: 30rem) {
+  .topbar:not(.sidebar) { flex-wrap: wrap; justify-content: flex-start; padding: .5rem .75rem; }
+  .topbar:not(.sidebar) .sidebar-brand-row { flex: 1 1 100%; }
+  .topbar:not(.sidebar) .guest-nav { margin-left: 0; }
   .page-shell { width: calc(100% - 1.25rem); }
   .panel { padding: 1rem; }
   .metric-grid { grid-template-columns: minmax(0, 1fr); }
@@ -347,6 +364,7 @@ input:focus, select:focus, textarea:focus { outline: .1875rem solid rgba(72, 38,
   .register-copy { position: static; height: auto; }
   .registration-grid { grid-template-columns: minmax(0, 1fr); }
   .registration-full-width { grid-column: auto; }
+  .company-profile-grid { grid-template-columns: minmax(0, 1fr); }
   .table-wrap table:not(.attendance-summary-table) { min-width: 34rem; }
   .guest-nav { gap: .75rem; }
   .guest-nav a { font-size: var(--font-sm); }

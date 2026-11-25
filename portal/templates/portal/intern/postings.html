@@ -1,3 +1,42 @@
-{% extends "base.html" %}{% block title %}Opportunities | Fieldwork{% endblock %}
-{% block content %}<div class="page-heading"><div><p class="eyebrow">INTERN WORKSPACE</p><h1>Opportunities</h1><p class="muted">{% if external_placement %}Your external placement is managed directly with the OJT coordinator.{% else %}Explore open placements and submit an application.{% endif %}</p></div>{% if not external_placement %}<span class="quiet-count">{{ application_count }} applications</span>{% endif %}</div>
-<div class="listing-stack">{% for posting in postings %}<article class="listing"><div class="listing-top"><div><p class="eyebrow">{{ posting.company.organization }}</p><h2>{{ posting.title }}</h2></div><span class="status">{{ posting.get_status_display }}</span></div><p>{{ posting.description|linebreaksbr }}</p><div class="listing-meta"><span>{{ posting.location }}{% if posting.remote %} · Remote eligible{% endif %}</span><span>{{ posting.openings }} opening{{ posting.openings|pluralize }}</span></div><form method="post" enctype="multipart/form-data" action="{% url 'portal:apply' posting.id %}" class="apply-form">{% csrf_token %}<label>Cover note<textarea name="cover_letter" rows="2" maxlength="3000"></textarea></label><label>Resume<input type="file" name="resume" accept=".pdf,.docx,.png,.jpg,.jpeg"></label><button class="button button-primary" type="submit">Apply</button></form></article>{% empty %}<section class="empty-state"><h2>{% if external_placement %}Using an outside host{% else %}No open opportunities right now{% endif %}</h2><p>{% if external_placement %}Your attendance and daily reports go to the OJT coordinator. A coordinator must assign your worksite before attendance is available. Change your placement type in your profile if you want to apply to a Fieldwork company.{% else %}Published placements will appear here.{% endif %}</p></section>{% endfor %}</div>{% endblock %}
+{% extends "base.html" %}
+{% block title %}Opportunities | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">INTERN WORKSPACE</p>
+    <h1>Placement opportunities</h1>
+    <p class="muted">{{ application_count }} application{{ application_count|pluralize }} submitted.</p>
+  </div>
+</div>
+<div class="listing-stack">
+  {% for posting in postings %}
+  <article class="listing">
+    <div class="listing-top">
+      <div><p class="eyebrow">{{ posting.company.organization }}</p><h2>{{ posting.title }}</h2></div>
+      <span class="status">{{ posting.get_status_display }}</span>
+    </div>
+    <p>{{ posting.description|linebreaksbr }}</p>
+    <div class="listing-meta">
+      <span>{{ posting.location }}{% if posting.remote %} · Remote eligible{% endif %}</span>
+      <span>{{ posting.openings }} opening{{ posting.openings|pluralize }}</span>
+    </div>
+    <form method="post" enctype="multipart/form-data" action="{% url 'portal:apply' posting.id %}" class="apply-form">
+      {% csrf_token %}
+      {{ posting.apply_form.non_field_errors }}
+      <label for="{{ posting.apply_form.cover_letter.id_for_label }}">Cover note</label>
+      {{ posting.apply_form.cover_letter }}
+      {{ posting.apply_form.cover_letter.errors }}
+      <label for="{{ posting.apply_form.resume.id_for_label }}">Resume</label>
+      {{ posting.apply_form.resume }}
+      {{ posting.apply_form.resume.errors }}
+      <button class="button button-primary" type="submit">Apply</button>
+    </form>
+  </article>
+  {% empty %}
+  <section class="empty-state">
+    <h2>{% if external_placement %}Using an outside host{% else %}No open opportunities right now{% endif %}</h2>
+    <p>{% if external_placement %}Your external placement is managed directly with the OJT coordinator. Your attendance and daily reports go to the coordinator, who must assign your worksite before attendance is available. Change your placement type in your profile if you want to apply to a Fieldwork company.{% else %}Published placements will appear here.{% endif %}</p>
+  </section>
+  {% endfor %}
+</div>
+{% endblock %}

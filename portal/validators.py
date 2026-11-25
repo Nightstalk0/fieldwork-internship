@@ -61,3 +61,20 @@ class FileSizeAndTypeValidator:
             raise ValidationError("The file content could not be verified.")
         if not detected_type and guessed_type not in self.allowed_types:
             raise ValidationError("Upload a PDF, image, DOCX, ZIP, or plain text file.")
+
+
+@deconstructible
+class ResumeFileValidator(FileSizeAndTypeValidator):
+    allowed_types = {
+        "application/pdf",
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+    allowed_extensions = {".pdf", ".docx", ".png", ".jpg", ".jpeg", ".webp"}
+
+    def __call__(self, uploaded_file):
+        super().__call__(uploaded_file)
+        if Path(uploaded_file.name).suffix.lower() not in self.allowed_extensions:
+            raise ValidationError("Upload a PDF, DOCX, PNG, JPG, or WEBP resume.")

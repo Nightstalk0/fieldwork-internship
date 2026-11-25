@@ -1,14 +1,16 @@
 from datetime import timedelta
 
 from django.conf import settings
-from django.core.validators import MaxValueValidator, MinValueValidator
+from django.core.validators import MaxLengthValidator, MaxValueValidator, MinValueValidator, RegexValidator
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import DurationField, ExpressionWrapper, F, Q, Sum
 from django.db.models.functions import TruncWeek
 from django.utils import timezone
 
-from .validators import FileSizeAndTypeValidator
+from accounts.validators import validate_person_name, validate_philippine_phone_number
+
+from .validators import FileSizeAndTypeValidator, ResumeFileValidator
 
 
 def face_capture_image_expiry():
@@ -59,18 +61,29 @@ class InternProfile(models.Model):
         PLATFORM = "platform", "Company using Fieldwork"
         EXTERNAL = "external", "External company (not using Fieldwork)"
 
+    class YearLevel(models.IntegerChoices):
+        FIRST_YEAR = 1, "1st Year"
+        SECOND_YEAR = 2, "2nd Year"
+        THIRD_YEAR = 3, "3rd Year"
+        FOURTH_YEAR = 4, "4th Year"
+
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="intern_profile")
     student_id = models.CharField(max_length=64, unique=True, null=True, blank=True)
     university = models.CharField(max_length=180, blank=True)
     course = models.CharField(max_length=180, blank=True)
-    year_level = models.PositiveSmallIntegerField(null=True, blank=True)
+    year_level = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        choices=YearLevel.choices,
+        validators=[MinValueValidator(1), MaxValueValidator(4)],
+    )
     placement_type = models.CharField(
         max_length=12,
         choices=PlacementType.choices,
         default=PlacementType.PLATFORM,
     )
     external_host = models.CharField(max_length=180, blank=True)
-    resume = models.FileField(upload_to="resumes/%Y/%m/", blank=True, validators=[FileSizeAndTypeValidator()])
+    resume = models.FileField(upload_to="resumes/%Y/%m/", blank=True, validators=[ResumeFileValidator()])
     created_at = models.DateTimeField(auto_now_add=True)
 
     def save(self, *args, **kwargs):
@@ -178,12 +191,28 @@ class CompanyProfile(models.Model):
     website = models.URLField(blank=True)
     address = models.CharField(max_length=255, blank=True)
     company_name = models.CharField(max_length=180, blank=True)
-    company_address = models.TextField(blank=True)
+    company_address = models.TextField(default="")
+    barangay = models.CharField(max_length=100, default="")
+    city_municipality = models.CharField(max_length=120, default="")
+    province = models.CharField(max_length=120, default="")
+    postal_code = models.CharField(
+        max_length=4,
+        blank=True,
+        validators=[RegexValidator(r"^[0-9]{4}$", "Enter a 4-digit Philippine postal code.")],
+    )
     industry_type = models.CharField(max_length=32, choices=IndustryType.choices, blank=True)
-    contact_person_name = models.CharField(max_length=180, blank=True)
+    contact_person_name = models.CharField(
+        max_length=180,
+        blank=True,
+        validators=[validate_person_name],
+    )
     contact_person_position = models.CharField(max_length=120, blank=True)
     official_email = models.EmailField(blank=True)
-    contact_number = models.CharField(max_length=32, blank=True)
+    contact_number = models.CharField(
+        max_length=32,
+        blank=True,
+        validators=[validate_philippine_phone_number],
+    )
     company_website = models.URLField(blank=True)
     moa_reference_number = models.CharField(max_length=120, blank=True)
     verified = models.BooleanField(default=False)
@@ -223,13 +252,25 @@ class WorksiteLocation(models.Model):
     )
     name = models.CharField(max_length=120)
     address = models.CharField(max_length=255)
-    latitude = models.DecimalField(max_digits=9, decimal_places=6)
-    longitude = models.DecimalField(max_digits=9, decimal_places=6)
+    latitude = models.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+        validators=[MinValueValidator(-90), MaxValueValidator(90)],
+    )
+    longitude = models.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+        validators=[MinValueValidator(-180), MaxValueValidator(180)],
+    )
     radius_meters = models.PositiveSmallIntegerField(
         default=100,
         validators=[MinValueValidator(10), MaxValueValidator(5000)],
     )
-    reported_accuracy_meters = models.PositiveIntegerField(null=True, blank=True)
+    reported_accuracy_meters = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1)],
+    )
     approval_status = models.CharField(
         max_length=12,
         choices=ApprovalStatus.choices,
@@ -280,6 +321,11 @@ class AcademicPeriod(models.Model):
     period = models.CharField(max_length=12, choices=Period.choices)
     starts_on = models.DateField()
     ends_on = models.DateField()
+
+    def clean(self):
+        super().clean()
+        if self.starts_on and self.ends_on and self.ends_on < self.starts_on:
+            raise ValidationError({"ends_on": "The end date must be on or after the start date."})
 
     class Meta:
         ordering = ("starts_on", "period")
@@ -336,11 +382,19 @@ class Posting(models.Model):
     description = models.TextField()
     location = models.CharField(max_length=180)
     remote = models.BooleanField(default=False)
-    openings = models.PositiveSmallIntegerField(default=1)
+    openings = models.PositiveSmallIntegerField(
+        default=1,
+        validators=[MinValueValidator(1)],
+    )
     start_date = models.DateField(null=True, blank=True)
     end_date = models.DateField(null=True, blank=True)
     status = models.CharField(max_length=12, choices=Status.choices, default=Status.DRAFT, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    def clean(self):
+        super().clean()
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            raise ValidationError({"end_date": "The end date must be on or after the start date."})
 
     class Meta:
         ordering = ("-created_at",)
@@ -359,8 +413,8 @@ class Application(models.Model):
 
     intern = models.ForeignKey(InternProfile, on_delete=models.CASCADE, related_name="applications")
     posting = models.ForeignKey(Posting, on_delete=models.CASCADE, related_name="applications")
-    cover_letter = models.TextField(blank=True)
-    resume = models.FileField(upload_to="applications/%Y/%m/", validators=[FileSizeAndTypeValidator()], blank=True)
+    cover_letter = models.TextField(blank=True, validators=[MaxLengthValidator(3000)])
+    resume = models.FileField(upload_to="applications/%Y/%m/", validators=[ResumeFileValidator()], blank=True)
     status = models.CharField(max_length=12, choices=Status.choices, default=Status.SUBMITTED, db_index=True)
     submitted_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

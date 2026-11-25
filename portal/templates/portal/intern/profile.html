@@ -16,13 +16,13 @@
     <p class="muted">While at your OJT site, capture its location and submit it for supervisor approval. The approved coordinates will then be used for attendance geofencing.</p>
     <form method="post" action="{% url 'portal:intern_worksite_registration' %}" class="stack-form" id="intern-worksite-request-form">
       {% csrf_token %}
-      <label for="worksite-name">Worksite name</label>
-      <input id="worksite-name" name="name" maxlength="120" required>
-      <label for="worksite-address">Address or site details</label>
-      <input id="worksite-address" name="address" maxlength="255" required>
-      {{ worksite_request_form.latitude }}
-      {{ worksite_request_form.longitude }}
-      {{ worksite_request_form.reported_accuracy_meters }}
+    {{ worksite_request_form.name.label_tag }}
+    {{ worksite_request_form.name }}{{ worksite_request_form.name.errors }}
+    {{ worksite_request_form.address.label_tag }}
+    {{ worksite_request_form.address }}{{ worksite_request_form.address.errors }}
+    {{ worksite_request_form.latitude }}{{ worksite_request_form.latitude.errors }}
+    {{ worksite_request_form.longitude }}{{ worksite_request_form.longitude.errors }}
+    {{ worksite_request_form.reported_accuracy_meters }}{{ worksite_request_form.reported_accuracy_meters.errors }}
       <div class="clock-actions">
         <button class="button button-secondary" type="button" id="capture-intern-worksite-location">Get current location</button>
       </div>

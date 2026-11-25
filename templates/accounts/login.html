@@ -11,12 +11,13 @@
         {% if field.name == "password" %}
         <div class="password-input-wrap">
           {{ field }}
-          <button class="password-visibility-toggle" type="button" aria-label="Show password" aria-pressed="false" title="Show password">
-            <svg width="20" height="20" aria-hidden="true" viewBox="0 0 24 24" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+          <button class="password-visibility-toggle" type="button" data-password-toggle aria-controls="id_password" aria-label="Show password" aria-pressed="false" title="Show password">
+            <svg data-password-icon width="20" height="20" aria-hidden="true" viewBox="0 0 24 24" focusable="false"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"></path><circle data-password-pupil cx="12" cy="12" r="3"></circle><path data-password-slash d="m3 3 18 18" hidden></path></svg>
           </button>
         </div>
         {% else %}{{ field }}{% endif %}
         {{ field.errors }}
+        {% if field.name == "password" %}<span class="password-feedback" id="login-password-feedback" data-login-password-feedback aria-live="polite"></span>{% endif %}
         {% if field.help_text %}<small class="helptext">{{ field.help_text }}</small>{% endif %}
       </div>
       {% endfor %}
@@ -26,14 +27,3 @@
   </div>
 </section>
 {% endblock %}
-{% block scripts %}<script>
-  const passwordInput = document.getElementById("id_password");
-  const passwordToggle = document.querySelector(".password-visibility-toggle");
-  passwordToggle.addEventListener("click", () => {
-    const revealPassword = passwordInput.type === "password";
-    passwordInput.type = revealPassword ? "text" : "password";
-    passwordToggle.setAttribute("aria-pressed", String(revealPassword));
-    passwordToggle.setAttribute("aria-label", revealPassword ? "Hide password" : "Show password");
-    passwordToggle.title = revealPassword ? "Hide password" : "Show password";
-  });
-</script>{% endblock %}

@@ -9,10 +9,28 @@
   </div>
 </div>
 
+{% if company.company_address or company.barangay or company.city_municipality or company.province %}
+<p class="muted company-location-summary"><strong>Registered location:</strong> {{ company.company_address }}{% if company.barangay %}, Barangay {{ company.barangay }}{% endif %}{% if company.city_municipality %}, {{ company.city_municipality }}{% endif %}{% if company.province %}, {{ company.province }}{% endif %}{% if company.postal_code %} {{ company.postal_code }}{% endif %}</p>
+{% endif %}
+
 <section class="panel form-panel">
   <form method="post" class="stack-form">
     {% csrf_token %}
-    {{ form.as_p }}
+    <div class="company-profile-grid">
+      <p>{{ form.company_name.label_tag }}{{ form.company_name }}{{ form.company_name.errors }}</p>
+      <p>{{ form.industry_type.label_tag }}{{ form.industry_type }}{{ form.industry_type.errors }}</p>
+      <p class="registration-full-width">{{ form.company_address.label_tag }}{{ form.company_address }}{{ form.company_address.errors }}</p>
+      <p>{{ form.barangay.label_tag }}{{ form.barangay }}{{ form.barangay.errors }}</p>
+      <p>{{ form.city_municipality.label_tag }}{{ form.city_municipality }}{{ form.city_municipality.errors }}</p>
+      <p>{{ form.province.label_tag }}{{ form.province }}{{ form.province.errors }}</p>
+      <p>{{ form.postal_code.label_tag }}{{ form.postal_code }}{{ form.postal_code.errors }}<small class="helptext">Optional · 4 digits</small></p>
+      <p>{{ form.contact_person_name.label_tag }}{{ form.contact_person_name }}{{ form.contact_person_name.errors }}</p>
+      <p>{{ form.contact_person_position.label_tag }}{{ form.contact_person_position }}{{ form.contact_person_position.errors }}</p>
+      <p>{{ form.official_email.label_tag }}{{ form.official_email }}{{ form.official_email.errors }}</p>
+      <p>{{ form.contact_number.label_tag }}{{ form.contact_number }}{{ form.contact_number.errors }}</p>
+      <p>{{ form.company_website.label_tag }}{{ form.company_website }}{{ form.company_website.errors }}</p>
+      <p>{{ form.moa_reference_number.label_tag }}{{ form.moa_reference_number }}{{ form.moa_reference_number.errors }}</p>
+    </div>
     <div class="form-actions">
       <a class="button button-secondary" href="{% url 'portal:company_dashboard' %}">Cancel</a>
       <button class="button button-primary" type="submit">Save profile</button>

@@ -19,7 +19,15 @@ from cryptography.fernet import Fernet
 
 from accounts.models import User
 from ml_engine.face_recognition import FaceImageError, decrypt_embedding
-from .forms import InternProfileForm
+from .forms import (
+    ApplicationSubmissionForm,
+    CompanyProfileForm,
+    DailyReportReviewForm,
+    InternProfileForm,
+    PostingForm,
+    ScorecardSelectionForm,
+    WorksiteLocationForm,
+)
 from .models import AcademicPeriod, Application, AttendanceFaceCapture, AttendanceLog, CompanyProfile, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, InternProfile, Posting, RiskAssessment, Scorecard, WeeklyReport, WorksiteLocation
 from .utils import haversine_distance_km
 from .validators import FileSizeAndTypeValidator
@@ -648,7 +656,11 @@ class PortalWorkflowTests(TestCase):
 
         response = self.client.get(reverse("portal:intern_dashboard"))
 
-        self.assertContains(response, 'class="nav-link-active" aria-current="page">Overview</a>')
+        self.assertContains(
+            response,
+            'href="/intern/dashboard/" class="nav-link-active" aria-current="page"',
+        )
+        self.assertContains(response, "Overview</a>")
 
     def test_intern_can_update_external_host_details_later(self):
         form = InternProfileForm(
@@ -682,6 +694,22 @@ class PortalWorkflowTests(TestCase):
         self.assertTrue(draft_form.is_valid(), draft_form.errors)
         draft_profile = draft_form.save()
         self.assertEqual(draft_profile.external_host, "")
+
+    def test_intern_profile_year_level_only_accepts_first_through_fourth_year(self):
+        form = InternProfileForm(
+            {
+                "student_id": "",
+                "university": "",
+                "course": "",
+                "year_level": "5",
+                "placement_type": InternProfile.PlacementType.PLATFORM,
+                "external_host": "",
+            },
+            instance=self.intern,
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("year_level", form.errors)
 
     def test_intern_can_save_incomplete_profile_without_requirement_gate(self):
         self.client.force_login(self.intern_user)
@@ -1589,11 +1617,15 @@ class PortalWorkflowTests(TestCase):
             {
                 "company_name": "Updated Host Organization",
                 "company_address": "12 Fieldwork Road",
+                "barangay": "San Isidro",
+                "city_municipality": "Makati",
+                "province": "Metro Manila",
+                "postal_code": "1200",
                 "industry_type": "it",
                 "contact_person_name": "Jamie Smith",
                 "contact_person_position": "HR Manager",
                 "official_email": "host@example.org",
-                "contact_number": "555-0101",
+                "contact_number": "0917-123-4567",
                 "company_website": "https://example.org",
                 "moa_reference_number": "MOA-2026-002",
             },
@@ -1604,8 +1636,113 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(self.company.organization, "Updated Host Organization")
         self.assertEqual(self.company.website, "https://example.org")
         self.assertEqual(self.company.address, "12 Fieldwork Road")
+        self.assertEqual(self.company.barangay, "San Isidro")
+        self.assertEqual(self.company.city_municipality, "Makati")
+        self.assertEqual(self.company.province, "Metro Manila")
+        self.assertEqual(self.company.postal_code, "1200")
         self.assertEqual(self.company.official_email, "host@example.org")
-        self.assertEqual(self.company.contact_number, "555-0101")
+        self.assertEqual(self.company.contact_number, "+639171234567")
+
+    def test_company_profile_rejects_invalid_phone_and_preserves_entered_value(self):
+        self.client.force_login(self.company_user)
+        response = self.client.post(
+            reverse("portal:company_profile"),
+            {
+                "company_name": "Updated Host Organization",
+                "company_address": "12 Fieldwork Road",
+                "barangay": "San Isidro",
+                "city_municipality": "Makati",
+                "province": "Metro Manila",
+                "postal_code": "",
+                "industry_type": "it",
+                "contact_person_name": "Jamie Smith",
+                "contact_person_position": "HR Manager",
+                "official_email": "host@example.org",
+                "contact_number": "0917ABC4567",
+                "company_website": "",
+                "moa_reference_number": "",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("contact_number", response.context["form"].errors)
+        self.assertEqual(
+            response.context["form"]["contact_number"].value(),
+            "0917ABC4567",
+        )
+
+    def test_company_profile_requires_location_fields(self):
+        form = CompanyProfileForm(
+            data={
+                "company_name": "Example Company",
+                "company_address": "12 Fieldwork Road",
+                "barangay": "San Isidro",
+                "city_municipality": "Makati",
+                "province": "",
+                "postal_code": "",
+                "industry_type": "it",
+                "contact_person_name": "Jamie Smith",
+                "contact_person_position": "HR Manager",
+                "official_email": "host@example.org",
+                "contact_number": "09171234567",
+                "company_website": "",
+                "moa_reference_number": "",
+            },
+            instance=self.company,
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("province", form.errors)
+
+    def test_posting_form_rejects_invalid_openings_and_date_order(self):
+        base_data = {
+            "title": "Operations Intern",
+            "description": "Support the placement team.",
+            "location": "Makati",
+            "remote": "on",
+            "openings": "0",
+            "start_date": "2026-10-12",
+            "end_date": "2026-10-11",
+            "status": Posting.Status.DRAFT,
+        }
+        form = PostingForm(data=base_data)
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("openings", form.errors)
+        self.assertIn("end_date", form.errors)
+
+    def test_scorecard_week_date_and_worksite_ranges_are_validated(self):
+        future_date = (timezone.localdate() + timedelta(days=1)).isoformat()
+        selection_form = ScorecardSelectionForm(
+            data={"intern_id": self.intern.pk, "week_start": future_date},
+            interns=InternProfile.objects.all(),
+        )
+        worksite_form = WorksiteLocationForm(data={
+            "name": "North office",
+            "address": "10 North Road",
+            "latitude": "14.600000",
+            "longitude": "121.000000",
+            "radius_meters": "5001",
+        })
+
+        self.assertFalse(selection_form.is_valid())
+        self.assertIn("week_start", selection_form.errors)
+        self.assertFalse(worksite_form.is_valid())
+        self.assertIn("radius_meters", worksite_form.errors)
+
+    def test_application_note_length_and_review_feedback_are_validated(self):
+        application_form = ApplicationSubmissionForm(data={
+            "cover_letter": "x" * 3001,
+        })
+        review_form = DailyReportReviewForm(data={
+            "decision": "request_changes",
+            "supervisor_feedback": "  ",
+        })
+
+        self.assertFalse(application_form.is_valid())
+        self.assertIn("cover_letter", application_form.errors)
+        self.assertFalse(review_form.is_valid())
+        self.assertIn("supervisor_feedback", review_form.errors)
 
     def test_applicant_screening_shows_pending_applications(self):
         self.intern.course = "Information Systems"
@@ -2017,7 +2154,10 @@ class PortalWorkflowTests(TestCase):
             reverse("portal:apply", args=(self.posting.pk,)),
             {"cover_letter": "Interested", "resume": SimpleUploadedFile("fake.pdf", b"not a real PDF")},
         )
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 200)
+        posting = next(item for item in response.context["postings"] if item.pk == self.posting.pk)
+        self.assertEqual(posting.apply_form["cover_letter"].value(), "Interested")
+        self.assertIn("resume", posting.apply_form.errors)
         self.assertFalse(Application.objects.filter(intern=self.intern, posting=self.posting).exists())
 
     def test_blank_student_ids_do_not_collide(self):

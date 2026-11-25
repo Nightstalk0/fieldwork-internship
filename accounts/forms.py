@@ -1,10 +1,12 @@
 from django import forms
 from django.conf import settings
 from django.contrib.auth.forms import AuthenticationForm, UserCreationForm
+from django.core.validators import RegexValidator
 
 from portal.models import CompanyProfile, InternProfile
 
 from .models import User
+from .validators import normalize_philippine_phone_number, validate_person_name
 
 if settings.CAPTCHA_ENABLED:
     from captcha.fields import CaptchaField
@@ -12,27 +14,72 @@ if settings.CAPTCHA_ENABLED:
 
 class LoginForm(AuthenticationForm):
     username = forms.CharField(widget=forms.TextInput(attrs={"autocomplete": "username"}))
-    password = forms.CharField(widget=forms.PasswordInput(attrs={"autocomplete": "current-password"}))
+    password = forms.CharField(widget=forms.PasswordInput(attrs={
+        "autocomplete": "current-password",
+        "aria-describedby": "login-password-feedback",
+    }))
     if settings.CAPTCHA_ENABLED:
         captcha = CaptchaField()
 
 
 class RegistrationForm(UserCreationForm):
-    email = forms.EmailField()
-    first_name = forms.CharField(max_length=150)
-    last_name = forms.CharField(max_length=150)
+    email = forms.EmailField(widget=forms.EmailInput(attrs={"autocomplete": "email"}))
+    first_name = forms.CharField(max_length=150, validators=[validate_person_name])
+    last_name = forms.CharField(max_length=150, validators=[validate_person_name])
+    phone = forms.CharField(
+        max_length=32,
+        required=False,
+        widget=forms.TextInput(attrs={
+            "type": "tel",
+            "inputmode": "tel",
+            "pattern": "[0-9+(). -]{7,32}",
+            "title": "Use a Philippine number with digits and standard separators.",
+            "autocomplete": "tel",
+        }),
+    )
     student_id = forms.CharField(max_length=64)
     university = forms.CharField(max_length=180)
     course = forms.CharField(max_length=180)
-    year_level = forms.IntegerField(min_value=1)
+    year_level = forms.TypedChoiceField(
+        choices=InternProfile.YearLevel.choices,
+        coerce=int,
+        empty_value=None,
+    )
     placement_type = forms.ChoiceField(choices=InternProfile.PlacementType.choices)
     company_name = forms.CharField(max_length=180)
-    company_address = forms.CharField(widget=forms.Textarea(attrs={"rows": 3}))
+    company_address = forms.CharField(
+        max_length=255,
+        label="Street, building, or office address",
+        widget=forms.Textarea(attrs={"rows": 2, "autocomplete": "street-address"}),
+    )
+    barangay = forms.CharField(max_length=100)
+    city_municipality = forms.CharField(max_length=120, label="City or municipality")
+    province = forms.CharField(max_length=120)
+    postal_code = forms.CharField(
+        max_length=4,
+        required=False,
+        widget=forms.TextInput(attrs={
+            "inputmode": "numeric",
+            "pattern": "[0-9]{4}",
+            "maxlength": 4,
+            "title": "Enter a 4-digit Philippine postal code.",
+        }),
+        validators=[RegexValidator(r"^[0-9]{4}$", "Enter a 4-digit Philippine postal code.")],
+    )
     industry_type = forms.ChoiceField(choices=CompanyProfile.IndustryType.choices)
-    contact_person_name = forms.CharField(max_length=180)
+    contact_person_name = forms.CharField(max_length=180, validators=[validate_person_name])
     contact_person_position = forms.CharField(max_length=120)
-    official_email = forms.EmailField()
-    contact_number = forms.CharField(max_length=32)
+    official_email = forms.EmailField(widget=forms.EmailInput(attrs={"autocomplete": "email"}))
+    contact_number = forms.CharField(
+        max_length=32,
+        widget=forms.TextInput(attrs={
+            "type": "tel",
+            "inputmode": "tel",
+            "pattern": "[0-9+(). -]{7,32}",
+            "title": "Use a Philippine number with digits and standard separators.",
+            "autocomplete": "tel",
+        }),
+    )
     company_website = forms.URLField(required=False)
     moa_reference_number = forms.CharField(max_length=120, required=False)
     role = forms.ChoiceField(
@@ -60,6 +107,10 @@ class RegistrationForm(UserCreationForm):
             "placement_type",
             "company_name",
             "company_address",
+            "barangay",
+            "city_municipality",
+            "province",
+            "postal_code",
             "industry_type",
             "contact_person_name",
             "contact_person_position",
@@ -76,6 +127,18 @@ class RegistrationForm(UserCreationForm):
             or self.initial.get("role")
             or User.Role.INTERN
         )
+        self.fields["username"].widget.attrs.setdefault("autocomplete", "username")
+        self.fields["password1"].widget.attrs.update({
+            "autocomplete": "new-password",
+            "minlength": 8,
+            "data-registration-password": "",
+            "aria-describedby": "password1-feedback",
+        })
+        self.fields["password2"].widget.attrs.update({
+            "autocomplete": "new-password",
+            "data-password-confirmation": "",
+            "aria-describedby": "password2-feedback",
+        })
         if role == User.Role.COMPANY:
             for field_name in (
                 "student_id",
@@ -93,6 +156,10 @@ class RegistrationForm(UserCreationForm):
             for field_name in (
                 "company_name",
                 "company_address",
+                "barangay",
+                "city_municipality",
+                "province",
+                "postal_code",
                 "industry_type",
                 "contact_person_name",
                 "contact_person_position",
@@ -100,6 +167,12 @@ class RegistrationForm(UserCreationForm):
                 "contact_number",
             ):
                 self.fields[field_name].required = False
+
+    def clean_phone(self):
+        return normalize_philippine_phone_number(self.cleaned_data.get("phone", ""))
+
+    def clean_contact_number(self):
+        return normalize_philippine_phone_number(self.cleaned_data.get("contact_number", ""))
 
     def clean_email(self):
         email = self.cleaned_data.get("email", "").strip().lower()

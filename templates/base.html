@@ -91,6 +91,112 @@
     sidebar?.querySelectorAll(".main-nav a").forEach((link) => {
       link.addEventListener("click", () => setMenuOpen(false));
     });
+    document.querySelectorAll("[data-password-toggle]").forEach((toggle) => {
+      const passwordInput = document.getElementById(toggle.getAttribute("aria-controls"));
+      if (!(passwordInput instanceof HTMLInputElement)) return;
+      const passwordPupil = toggle.querySelector("[data-password-pupil]");
+      const passwordSlash = toggle.querySelector("[data-password-slash]");
+      toggle.addEventListener("click", () => {
+        const revealPassword = passwordInput.type === "password";
+        passwordInput.type = revealPassword ? "text" : "password";
+        toggle.setAttribute("aria-pressed", String(revealPassword));
+        toggle.setAttribute("aria-label", revealPassword ? "Hide password" : "Show password");
+        toggle.title = revealPassword ? "Hide password" : "Show password";
+        passwordPupil.toggleAttribute("hidden", revealPassword);
+        passwordSlash.toggleAttribute("hidden", !revealPassword);
+      });
+    });
+    const loginPassword = document.getElementById("id_password");
+    const loginPasswordFeedback = document.querySelector("[data-login-password-feedback]");
+    if (loginPassword && loginPasswordFeedback) {
+      const updateLoginPasswordFeedback = (showRequired) => {
+        const isEmpty = !loginPassword.value;
+        loginPasswordFeedback.textContent = isEmpty
+          ? (showRequired ? "Enter your password." : "")
+          : "Password entered. Sign in to verify your credentials.";
+        loginPasswordFeedback.dataset.state = isEmpty
+          ? (showRequired ? "invalid" : "idle")
+          : "neutral";
+        if (isEmpty && showRequired) {
+          loginPassword.setAttribute("aria-invalid", "true");
+        } else {
+          loginPassword.removeAttribute("aria-invalid");
+        }
+      };
+      loginPassword.addEventListener("input", () => updateLoginPasswordFeedback(true));
+      loginPassword.addEventListener("blur", () => updateLoginPasswordFeedback(true));
+      updateLoginPasswordFeedback(false);
+    }
+
+    const registrationPassword = document.querySelector("[data-registration-password]");
+    const passwordConfirmation = document.querySelector("[data-password-confirmation]");
+    if (registrationPassword && passwordConfirmation) {
+      const passwordFeedback = document.querySelector("[data-password1-feedback]");
+      const confirmationFeedback = document.querySelector("[data-password2-feedback]");
+      const minLength = Number(registrationPassword.getAttribute("minlength")) || 8;
+      const setPasswordFeedback = (input, feedback, message, state) => {
+        feedback.textContent = message;
+        feedback.dataset.state = state;
+        if (state === "invalid") {
+          input.setAttribute("aria-invalid", "true");
+        } else {
+          input.removeAttribute("aria-invalid");
+        }
+      };
+      const clearServerErrors = (fieldName) => {
+        document.querySelector(`[data-password-server-errors="${fieldName}"]`)?.replaceChildren();
+      };
+      const validateRegistrationPassword = (showRequired) => {
+        const password = registrationPassword.value;
+        if (!password) {
+          setPasswordFeedback(
+            registrationPassword,
+            passwordFeedback,
+            showRequired ? "Enter a password." : "",
+            showRequired ? "invalid" : "idle",
+          );
+        } else if ([...password].length < minLength) {
+          setPasswordFeedback(registrationPassword, passwordFeedback, `Use at least ${minLength} characters.`, "invalid");
+        } else if ([...password].every((character) => /\p{N}/u.test(character))) {
+          setPasswordFeedback(registrationPassword, passwordFeedback, "The password cannot be entirely numeric.", "invalid");
+        } else {
+          setPasswordFeedback(
+            registrationPassword,
+            passwordFeedback,
+            "Basic rules met. Common-password and personal-detail checks run on submit.",
+            "valid",
+          );
+        }
+      };
+      const validatePasswordConfirmation = (showRequired) => {
+        const confirmation = passwordConfirmation.value;
+        if (!confirmation) {
+          setPasswordFeedback(
+            passwordConfirmation,
+            confirmationFeedback,
+            showRequired ? "Confirm your password." : "",
+            showRequired ? "invalid" : "idle",
+          );
+        } else if (confirmation !== registrationPassword.value) {
+          setPasswordFeedback(passwordConfirmation, confirmationFeedback, "Passwords do not match.", "invalid");
+        } else {
+          setPasswordFeedback(passwordConfirmation, confirmationFeedback, "Passwords match.", "valid");
+        }
+      };
+      registrationPassword.addEventListener("input", () => {
+        clearServerErrors("password1");
+        validateRegistrationPassword(true);
+        validatePasswordConfirmation(false);
+      });
+      registrationPassword.addEventListener("blur", () => validateRegistrationPassword(true));
+      passwordConfirmation.addEventListener("input", () => {
+        clearServerErrors("password2");
+        validatePasswordConfirmation(true);
+      });
+      passwordConfirmation.addEventListener("blur", () => validatePasswordConfirmation(true));
+      validateRegistrationPassword(false);
+      validatePasswordConfirmation(false);
+    }
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") setMenuOpen(false);
     });

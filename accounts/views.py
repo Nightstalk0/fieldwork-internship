@@ -40,6 +40,10 @@ def register(request):
             for field_name in (
                 "company_name",
                 "company_address",
+                "barangay",
+                "city_municipality",
+                "province",
+                "postal_code",
                 "industry_type",
                 "contact_person_name",
                 "contact_person_position",
