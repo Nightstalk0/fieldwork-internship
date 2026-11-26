@@ -648,7 +648,40 @@ class PortalWorkflowTests(TestCase):
 
         response = self.client.get(reverse("portal:intern_dashboard"))
 
-        self.assertContains(response, 'class="nav-link-active" aria-current="page">Overview</a>')
+        self.assertContains(response, 'href="/intern/dashboard/" class="nav-link-active" aria-current="page"')
+        self.assertContains(response, "Overview</a>")
+
+    def test_coordinator_navigation_highlights_route_families(self):
+        coordinator = User.objects.create_user(
+            username="coordinator-nav",
+            password="Safe-example-Password-927!",
+            role=User.Role.COORDINATOR,
+        )
+        self.client.force_login(coordinator)
+
+        route_expectations = (
+            (reverse("portal:coordinator_dashboard"), "/admin/dashboard/", "Overview"),
+            (reverse("portal:dtr_queue"), "/coordinator/dtr/", "DTR queue"),
+            (reverse("portal:coordinator_dtr_summary"), "/coordinator/dtr/", "DTR queue"),
+            (reverse("portal:coordinator_daily_reports"), "/coordinator/daily-reports/", "Daily reports"),
+            (reverse("portal:coordinator_users"), "/coordinator/users/", "User Directory"),
+            (reverse("portal:coordinator_face_enrollment"), "/coordinator/face-enrollment/", "Face enrollment"),
+            (
+                reverse("portal:coordinator_external_worksites"),
+                "/coordinator/external-worksites/",
+                "External worksites",
+            ),
+        )
+
+        for route, link_path, label in route_expectations:
+            with self.subTest(route=route):
+                response = self.client.get(route)
+                self.assertEqual(response.status_code, 200)
+                self.assertContains(
+                    response,
+                    f'href="{link_path}" class="nav-link-active" aria-current="page"',
+                )
+                self.assertContains(response, f"{label}</a>")
 
     def test_intern_can_update_external_host_details_later(self):
         form = InternProfileForm(

@@ -2,7 +2,7 @@
 {% block title %}Daily reports | Fieldwork{% endblock %}
 {% block content %}
 <div class="page-heading"><div><p class="eyebrow">INTERN WORKSPACE</p><h1>Daily report</h1><p class="muted">Send today's work and progress to your coordinator for review.</p></div></div>
-<section class="panel form-panel">
+<section class="panel form-panel form-panel-wide">
   <div class="section-heading"><h2>Report for {{ today|date:"l, F j, Y" }}</h2>{% if report %}<span class="status {% if report.status == 'reviewed' %}status-good{% elif report.status == 'changes_requested' %}status-risk{% endif %}">{{ report.get_status_display }}</span>{% endif %}</div>
   {% if report.supervisor_feedback %}<p class="requirement-feedback"><strong>Coordinator feedback:</strong> {{ report.supervisor_feedback }}</p>{% endif %}
   {% if report.status == 'submitted' %}<p class="muted">Your report is awaiting coordinator review.</p>{% elif report.status == 'reviewed' %}<p class="muted">Your report has been reviewed and is read-only.</p>{% endif %}
