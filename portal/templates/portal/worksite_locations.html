@@ -1,27 +1,86 @@
 {% extends "base.html" %}
 {% block title %}{{ page_title }} | Fieldwork{% endblock %}
+{% block head %}<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">{% endblock %}
 {% block content %}
 <div class="page-heading">
   <div>
-    <p class="eyebrow">{% if is_coordinator %}COORDINATOR WORKSPACE{% else %}HOST ORGANIZATION{% endif %}</p>
+    <p class="eyebrow">{% if is_coordinator or is_admin_company_manager %}ADMIN WORKSPACE{% else %}HOST ORGANIZATION{% endif %}</p>
     <h1>{{ page_title }}</h1>
     <p class="muted">{{ page_description }}</p>
   </div>
 </div>
+{% if is_read_only_company %}
+<section class="panel">
+  <div class="section-heading">
+    <h2>Approved attendance locations</h2>
+    <span class="muted">{{ worksites|length }} location{{ worksites|length|pluralize }}</span>
+  </div>
+  {% if worksites %}
+  <div class="company-worksite-grid">
+    {% for worksite in worksites %}
+    <article class="company-worksite-card">
+      <div class="company-worksite-heading">
+        <div>
+          <p class="eyebrow">APPROVED WORKSITE</p>
+          <h2>{{ worksite.name }}</h2>
+        </div>
+        {% if worksite.is_active %}<span class="status status-good">Approved · Active</span>
+        {% else %}<span class="status status-neutral">Approved · Inactive</span>{% endif %}
+      </div>
+      <p class="company-worksite-address"><strong>Complete address</strong><br>{{ worksite.address }}</p>
+      {% if worksite.intern %}
+      <p class="muted">Intern: {{ worksite.intern.user.get_full_name|default:worksite.intern.user.username }}</p>
+      {% endif %}
+      <p class="company-worksite-radius"><strong>Geofence radius:</strong> {{ worksite.radius_meters }} m</p>
+      <div
+        class="worksite-map company-worksite-map"
+        data-latitude="{{ worksite.latitude }}"
+        data-longitude="{{ worksite.longitude }}"
+        data-radius="{{ worksite.radius_meters }}"
+        aria-label="Map for {{ worksite.name }}"
+      ></div>
+      <p class="muted company-map-status" aria-live="polite"></p>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="company-worksite-empty">
+    No approved worksite is on file yet. The Intern must submit the location and an Admin must approve it before it can be used for attendance.
+  </p>
+  {% endif %}
+</section>
+{% else %}
 <section class="panel form-panel">
-  {% if pending_worksite_count %}<p class="status status-risk">{{ pending_worksite_count }} intern worksite request{{ pending_worksite_count|pluralize }} pending review</p>{% endif %}
-  <h2>{% if is_coordinator %}Assign external intern worksite{% else %}Enroll a company worksite{% endif %}</h2>
-  <p class="muted">Use your device while physically at the worksite. Attendance is accepted only when the intern is within the saved radius.</p>
+  {% if pending_worksite_count %}<p class="status status-risk">{{ pending_worksite_count }} {{ pending_worksite_label }} awaiting Admin approval</p>{% endif %}
+  <h2>{% if is_coordinator %}Assign external intern worksite{% elif is_admin_company_manager %}Register official Company worksite{% else %}Request a Company worksite location{% endif %}</h2>
+  <p class="muted">{% if is_coordinator %}External-placement worksite submissions remain inactive until Admin approval.{% elif is_admin_company_manager %}Register directly approved sites for a selected Company; Company-submitted changes remain pending until Admin review.{% else %}New Company worksite requests stay inactive until Admin approval.{% endif %} GPS capture must be accurate to ±{{ gps_max_accuracy_meters }} m or better.</p>
+  {% if not is_coordinator %}
+  <ol class="worksite-setup-steps">
+    <li>Search for the Company address.</li>
+    <li>Drag the pin to the exact entrance.</li>
+    <li>Interns can time in inside the shaded geofence.</li>
+  </ol>
+  {% endif %}
   <form method="post" class="stack-form" id="worksite-form">
     {% csrf_token %}
     <input type="hidden" name="action" value="create">
-    {{ form.as_p }}
-    <div class="clock-actions">
-      <button class="button button-secondary" type="button" id="capture-worksite-location">Use this device's location</button>
-      <span class="muted" id="worksite-location-status" aria-live="polite">Location has not been captured.</span>
+    {% for field in form %}
+      {% if field.name != "confirm_location" %}
+      <p>{{ field.label_tag }} {{ field }}{% if field.help_text %}<span class="helptext">{{ field.help_text }}</span>{% endif %}{{ field.errors }}</p>
+      {% endif %}
+    {% endfor %}
+    <div class="worksite-map-search">
+      <button class="button button-secondary" type="button" id="search-worksite-address">Search address on OpenStreetMap</button>
+      <span class="muted">Or drag the pin to set the exact location. OpenStreetMap contributors provide map data.</span>
     </div>
+    <div id="worksite-map" class="worksite-map" aria-label="Worksite location map"></div>
+    <div class="clock-actions">
+      <button class="button button-secondary" type="button" id="capture-worksite-location">Get current location</button>
+      <span class="muted" id="worksite-location-status" aria-live="polite">Location has not been captured. Maximum allowed GPS uncertainty: ±{{ gps_max_accuracy_meters }} m.</span>
+    </div>
+    <p>{{ form.confirm_location.label_tag }} {{ form.confirm_location }} {{ form.confirm_location.errors }}</p>
     <div class="form-actions">
-      <button class="button button-primary" type="submit">Enroll worksite</button>
+      <button class="button button-primary" type="submit">{% if is_coordinator %}Submit for Admin approval{% elif is_admin_company_manager %}Register approved worksite{% else %}Submit for Admin approval{% endif %}</button>
     </div>
   </form>
 </section>
@@ -34,8 +93,7 @@
     <table>
       <thead>
         <tr>
-          {% if is_coordinator %}<th>Intern</th>{% endif %}
-          {% if not is_coordinator %}<th>Intern</th>{% endif %}
+          {% if is_coordinator %}<th>Intern</th>{% elif is_admin_company_manager %}<th>Company</th>{% else %}<th>Intern</th>{% endif %}
           <th>Worksite</th><th>Address</th><th>Coordinates</th><th>Radius</th><th>Status</th><th>Action</th>
         </tr>
       </thead>
@@ -43,7 +101,7 @@
         {% for worksite in worksites %}
         <tr>
           {% if is_coordinator %}<td>{{ worksite.intern.user.get_full_name|default:worksite.intern.user.username }}</td>{% endif %}
-          {% if not is_coordinator %}<td>{% if worksite.intern_id %}{{ worksite.intern.user.get_full_name|default:worksite.intern.user.username }}{% else %}<span class="muted">Company site</span>{% endif %}</td>{% endif %}
+          {% if is_admin_company_manager %}<td>{{ worksite.company.company_name|default:"Company" }}</td>{% elif not is_coordinator %}<td>{% if worksite.intern_id %}{{ worksite.intern.user.get_full_name|default:worksite.intern.user.username }}{% else %}<span class="muted">Company site</span>{% endif %}</td>{% endif %}
           <td>{{ worksite.name }}</td>
           <td>{{ worksite.address }}</td>
           <td>{{ worksite.latitude }}, {{ worksite.longitude }}{% if worksite.reported_accuracy_meters %}<br><span class="muted">Accuracy ±{{ worksite.reported_accuracy_meters }} m</span>{% endif %}</td>
@@ -55,37 +113,15 @@
             {% else %}<span class="status">Inactive</span>{% endif %}
           </td>
           <td>
-            {% if worksite.approval_status == 'pending' %}
-            <div class="clock-actions">
+            {% if is_admin and worksite.is_active %}
               <form method="post">
                 {% csrf_token %}
-                <input type="hidden" name="action" value="review_intern_request">
+                <input type="hidden" name="action" value="deactivate">
                 <input type="hidden" name="worksite_id" value="{{ worksite.pk }}">
-                <input type="hidden" name="decision" value="approve">
-                <button class="button button-small button-primary" type="submit">Approve</button>
+                <button class="button button-small button-secondary" type="submit">Deactivate</button>
               </form>
-              <form method="post">
-                {% csrf_token %}
-                <input type="hidden" name="action" value="review_intern_request">
-                <input type="hidden" name="worksite_id" value="{{ worksite.pk }}">
-                <input type="hidden" name="decision" value="reject">
-                <button class="button button-small button-secondary" type="submit">Reject</button>
-              </form>
-            </div>
-            {% elif worksite.is_active and worksite.intern_id and not is_coordinator %}
-            <form method="post">
-              {% csrf_token %}
-              <input type="hidden" name="action" value="reset_intern_location">
-              <input type="hidden" name="worksite_id" value="{{ worksite.pk }}">
-              <button class="button button-small button-secondary" type="submit">Reset location</button>
-            </form>
-            {% elif worksite.is_active %}
-            <form method="post">
-              {% csrf_token %}
-              <input type="hidden" name="action" value="deactivate">
-              <input type="hidden" name="worksite_id" value="{{ worksite.pk }}">
-              <button class="button button-small button-secondary" type="submit">{% if worksite.intern_id %}Reset location{% else %}Deactivate{% endif %}</button>
-            </form>
+            {% elif worksite.company_id and not is_admin %}<span class="muted">Admin approval required for changes</span>
+            {% elif worksite.intern_id %}<span class="muted">Admin-managed</span>
             {% else %}<span class="muted">—</span>{% endif %}
           </td>
         </tr>
@@ -96,13 +132,49 @@
     </table>
   </div>
 </section>
+{% endif %}
 {% endblock %}
 {% block scripts %}
+{% if not is_read_only_company %}
 <script>
   const captureLocationButton = document.getElementById("capture-worksite-location");
   const locationStatus = document.getElementById("worksite-location-status");
+  const worksiteForm = document.getElementById("worksite-form");
   const latitudeInput = document.getElementById("id_latitude");
   const longitudeInput = document.getElementById("id_longitude");
+  const accuracyInput = document.getElementById("id_reported_accuracy_meters");
+  const confirmationCheckbox = document.getElementById("id_confirm_location");
+  const maximumAccuracyMeters = {{ gps_max_accuracy_meters }};
+  let worksiteMarker = null;
+  let worksiteMap = null;
+  let worksiteGeofenceCircle = null;
+
+  const setWorksiteCoordinates = (latitude, longitude) => {
+    latitudeInput.value = Number(latitude).toFixed(6);
+    longitudeInput.value = Number(longitude).toFixed(6);
+  };
+
+  worksiteForm.addEventListener("submit", (event) => {
+    const accuracy = Number(accuracyInput.value);
+    if (accuracyInput.value && (!Number.isFinite(accuracy) || accuracy <= 0 || accuracy > maximumAccuracyMeters)) {
+      event.preventDefault();
+      locationStatus.textContent = `GPS accuracy must be ±${maximumAccuracyMeters} m or better. Retry, or reposition the pin manually and confirm its location.`;
+      captureLocationButton.focus();
+    }
+  });
+
+  const markLocationChanged = () => {
+    accuracyInput.value = "";
+    confirmationCheckbox.checked = false;
+  };
+
+  const updateMapPoint = (latitude, longitude, recenter = false) => {
+    if (!worksiteMarker || !worksiteMap) return;
+    const point = [latitude, longitude];
+    worksiteMarker.setLatLng(point);
+    worksiteGeofenceCircle.setLatLng(point);
+    if (recenter) worksiteMap.setView(point);
+  };
 
   captureLocationButton.addEventListener("click", () => {
     if (!navigator.geolocation) {
@@ -112,14 +184,165 @@
     captureLocationButton.disabled = true;
     locationStatus.textContent = "Requesting current location…";
     navigator.geolocation.getCurrentPosition((position) => {
-      latitudeInput.value = position.coords.latitude.toFixed(6);
-      longitudeInput.value = position.coords.longitude.toFixed(6);
-      locationStatus.textContent = "Location captured. Check that you are at the correct worksite before saving.";
+      const accuracy = Number(position.coords.accuracy);
+      setWorksiteCoordinates(position.coords.latitude, position.coords.longitude);
+      updateMapPoint(position.coords.latitude, position.coords.longitude, true);
+      accuracyInput.value = Number.isFinite(accuracy) && accuracy > 0 ? String(Math.ceil(accuracy)) : "0";
+      confirmationCheckbox.checked = false;
+      if (!Number.isFinite(accuracy) || accuracy <= 0 || accuracy > maximumAccuracyMeters) {
+        locationStatus.textContent = `GPS accuracy is insufficient (±${Number.isFinite(accuracy) ? Math.ceil(accuracy) : "unknown"} m; required ±${maximumAccuracyMeters} m or better). Retry for a more accurate reading.`;
+      } else {
+        locationStatus.textContent = `Location captured with ±${Math.ceil(accuracy)} m accuracy. Review the address and pin, then confirm before submitting.`;
+      }
       captureLocationButton.disabled = false;
     }, () => {
       locationStatus.textContent = "Could not get the location. Allow location access and try again.";
       captureLocationButton.disabled = false;
     }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
   });
+
+  const initializeOpenStreetMap = () => {
+    const defaultPosition = [14.9500, 120.9167];
+    const savedLatitude = Number(latitudeInput.value);
+    const savedLongitude = Number(longitudeInput.value);
+    const hasSavedPosition = latitudeInput.value && longitudeInput.value
+      && Number.isFinite(savedLatitude) && Number.isFinite(savedLongitude);
+    const initialPosition = hasSavedPosition ? [savedLatitude, savedLongitude] : defaultPosition;
+    const radiusInput = document.getElementById("id_radius_meters");
+    worksiteMap = L.map("worksite-map").setView(initialPosition, 16);
+    const worksiteTiles = L.tileLayer("https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      subdomains: ["a", "b", "c"],
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors | HOT map style by <a href="https://www.openstreetmap.fr/">OpenStreetMap France</a>',
+    });
+    let tileErrorShown = false;
+    worksiteTiles.on("tileerror", () => {
+      if (tileErrorShown) return;
+      tileErrorShown = true;
+      locationStatus.textContent = "Map tiles could not be loaded. The pin can still be adjusted.";
+    });
+    worksiteTiles.addTo(worksiteMap);
+    worksiteMarker = L.marker(initialPosition, { draggable: true }).addTo(worksiteMap);
+    worksiteGeofenceCircle = L.circle(initialPosition, {
+      radius: Number(radiusInput.value) || 100,
+      color: "#4A1D1F",
+      fillColor: "#4A1D1F",
+      fillOpacity: 0.2,
+      weight: 1,
+    }).addTo(worksiteMap);
+    radiusInput.addEventListener("input", () => {
+      worksiteGeofenceCircle.setRadius(Number(radiusInput.value) || 100);
+      confirmationCheckbox.checked = false;
+    });
+    const savePinPosition = (point) => {
+      markLocationChanged();
+      setWorksiteCoordinates(point.lat, point.lng);
+      worksiteGeofenceCircle.setLatLng(point);
+      locationStatus.textContent = "Pin moved. The saved coordinates now match the pin position.";
+    };
+    worksiteMarker.on("dragend", (event) => savePinPosition(event.target.getLatLng()));
+    worksiteMap.on("click", (event) => {
+      worksiteMarker.setLatLng(event.latlng);
+      worksiteGeofenceCircle.setLatLng(event.latlng);
+      savePinPosition(event.latlng);
+    });
+
+    const addressInput = document.getElementById("id_address");
+    addressInput.addEventListener("input", () => { confirmationCheckbox.checked = false; });
+    const searchAddressButton = document.getElementById("search-worksite-address");
+    searchAddressButton.addEventListener("click", async () => {
+      const query = addressInput.value.trim();
+      if (!query) {
+        locationStatus.textContent = "Enter a worksite address before searching.";
+        addressInput.focus();
+        return;
+      }
+      searchAddressButton.disabled = true;
+      locationStatus.textContent = "Searching OpenStreetMap for the address…";
+      try {
+        const url = new URL("https://nominatim.openstreetmap.org/search");
+        url.search = new URLSearchParams({ q: query, format: "jsonv2", limit: "1" });
+        const response = await fetch(url, {
+          headers: { "Accept-Language": document.documentElement.lang || "en" },
+        });
+        if (!response.ok) throw new Error("Address search is temporarily unavailable.");
+        const results = await response.json();
+        const result = results[0];
+        const latitude = Number(result && result.lat);
+        const longitude = Number(result && result.lon);
+        if (!result || !Number.isFinite(latitude) || !Number.isFinite(longitude)
+          || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+          locationStatus.textContent = "No matching address was found. Try a more specific address or move the pin.";
+          return;
+        }
+        addressInput.value = result.display_name || query;
+        markLocationChanged();
+        setWorksiteCoordinates(latitude, longitude);
+        updateMapPoint(latitude, longitude, true);
+        locationStatus.textContent = "Address selected. Review the pin and allowed radius before saving.";
+      } catch (error) {
+        locationStatus.textContent = error instanceof Error
+          ? error.message
+          : "Address search failed. Try again or move the pin manually.";
+      } finally {
+        window.setTimeout(() => { searchAddressButton.disabled = false; }, 1000);
+      }
+    });
+  };
+  const leafletScript = document.createElement("script");
+  leafletScript.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+  leafletScript.integrity = "sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=";
+  leafletScript.crossOrigin = "";
+  leafletScript.onload = initializeOpenStreetMap;
+  leafletScript.onerror = () => {
+    locationStatus.textContent = "The map could not be loaded. You can still capture this device's location below.";
+  };
+  document.head.append(leafletScript);
 </script>
+{% elif worksites %}
+<script>
+  const initializeCompanyWorksiteMaps = () => {
+    document.querySelectorAll(".company-worksite-map").forEach((element) => {
+      const latitude = Number(element.dataset.latitude);
+      const longitude = Number(element.dataset.longitude);
+      const radius = Number(element.dataset.radius);
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)
+        || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+        return;
+      }
+
+      const point = [latitude, longitude];
+      const map = L.map(element).setView(point, 16);
+      const tiles = L.tileLayer("https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        subdomains: ["a", "b", "c"],
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors | HOT map style by <a href="https://www.openstreetmap.fr/">OpenStreetMap France</a>',
+      }).addTo(map);
+      tiles.on("tileerror", () => {
+        const status = element.parentElement.querySelector(".company-map-status");
+        if (status) status.textContent = "Map tiles could not be loaded right now. The approved address and geofence remain available above.";
+      });
+      L.marker(point).addTo(map);
+      L.circle(point, {
+        radius,
+        color: "#4A1D1F",
+        fillColor: "#4A1D1F",
+        fillOpacity: 0.2,
+        weight: 1,
+      }).addTo(map);
+    });
+  };
+  const leafletScript = document.createElement("script");
+  leafletScript.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+  leafletScript.integrity = "sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=";
+  leafletScript.crossOrigin = "";
+  leafletScript.onload = initializeCompanyWorksiteMaps;
+  leafletScript.onerror = () => {
+    document.querySelectorAll(".company-map-status").forEach((status) => {
+      status.textContent = "The map could not be loaded right now. The approved address and geofence remain available above.";
+    });
+  };
+  document.head.append(leafletScript);
+</script>
+{% endif %}
 {% endblock %}

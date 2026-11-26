@@ -20,7 +20,7 @@ MODEL_DIR = Path(__file__).resolve().parent / "models"
 SFACE_MODEL_PATH = MODEL_DIR / "face_recognition_sface_2021dec.onnx"
 YUNET_MODEL_PATH = MODEL_DIR / "face_detection_yunet_2023mar.onnx"
 SFACE_MODEL_VERSION = "opencv-sface-2021dec-v1"
-COSINE_MATCH_THRESHOLD = 0.363
+COSINE_MATCH_THRESHOLD = 0.65
 _MODEL_LOCK = Lock()
 
 
@@ -92,6 +92,25 @@ def decrypt_embedding(encrypted_embedding: bytes) -> bytes:
         ) from exc
 
 
+def cosine_similarity(first_embedding: bytes, second_embedding: bytes) -> float:
+    try:
+        first = np.frombuffer(bytes(first_embedding), dtype=np.float32)
+        second = np.frombuffer(bytes(second_embedding), dtype=np.float32)
+    except (TypeError, ValueError) as exc:
+        raise FaceModelError("A face embedding could not be read.") from exc
+    if first.size == 0 or first.shape != second.shape:
+        raise FaceModelError("Face embeddings have incompatible sizes.")
+    if not np.isfinite(first).all() or not np.isfinite(second).all():
+        raise FaceModelError("A face embedding contains invalid values.")
+    denominator = float(np.linalg.norm(first) * np.linalg.norm(second))
+    if denominator == 0:
+        raise FaceModelError("A face embedding has zero magnitude.")
+    similarity = float(np.dot(first, second) / denominator)
+    if not np.isfinite(similarity):
+        raise FaceModelError("Could not calculate face similarity.")
+    return similarity
+
+
 def encrypt_face_capture(image_bytes: bytes) -> bytes:
     try:
         return Fernet(_encryption_key()).encrypt(image_bytes)
@@ -142,8 +161,8 @@ def create_face_embedding(image: Image.Image) -> bytes:
             yunet, sface = _load_models()
             yunet.setInputSize((frame.shape[1], frame.shape[0]))
             _, yunet_faces = yunet.detect(frame)
-            if yunet_faces is None or len(yunet_faces) == 0:
-                raise FaceImageError("Could not align the detected face.")
+            if yunet_faces is None or len(yunet_faces) != 1:
+                raise FaceImageError("Capture must contain exactly one alignable face.")
             target_box = detections["detections"][0]["bbox"]
             aligned_face = max(
                 yunet_faces,

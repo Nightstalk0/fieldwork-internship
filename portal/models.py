@@ -117,6 +117,42 @@ class FaceEnrollment(models.Model):
         return f"Face enrollment: {self.intern}"
 
 
+class FaceReenrollmentRequest(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending admin approval"
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
+        COMPLETED = "completed", "Completed"
+
+    intern = models.ForeignKey(
+        InternProfile,
+        on_delete=models.CASCADE,
+        related_name="face_reenrollment_requests",
+    )
+    reason = models.CharField(max_length=500)
+    status = models.CharField(
+        max_length=12,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_face_reenrollment_requests",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+
+    def __str__(self):
+        return f"Face re-registration request: {self.intern}"
+
+
 class OJTRequirement(models.Model):
     class Category(models.TextChoices):
         SCHOOL = "school", "School and academic"
@@ -232,7 +268,7 @@ class CompanyProfile(models.Model):
 
 class WorksiteLocation(models.Model):
     class ApprovalStatus(models.TextChoices):
-        PENDING = "pending", "Pending supervisor review"
+        PENDING = "pending", "Pending admin review"
         APPROVED = "approved", "Approved"
         REJECTED = "rejected", "Rejected"
 
@@ -249,6 +285,13 @@ class WorksiteLocation(models.Model):
         null=True,
         blank=True,
         related_name="attendance_worksites",
+    )
+    application = models.ForeignKey(
+        "Application",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="worksite_locations",
     )
     name = models.CharField(max_length=120)
     address = models.CharField(max_length=255)
@@ -277,6 +320,7 @@ class WorksiteLocation(models.Model):
         default=ApprovalStatus.APPROVED,
         db_index=True,
     )
+    rejection_reason = models.TextField(blank=True, default="")
     reviewed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -619,9 +663,6 @@ class DailyReport(models.Model):
     reviewed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        constraints = [
-            models.UniqueConstraint(fields=("intern", "work_date"), name="uniq_daily_report_intern_day")
-        ]
         ordering = ("-work_date",)
 
 

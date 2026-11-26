@@ -3,7 +3,7 @@
 {% block content %}
 <div class="page-heading">
   <div>
-    <p class="eyebrow">PROGRAM OPERATIONS</p>
+    <p class="eyebrow">ADMIN WORKSPACE</p>
     <h1>Face-recognition pilot enrollment</h1>
     <p class="muted">Enroll an intern only while they are present and after obtaining their informed consent.</p>
   </div>
@@ -42,7 +42,7 @@
           <td>{% if intern.face_enrollment %}Enrolled{% else %}Not enrolled{% endif %}</td>
           <td>{% if intern.face_enrollment %}{{ intern.face_enrollment.consent_confirmed_at|date:"Y-m-d H:i" }}{% else %}—{% endif %}</td>
           <td>
-            {% if intern.face_enrollment %}
+            {% if intern.face_enrollment and is_admin %}
             <form method="post">
               {% csrf_token %}
               <input type="hidden" name="action" value="delete">

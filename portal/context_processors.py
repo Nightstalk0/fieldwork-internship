@@ -3,13 +3,15 @@ def portal_context(request):
         return {
             "pending_dtr_count": 0,
             "pending_daily_report_count": 0,
+            "is_admin": False,
         }
     from .models import AttendanceLog, DailyReport, pending_attendance_approval_count
 
-    if request.user.is_staff or request.user.role == "coordinator":
+    if request.user.is_admin:
         return {
             "pending_dtr_count": pending_attendance_approval_count(AttendanceLog.objects.all()),
             "pending_daily_report_count": DailyReport.objects.filter(status=DailyReport.Status.SUBMITTED).count(),
+            "is_admin": True,
         }
     if request.user.role == "company":
         from .models import Application
@@ -22,8 +24,10 @@ def portal_context(request):
         return {
             "pending_dtr_count": pending_attendance_approval_count(company_logs),
             "pending_daily_report_count": 0,
+            "is_admin": False,
         }
     return {
         "pending_dtr_count": 0,
         "pending_daily_report_count": 0,
+        "is_admin": False,
     }

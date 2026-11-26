@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}Admin approvals | Fieldwork{% endblock %}
+{% block head %}<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">ADMIN WORKSPACE</p>
+    <h1>Approval requests</h1>
+    <p class="muted">Approve face re-registration and official worksite location requests.</p>
+  </div>
+</div>
+<section class="panel">
+  <div class="section-heading"><h2>Face re-registration</h2><span class="muted">{{ face_requests|length }} pending</span></div>
+  {% for item in face_requests %}
+  <article class="weekly-report-entry">
+    <h3>{{ item.intern.user.get_full_name|default:item.intern.user.username }}{% if item.intern.student_id %} · {{ item.intern.student_id }}{% endif %}</h3>
+    <p>{{ item.reason }}</p>
+    <p class="muted">Requested {{ item.created_at|date:"M j, Y H:i" }}</p>
+    <div class="clock-actions">
+      <form method="post">{% csrf_token %}<input type="hidden" name="request_id" value="{{ item.pk }}"><button class="button button-primary" type="submit" name="action" value="approve_face_reset">Approve Reset</button></form>
+      <form method="post">{% csrf_token %}<input type="hidden" name="request_id" value="{{ item.pk }}"><button class="button button-secondary" type="submit" name="action" value="reject_face_reset">Reject</button></form>
+    </div>
+  </article>
+  {% empty %}<p class="muted">No face re-registration requests are waiting for approval.</p>{% endfor %}
+</section>
+<section class="panel">
+  <div class="section-heading"><h2>Worksite location requests</h2><span class="muted">{{ worksite_requests|length }} pending</span></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Requester and assignment</th><th>Worksite</th><th>Address</th><th>Coordinates</th><th>Radius</th><th>GPS accuracy</th><th>Submitted</th><th>Status</th><th>Map</th><th>Decision</th></tr></thead>
+      <tbody>
+        {% for site in worksite_requests %}
+        <tr>
+          <td>{% if site.company_id %}{{ site.company.company_name }} · Company{% else %}{{ site.intern.user.get_full_name|default:site.intern.user.username }} · Intern{% if site.application_id %}<br><span class="muted">{{ site.application.posting.company.company_name }} · {{ site.application.posting.title }}</span>{% endif %}{% endif %}</td>
+          <td>{{ site.name }}</td>
+          <td>{{ site.address }}</td>
+          <td>{{ site.latitude }}, {{ site.longitude }}</td>
+          <td>{{ site.radius_meters|default:100 }} m</td>
+          <td>{% if site.reported_accuracy_meters %}±{{ site.reported_accuracy_meters }} m{% else %}<span class="muted">Not reported</span>{% endif %}</td>
+          <td>{{ site.created_at|date:"M j, Y H:i" }}</td>
+          <td><span class="status status-risk">Pending</span></td>
+          <td>
+            <div class="worksite-map admin-worksite-map" data-latitude="{{ site.latitude }}" data-longitude="{{ site.longitude }}" data-radius="{{ site.radius_meters|default:100 }}" aria-label="Map preview of {{ site.name }}"></div>
+          </td>
+          <td><div class="clock-actions admin-worksite-decisions">
+            <form method="post" class="stack-form">{% csrf_token %}<input type="hidden" name="request_id" value="{{ site.pk }}">
+              {% if site.replacement_options %}
+              <label>Replace an existing Company site (optional)
+                <select name="replace_worksite_id">
+                  <option value="">Keep existing sites; add this one</option>
+                  {% for existing_site in site.replacement_options %}<option value="{{ existing_site.pk }}">{{ existing_site.name }} · {{ existing_site.address }}</option>{% endfor %}
+                </select>
+              </label>
+              {% endif %}
+              <label for="worksite-radius-{{ site.pk }}">Approved radius (m)</label>
+              <input id="worksite-radius-{{ site.pk }}" name="radius_meters" type="number" min="10" max="5000" step="1" value="{{ site.radius_meters|default:100 }}" required>
+              <button class="button button-small button-primary" type="submit" name="action" value="approve_worksite">Approve</button>
+            </form>
+            <form method="post" class="stack-form">{% csrf_token %}<input type="hidden" name="request_id" value="{{ site.pk }}">
+              <label for="worksite-review-reason-{{ site.pk }}">Rejection or correction reason</label>
+              <textarea id="worksite-review-reason-{{ site.pk }}" name="review_reason" rows="2" maxlength="1000" required></textarea>
+              <button class="button button-small button-secondary" type="submit" name="action" value="reject_worksite">Reject</button>
+              <button class="button button-small button-secondary" type="submit" name="action" value="request_worksite_corrections">Request corrections</button>
+            </form>
+          </div></td>
+        </tr>
+        {% empty %}<tr><td colspan="10" class="muted">No worksite requests are waiting for approval.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+  document.querySelectorAll(".admin-worksite-map").forEach((container) => {
+    const latitude = Number(container.dataset.latitude);
+    const longitude = Number(container.dataset.longitude);
+    const radius = Number(container.dataset.radius);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || !Number.isFinite(radius)) {
+      container.textContent = "The submitted map coordinates are invalid.";
+      return;
+    }
+    const position = [latitude, longitude];
+    const map = L.map(container).setView(position, 16);
+    L.tileLayer("https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      subdomains: ["a", "b", "c"],
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors | HOT map style by <a href="https://www.openstreetmap.fr/">OpenStreetMap France</a>',
+    }).addTo(map);
+    L.marker(position).addTo(map);
+    L.circle(position, {
+      radius,
+      color: "#4A1D1F",
+      fillColor: "#4A1D1F",
+      fillOpacity: 0.2,
+      weight: 1,
+    }).addTo(map);
+  });
+</script>
+{% endblock %}

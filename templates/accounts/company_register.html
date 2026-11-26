@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Company Partner Registration | Fieldwork{% endblock %}
+{% block content %}
+<section class="auth-layout register-layout">
+  <div class="auth-copy register-copy"><p class="eyebrow">COMPANY PARTNERS</p><h1>Build the next step into your work.</h1><p>Connect your organization with interns and admins in one shared workspace.</p></div>
+  <div class="auth-panel register-panel">
+    <h2>Register your company</h2>
+    <form method="post" class="stack-form">
+      {% csrf_token %}
+      {{ form.non_field_errors }}
+      {% for field in form %}
+      {% if field.name == "role" %}
+        {{ field }}
+      {% elif field.name == "password1" or field.name == "password2" %}
+      <div class="login-field">
+        {{ field.label_tag }}
+        <span class="password-input-wrap">
+          {{ field }}
+          <button class="password-visibility-toggle" type="button" data-password-toggle aria-controls="{{ field.id_for_label }}" aria-label="Show password" aria-pressed="false" title="Show password">
+            <svg data-password-icon width="20" height="20" aria-hidden="true" viewBox="0 0 24 24" focusable="false"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"></path><circle data-password-pupil cx="12" cy="12" r="3"></circle><path data-password-slash d="m3 3 18 18" hidden></path></svg>
+          </button>
+        </span>
+        {{ field.errors }}
+      </div>
+      {% else %}
+      <div class="login-field">
+        {{ field.label_tag }}{{ field }}{{ field.errors }}
+        {% if field.help_text %}<small class="helptext">{{ field.help_text|safe }}</small>{% endif %}
+      </div>
+      {% endif %}
+      {% endfor %}
+      <button class="button button-primary" type="submit">Create company account</button>
+    </form>
+    <p class="form-footnote">Already registered? <a href="{% url 'accounts:login' %}">Sign in to Fieldwork</a></p>
+  </div>
+</section>
+{% endblock %}

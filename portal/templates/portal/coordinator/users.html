@@ -3,7 +3,7 @@
 {% block content %}
 <div class="page-heading">
   <div>
-    <p class="eyebrow">PROGRAM OPERATIONS</p>
+    <p class="eyebrow">ADMIN WORKSPACE</p>
     <h1>User Directory</h1>
     <p class="muted">Manage intern profiles, face enrollment, worksites, and approved OJT hours.</p>
   </div>
@@ -81,13 +81,13 @@
             {% if user.directory_intern %}
             <div class="directory-actions">
               <a class="button button-small button-secondary" href="{% url 'portal:coordinator_dtr_detail' user.directory_intern.pk %}">View DTR</a>
-              {% if user.directory_face_enrolled %}
+              {% if is_admin and user.directory_face_enrolled %}
               <form method="post" action="{% url 'portal:coordinator_reset_user_face' user.directory_intern.pk %}" onsubmit="return confirm('Reset this face enrollment? This also deletes its associated attendance face captures.');">
                 {% csrf_token %}
                 <button class="button button-small button-secondary" type="submit">Reset Face</button>
               </form>
               {% endif %}
-              {% if user.directory_resettable_worksite %}
+              {% if is_admin and user.directory_resettable_worksite %}
               <form method="post" action="{% url 'portal:coordinator_reset_user_worksite' user.directory_intern.pk %}" onsubmit="return confirm('Reset this intern’s active or pending worksite location?');">
                 {% csrf_token %}
                 <button class="button button-small button-secondary" type="submit">Reset Worksite</button>

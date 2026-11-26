@@ -12,7 +12,9 @@ from django.test import override_settings
 from .face_capture import FaceCaptureError, decode_camera_image
 from .face_detector import detect_faces
 from .face_recognition import (
+    FaceImageError,
     compare_face_embedding,
+    cosine_similarity,
     create_face_embedding,
     decrypt_embedding,
     encrypt_embedding,
@@ -128,18 +130,67 @@ class FaceRecognitionTests(SimpleTestCase):
 
         self.assertEqual(len(embedding), 128 * 4)
 
+    @patch("ml_engine.face_recognition._image_to_bgr")
+    @patch("ml_engine.face_recognition._load_models")
+    @patch("ml_engine.face_recognition.detect_faces")
+    def test_embedding_rejects_multiple_alignment_faces(
+        self,
+        detect_faces_mock,
+        load_models_mock,
+        image_to_bgr_mock,
+    ):
+        detect_faces_mock.return_value = {
+            "face_detected": True,
+            "face_count": 1,
+            "detections": [{"confidence": 0.95, "bbox": [10, 10, 100, 100]}],
+        }
+        yunet = SimpleNamespace(
+            setInputSize=lambda _size: None,
+            detect=lambda _image: (
+                None,
+                [
+                    [10, 10, 90, 90, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.99],
+                    [20, 20, 90, 90, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.98],
+                ],
+            ),
+        )
+        load_models_mock.return_value = (yunet, None)
+        image_to_bgr_mock.return_value = np.zeros((120, 120, 3), dtype=np.uint8)
+
+        with self.assertRaises(FaceImageError):
+            create_face_embedding(Image.new("RGB", (120, 120)))
+
     @patch("ml_engine.face_recognition._load_models")
     @patch("ml_engine.face_recognition.decrypt_embedding", return_value=b"\x00" * (128 * 4))
     @patch("ml_engine.face_recognition.create_face_embedding", return_value=b"\x00" * (128 * 4))
-    def test_match_returns_similarity_and_pilot_label(self, create_embedding_mock, decrypt_mock, load_models_mock):
+    def test_match_requires_strict_similarity_threshold(self, create_embedding_mock, decrypt_mock, load_models_mock):
         recognizer = SimpleNamespace(match=lambda _current, _reference, _mode: 0.55)
         load_models_mock.return_value = (None, recognizer)
 
         result = compare_face_embedding(Image.new("RGB", (10, 10)), b"encrypted")
 
-        self.assertEqual(result, {"status": "matched", "similarity": 0.55})
+        self.assertEqual(result, {"status": "not_matched", "similarity": 0.55})
         create_embedding_mock.assert_called_once()
         decrypt_mock.assert_called_once_with(b"encrypted")
+
+    @patch("ml_engine.face_recognition._load_models")
+    @patch("ml_engine.face_recognition.decrypt_embedding", return_value=b"\x00" * (128 * 4))
+    @patch("ml_engine.face_recognition.create_face_embedding", return_value=b"\x00" * (128 * 4))
+    def test_match_at_threshold_is_accepted(self, _create_embedding_mock, _decrypt_mock, load_models_mock):
+        recognizer = SimpleNamespace(match=lambda _current, _reference, _mode: 0.65)
+        load_models_mock.return_value = (None, recognizer)
+
+        result = compare_face_embedding(Image.new("RGB", (10, 10)), b"encrypted")
+
+        self.assertEqual(result, {"status": "matched", "similarity": 0.65})
+
+    def test_cosine_similarity_compares_face_embedding_vectors(self):
+        first = np.array([1.0, 0.0], dtype=np.float32).tobytes()
+        same = np.array([2.0, 0.0], dtype=np.float32).tobytes()
+        different = np.array([0.0, 1.0], dtype=np.float32).tobytes()
+
+        self.assertEqual(cosine_similarity(first, same), 1.0)
+        self.assertEqual(cosine_similarity(first, different), 0.0)
 
 
 class PredictorFallbackTests(SimpleTestCase):

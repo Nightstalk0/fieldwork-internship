@@ -8,29 +8,45 @@
     <p class="muted">{% if company.verified %}Verified host organization{% else %}Profile awaiting verification{% endif %}</p>
   </div>
 </div>
-<section class="metric-grid" aria-label="Attendance setup">
+<section class="metric-grid" aria-label="Company monitoring overview">
   <div class="metric">
     <span><i class="metric-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></i>Pending attendance events</span>
     <strong>{{ pending_dtr_count }}</strong>
-    <small>Waiting for review</small>
+    <small>Waiting for attendance review</small>
   </div>
   <div class="metric">
     <span><i class="metric-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M5 21V7l7-4 7 4v14M10 21v-4h4v4"/></svg></i>Active worksites</span>
     <strong>{{ active_worksite_count }}</strong>
     <small>Used to verify intern location</small>
   </div>
+  <div class="metric">
+    <span>Accepted interns</span>
+    <strong>{{ accepted_intern_count }}</strong>
+    <small>Assigned to your company</small>
+  </div>
+  <div class="metric">
+    <span>Daily reports</span>
+    <strong>{{ daily_report_count }}</strong>
+    <small>Saved journal entries</small>
+  </div>
 </section>
 <div class="content-grid">
   <section class="panel">
-    <h2>Review attendance</h2>
-    <p class="muted">Review face captures and approve your interns' time-in and time-out records.</p>
+    <h2>Attendance monitoring</h2>
+    <p class="muted">Review time entries, approval status, and distance from each assigned worksite.</p>
     <a class="button button-primary" href="{% url 'portal:company_dtr_queue' %}">Open DTR queue</a>
     <a class="button button-secondary" href="{% url 'portal:company_dtr_summary' %}">View intern DTR summaries</a>
+    <a class="button button-secondary" href="{% url 'portal:company_attendance_history' %}">View attendance logs</a>
   </section>
   <section class="panel">
-    <h2>Set up worksite locations</h2>
-    <p class="muted">Enroll every approved work location. Interns must be within an active worksite's radius to record attendance.</p>
-    <a class="button button-primary" href="{% url 'portal:company_worksites' %}">Manage worksite locations</a>
+    <h2>Intern journals</h2>
+    <p class="muted">Read daily reports or switch to a weekly summary for accepted interns.</p>
+    <a class="button button-primary" href="{% url 'portal:company_daily_reports' %}">View daily and weekly journals</a>
+  </section>
+  <section class="panel">
+    <h2>Approved worksite locations</h2>
+    <p class="muted">View approved attendance locations. Interns submit worksite details for Admin review.</p>
+    <a class="button button-primary" href="{% url 'portal:company_worksites' %}">View worksite locations</a>
   </section>
 </div>
 {% endblock %}

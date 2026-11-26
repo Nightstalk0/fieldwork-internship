@@ -23,7 +23,8 @@
       {% endfor %}
       <input type="hidden" name="next" value="{{ next }}"><button class="button button-primary" type="submit">Continue</button>
     </form>
-    <p class="form-footnote">New to Fieldwork? <a href="{% url 'accounts:register' %}">Create an account</a></p>
+    <p class="form-footnote">New to Fieldwork? <a href="{% url 'accounts:register' %}">Create an intern account</a></p>
+    <p class="form-footnote">Company partner? <a href="{% url 'accounts:company_register' %}">Register your company</a>.</p>
   </div>
 </section>
 {% endblock %}

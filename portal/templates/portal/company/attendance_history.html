@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Attendance logs | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">HOST ORGANIZATION</p>
+    <h1>Attendance logs</h1>
+    <p class="muted">Read-only time, approval, and worksite-distance history for your accepted interns.</p>
+  </div>
+  <a class="button button-secondary" href="{% url 'portal:company_attendance_export' %}">Export CSV</a>
+</div>
+<section class="panel">
+  <form method="get" class="apply-form">
+    <label>Intern name or student ID<input type="search" name="q" value="{{ search }}" placeholder="Search interns"></label>
+    <label>Work date<input type="date" name="date" value="{{ date_filter }}"></label>
+    <button class="button button-secondary" type="submit">Filter</button>
+  </form>
+</section>
+<section class="panel">
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Intern</th><th>Date</th><th>Time in</th><th>Time out</th><th>Hours</th><th>Time-in location</th><th>Time-out location</th><th>Record status</th></tr></thead>
+      <tbody>
+        {% for log in logs %}
+        <tr>
+          <td>{{ log.intern.user.get_full_name|default:log.intern.user.username }}{% if log.intern.student_id %}<br><span class="muted">{{ log.intern.student_id }}</span>{% endif %}</td>
+          <td>{{ log.work_date|date:"M j, Y" }}</td>
+          <td>{{ log.clock_in|date:"H:i"|default:"—" }}<br><span class="status {% if log.time_in_approved %}status-good{% else %}status-neutral{% endif %}">{% if log.clock_in %}{% if log.time_in_approved %}Approved{% else %}Pending{% endif %}{% else %}Not recorded{% endif %}</span></td>
+          <td>{{ log.clock_out|date:"H:i"|default:"—" }}<br><span class="status {% if log.time_out_approved %}status-good{% else %}status-neutral{% endif %}">{% if log.clock_out %}{% if log.time_out_approved %}Approved{% else %}Pending{% endif %}{% else %}Not recorded{% endif %}</span></td>
+          <td>{{ log.hours_worked|floatformat:2 }}</td>
+          <td>{% if log.clock_in_distance_meters != None %}{{ log.clock_in_distance_meters|floatformat:0 }} m / {{ log.clock_in_allowed_radius_meters }} m{% if log.clock_in_within_location %}<br><span class="status status-good">Inside</span>{% else %}<br><span class="status status-risk">Outside</span>{% endif %}{% else %}<span class="muted">Unavailable</span>{% endif %}</td>
+          <td>{% if log.clock_out_distance_meters != None %}{{ log.clock_out_distance_meters|floatformat:0 }} m / {{ log.clock_out_allowed_radius_meters }} m{% if log.clock_out_within_location %}<br><span class="status status-good">Inside</span>{% else %}<br><span class="status status-risk">Outside</span>{% endif %}{% else %}<span class="muted">Unavailable</span>{% endif %}</td>
+          <td>{{ log.get_status_display }}</td>
+        </tr>
+        {% empty %}<tr><td colspan="8" class="muted">No attendance logs match these filters.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if page_obj.has_other_pages %}
+  <nav class="pagination" aria-label="Attendance log pages">
+    {% if page_obj.has_previous %}<a class="button button-small button-secondary" href="?q={{ search|urlencode }}&amp;date={{ date_filter|urlencode }}&amp;page={{ page_obj.previous_page_number }}">Previous</a>{% endif %}
+    <span class="muted">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
+    {% if page_obj.has_next %}<a class="button button-small button-secondary" href="?q={{ search|urlencode }}&amp;date={{ date_filter|urlencode }}&amp;page={{ page_obj.next_page_number }}">Next</a>{% endif %}
+  </nav>
+  {% endif %}
+</section>
+{% endblock %}

@@ -17,7 +17,17 @@ class RoleBasedRouteGuardMiddleware:
             None,
         )
         if required_role and request.user.is_authenticated:
-            if not (request.user.is_staff or request.user.role == required_role):
+            if request.path_info == "/company/worksites/":
+                has_access = request.user.is_admin or request.user.role == "company"
+            elif required_role == "coordinator":
+                has_access = request.user.is_admin
+            else:
+                has_access = (
+                    request.user.is_staff
+                    or request.user.is_superuser
+                    or request.user.role == required_role
+                )
+            if not has_access:
                 if request.headers.get("X-Requested-With") == "XMLHttpRequest":
                     return JsonResponse(
                         {"error": "Your account does not have access to this face-capture action."},

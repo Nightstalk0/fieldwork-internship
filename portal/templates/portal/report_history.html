@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}{% if is_admin %}Daily and weekly intern reports{% else %}Daily and weekly journals{% endif %} | Fieldwork{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">{% if is_admin %}ADMIN WORKSPACE{% else %}HOST ORGANIZATION{% endif %}</p>
+    <h1>{% if is_admin %}Daily and Weekly Intern Reports{% else %}Intern journals{% endif %}</h1>
+    <p class="muted">{% if is_admin %}Search daily reports and weekly summaries from all interns.{% else %}Read reports from interns accepted by your company.{% endif %}</p>
+  </div>
+  {% if is_admin %}<a class="button button-secondary" href="{% url 'portal:coordinator_daily_reports' %}">Review Pending Reports</a>{% endif %}
+</div>
+<section class="panel">
+  <nav class="report-view-toggle" aria-label="Report view">
+    <a class="button {% if view_mode == 'daily' %}button-primary{% else %}button-secondary{% endif %}" href="?view=daily{% if search %}&amp;q={{ search|urlencode }}{% endif %}{% if date_filter %}&amp;date={{ date_filter|urlencode }}{% endif %}"{% if view_mode == 'daily' %} aria-current="page"{% endif %}>Daily view</a>
+    <a class="button {% if view_mode == 'weekly' %}button-primary{% else %}button-secondary{% endif %}" href="?view=weekly{% if search %}&amp;q={{ search|urlencode }}{% endif %}{% if week_filter %}&amp;week={{ week_filter|urlencode }}{% endif %}"{% if view_mode == 'weekly' %} aria-current="page"{% endif %}>Weekly summary</a>
+  </nav>
+  <form method="get" class="apply-form report-history-filters">
+    <input type="hidden" name="view" value="{{ view_mode }}">
+    <label for="report-search">Intern name, username, or student ID<input id="report-search" type="search" name="q" value="{{ search }}" placeholder="Search by name, username, or student ID"></label>
+    {% if view_mode == 'weekly' %}
+    <label for="report-week">Week containing<input id="report-week" type="date" name="week" value="{{ week_filter }}"></label>
+    {% else %}
+    <label for="report-date">Work date<input id="report-date" type="date" name="date" value="{{ date_filter }}"></label>
+    {% endif %}
+    <button class="button button-secondary" type="submit">Filter</button>
+  </form>
+</section>
+{% if view_mode == 'daily' %}
+<section class="panel">
+  <div class="section-heading">
+    <h2>Daily Reports</h2>
+    <span class="status status-neutral">{{ report_count }} daily report{{ report_count|pluralize }}</span>
+  </div>
+  <div class="table-wrap">
+    <table class="report-history-table">
+      <thead><tr>{% if is_admin %}<th>Intern</th>{% endif %}<th>Date</th><th>Approved hours</th><th>Status</th><th>Tasks completed</th><th>Challenges</th></tr></thead>
+      <tbody>
+        {% for report in reports %}
+        <tr>
+          {% if is_admin %}<td>{{ report.intern.user.get_full_name|default:report.intern.user.username }}{% if report.intern.student_id %}<br><span class="muted">{{ report.intern.student_id }}</span>{% endif %}</td>{% endif %}
+          <td>{{ report.work_date|date:"M j, Y" }}<br><span class="muted">Submitted {{ report.submitted_at|date:"H:i" }}</span></td>
+          <td>{% if report.hours_worked %}{{ report.hours_worked|floatformat:2 }}{% else %}—{% endif %}</td>
+          <td><span class="status {% if report.status == 'reviewed' %}status-good{% elif report.status == 'changes_requested' %}status-risk{% endif %}">{{ report.get_status_display }}</span></td>
+          <td>{{ report.accomplishments|linebreaksbr }}</td>
+          <td>{{ report.challenges|default:"—"|linebreaksbr }}</td>
+        </tr>
+        {% empty %}<tr><td colspan="{% if is_admin %}6{% else %}5{% endif %}" class="empty-state-cell">No daily reports found for the selected filters.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% else %}
+<section class="weekly-report-group">
+  <div class="section-heading report-history-section-heading">
+    <h2>Weekly Summaries</h2>
+    <span class="status status-neutral">{{ weekly_summary_count }} weekly summar{{ weekly_summary_count|pluralize:"y,ies" }}</span>
+  </div>
+  {% for week in weekly_groups %}
+  <article class="panel">
+    <div class="section-heading">
+      <h2>Week of {{ week.start|date:"M j" }}–{{ week.end|date:"M j, Y" }}</h2>
+      <span class="status status-neutral">{{ week.hours|floatformat:2 }} approved hours · {{ week.reports|length }} report{{ week.reports|length|pluralize }}</span>
+    </div>
+    {% for report in week.reports %}
+    <div class="weekly-report-entry">
+      <h3>{% if is_admin %}{{ report.intern.user.get_full_name|default:report.intern.user.username }} · {% endif %}{{ report.work_date|date:"l, M j" }} · <span class="status {% if report.status == 'reviewed' %}status-good{% elif report.status == 'changes_requested' %}status-risk{% endif %}">{{ report.get_status_display }}</span></h3>
+      <p><strong>Tasks:</strong> {{ report.accomplishments|linebreaksbr }}</p>
+      {% if report.challenges %}<p><strong>Challenges:</strong> {{ report.challenges|linebreaksbr }}</p>{% endif %}
+      <p class="muted">Approved attendance hours: {% if report.hours_worked %}{{ report.hours_worked|floatformat:2 }}{% else %}—{% endif %}</p>
+    </div>
+    {% endfor %}
+  </article>
+  {% empty %}<section class="panel empty-state-cell">No weekly summaries found for the selected filters.</section>{% endfor %}
+</section>
+{% endif %}
+{% if page_obj.has_other_pages %}
+<nav class="pagination" aria-label="Journal pages">
+  {% if page_obj.has_previous %}<a class="button button-small button-secondary" href="?{{ query_string }}{% if query_string %}&amp;{% endif %}page={{ page_obj.previous_page_number }}">Previous</a>{% endif %}
+  <span class="muted">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
+  {% if page_obj.has_next %}<a class="button button-small button-secondary" href="?{{ query_string }}{% if query_string %}&amp;{% endif %}page={{ page_obj.next_page_number }}">Next</a>{% endif %}
+</nav>
+{% endif %}
+{% endblock %}

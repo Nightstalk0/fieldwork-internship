@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}Coordinator overview | Fieldwork{% endblock %}
+{% block title %}Admin overview | Fieldwork{% endblock %}
 {% block content %}
 <div class="page-heading">
   <div>
-    <p class="eyebrow">PROGRAM OPERATIONS</p>
+    <p class="eyebrow">ADMIN WORKSPACE</p>
     <h1>Attendance and report overview</h1>
     <p class="muted">Review attendance events, daily reports, and enrolled worksites.</p>
   </div>
@@ -34,6 +34,13 @@
     <strong>{{ active_worksite_count }}</strong>
     <small>Company and external placements</small>
   </div>
+  {% if is_admin %}
+  <div class="metric">
+    <span>Admin approvals</span>
+    <strong>{{ pending_worksite_request_count|add:pending_face_reenrollment_count }}</strong>
+    <small>Worksite and face requests</small>
+  </div>
+  {% endif %}
 </section>
 <section class="quick-links">
   <a href="{% url 'portal:dtr_queue' %}">Review attendance <span>→</span></a>
@@ -41,5 +48,9 @@
   <a href="{% url 'portal:coordinator_daily_reports' %}">Review daily reports <span>→</span></a>
   <a href="{% url 'portal:coordinator_external_worksites' %}">Assign external worksite locations <span>→</span></a>
   <a href="{% url 'portal:coordinator_face_enrollment' %}">Manage face enrollment <span>→</span></a>
+  {% if is_admin %}
+  <a href="{% url 'portal:admin_approvals' %}">Review admin approval requests <span>→</span></a>
+  <a href="{% url 'portal:admin_daily_reports' %}">Browse all intern journals <span>→</span></a>
+  {% endif %}
 </section>
 {% endblock %}

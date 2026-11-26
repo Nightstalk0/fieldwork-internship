@@ -1,10 +1,94 @@
-from django.test import TestCase
+from django.http import HttpResponse
+from django.test import RequestFactory, TestCase
 from django.urls import reverse
 
+from .middleware import RoleBasedRouteGuardMiddleware
 from .models import User
 
 
 class AccountFlowTests(TestCase):
+    def test_coordinator_role_displays_as_admin_without_changing_its_stored_value(self):
+        coordinator = User.objects.create_user(
+            username="existing-admin-role",
+            password="Safe-example-Password-927!",
+            role=User.Role.COORDINATOR,
+        )
+
+        coordinator.refresh_from_db()
+        self.assertEqual(coordinator.role, "coordinator")
+        self.assertEqual(coordinator.get_role_display(), "Admin")
+        self.assertTrue(coordinator.is_admin)
+
+    def test_staff_and_superuser_are_admin_without_changing_their_role(self):
+        staff_user = User.objects.create_user(
+            username="staff-admin-role",
+            password="Safe-example-Password-927!",
+            is_staff=True,
+        )
+        superuser = User.objects.create_user(
+            username="superuser-admin-role",
+            password="Safe-example-Password-927!",
+            is_superuser=True,
+            is_staff=False,
+        )
+        company = User.objects.create_user(
+            username="non-admin-company",
+            password="Safe-example-Password-927!",
+            role=User.Role.COMPANY,
+        )
+
+        self.assertTrue(staff_user.is_admin)
+        self.assertTrue(superuser.is_admin)
+        self.assertEqual(superuser.role, User.Role.INTERN)
+        self.assertFalse(company.is_admin)
+
+    def test_route_guard_allows_superuser_to_admin_routes_without_staff_flag(self):
+        superuser = User.objects.create_user(
+            username="superuser-route-access",
+            password="Safe-example-Password-927!",
+            is_superuser=True,
+            is_staff=False,
+        )
+        request = RequestFactory().get("/coordinator/dashboard/")
+        request.user = superuser
+        middleware = RoleBasedRouteGuardMiddleware(lambda _request: HttpResponse("ok"))
+
+        response = middleware(request)
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_route_guard_keeps_coordinator_out_of_intern_routes(self):
+        coordinator = User.objects.create_user(
+            username="admin-not-intern",
+            password="Safe-example-Password-927!",
+            role=User.Role.COORDINATOR,
+        )
+        request = RequestFactory().get("/intern/face/enroll/")
+        request.user = coordinator
+        middleware = RoleBasedRouteGuardMiddleware(lambda _request: HttpResponse("ok"))
+
+        response = middleware(request)
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_route_guard_allows_admin_worksite_management_but_not_other_company_routes(self):
+        coordinator = User.objects.create_user(
+            username="admin-company-worksite-access",
+            password="Safe-example-Password-927!",
+            role=User.Role.COORDINATOR,
+        )
+        middleware = RoleBasedRouteGuardMiddleware(lambda _request: HttpResponse("ok"))
+
+        worksite_request = RequestFactory().get("/company/worksites/")
+        worksite_request.user = coordinator
+        worksite_response = middleware(worksite_request)
+        self.assertEqual(worksite_response.status_code, 200)
+
+        dashboard_request = RequestFactory().get("/company/dashboard/")
+        dashboard_request.user = coordinator
+        dashboard_response = middleware(dashboard_request)
+        self.assertEqual(dashboard_response.status_code, 403)
+
     def test_login_page_has_accessible_password_visibility_toggle(self):
         response = self.client.get(reverse("accounts:login"))
 
@@ -15,34 +99,95 @@ class AccountFlowTests(TestCase):
         self.assertEqual(response.content.count(b'data-password-icon'), 1)
         self.assertEqual(response.content.count(b'class="password-visibility-toggle"'), 1)
         self.assertContains(response, "data-login-password-feedback")
+        self.assertContains(response, "Email or username")
+        self.assertContains(response, "Register your company")
+        self.assertNotContains(response, "Company Partner Portal")
         self.assertContains(response, 'passwordInput.type = revealPassword ? "text" : "password"')
 
-    def test_registration_uses_account_type_tabs_without_role_dropdown(self):
+    def test_legacy_company_login_url_redirects_to_the_main_sign_in_page(self):
+        response = self.client.get(reverse("accounts:company_login"))
+
+        self.assertRedirects(
+            response,
+            reverse("accounts:login"),
+            fetch_redirect_response=False,
+        )
+
+    def test_main_login_accepts_username_or_email_and_routes_each_role(self):
+        test_accounts = (
+            ("intern-main-login", "intern@example.test", User.Role.INTERN, "portal:intern_dashboard", "intern-main-login"),
+            ("company-main-login", "company@example.test", User.Role.COMPANY, "portal:company_dashboard", "company@example.test"),
+            ("admin-main-login", "admin@example.test", User.Role.COORDINATOR, "portal:coordinator_dashboard", "admin-main-login"),
+        )
+        for username, email, role, dashboard_name, identifier in test_accounts:
+            with self.subTest(role=role):
+                User.objects.create_user(
+                    username=username,
+                    email=email,
+                    password="Safe-example-Password-927!",
+                    role=role,
+                )
+                response = self.client.post(
+                    reverse("accounts:login"),
+                    {
+                        "username": identifier,
+                        "password": "Safe-example-Password-927!",
+                    },
+                )
+
+                self.assertRedirects(
+                    response,
+                    reverse("portal:dashboard"),
+                    fetch_redirect_response=False,
+                )
+                dashboard_response = self.client.get(reverse("portal:dashboard"))
+                self.assertRedirects(
+                    dashboard_response,
+                    reverse(dashboard_name),
+                    fetch_redirect_response=False,
+                )
+                self.client.logout()
+
+    def test_company_registration_page_forces_company_role(self):
+        response = self.client.post(
+            reverse("accounts:company_register"),
+            {
+                "username": "dedicated-company",
+                "role": User.Role.INTERN,
+                "company_name": "Dedicated Company",
+                "company_address": "12 Green Road",
+                "barangay": "San Isidro",
+                "city_municipality": "Makati",
+                "province": "Metro Manila",
+                "industry_type": "it",
+                "contact_person_name": "Jamie Smith",
+                "contact_person_position": "HR Manager",
+                "official_email": "dedicated@example.test",
+                "contact_number": "09171234567",
+                "password1": "Safe-example-Password-927!",
+                "password2": "Safe-example-Password-927!",
+            },
+        )
+
+        self.assertRedirects(response, reverse("accounts:login"))
+        user = User.objects.get(username="dedicated-company")
+        self.assertEqual(user.role, User.Role.COMPANY)
+        self.assertEqual(user.company_profile.company_name, "Dedicated Company")
+
+    def test_intern_registration_is_separate_from_company_registration(self):
         response = self.client.get(reverse("accounts:register"))
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'data-role="intern"')
-        self.assertContains(response, 'data-role="company"')
         self.assertContains(response, 'name="student_id"')
         self.assertContains(response, 'name="university"')
         self.assertContains(response, 'name="course"')
         self.assertContains(response, 'name="year_level"')
         self.assertContains(response, 'name="placement_type"')
-        self.assertContains(response, 'name="company_name"')
-        self.assertContains(response, 'name="company_address"')
-        self.assertContains(response, 'name="barangay"')
-        self.assertContains(response, 'name="city_municipality"')
-        self.assertContains(response, 'name="province"')
-        self.assertContains(response, 'name="postal_code"')
-        self.assertContains(response, 'name="industry_type"')
-        self.assertContains(response, 'name="contact_person_name"')
-        self.assertContains(response, 'name="contact_person_position"')
-        self.assertContains(response, 'name="official_email"')
-        self.assertContains(response, 'name="contact_number"')
-        self.assertContains(response, 'name="company_website"')
-        self.assertContains(response, 'name="moa_reference_number"')
         self.assertContains(response, '<input type="hidden" name="role"')
         self.assertContains(response, 'value="intern"')
+        self.assertNotContains(response, 'name="company_name"')
+        self.assertNotContains(response, 'data-role="company"')
+        self.assertContains(response, "Company Partner registration page")
         self.assertContains(response, 'aria-controls="id_password1"')
         self.assertContains(response, 'aria-controls="id_password2"')
         self.assertContains(response, '<select name="year_level"')
@@ -127,6 +272,30 @@ class AccountFlowTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(User.objects.filter(username="incomplete-intern").exists())
 
+    def test_main_registration_cannot_create_a_company_account(self):
+        response = self.client.post(
+            reverse("accounts:register"),
+            {
+                "username": "company-on-intern-form",
+                "role": User.Role.COMPANY,
+                "company_name": "Company on Intern Form",
+                "company_address": "12 Green Road",
+                "barangay": "San Isidro",
+                "city_municipality": "Makati",
+                "province": "Metro Manila",
+                "industry_type": "it",
+                "contact_person_name": "Jamie Smith",
+                "contact_person_position": "HR Manager",
+                "official_email": "main-register-company@example.test",
+                "contact_number": "09171234567",
+                "password1": "Safe-example-Password-927!",
+                "password2": "Safe-example-Password-927!",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(User.objects.filter(username="company-on-intern-form").exists())
+
     def test_registration_validates_phone_and_allows_common_name_punctuation(self):
         response = self.client.post(
             reverse("accounts:register"),
@@ -176,7 +345,7 @@ class AccountFlowTests(TestCase):
 
     def test_company_registration_requires_location_fields(self):
         response = self.client.post(
-            reverse("accounts:register"),
+            reverse("accounts:company_register"),
             {
                 "username": "incomplete-company",
                 "role": User.Role.COMPANY,
@@ -205,6 +374,14 @@ class AccountFlowTests(TestCase):
             password="Safe-example-Password-927!",
             role=User.Role.COMPANY,
         )
+        coordinator = User.objects.create_user(
+            username="portal-admin-only",
+            password="Safe-example-Password-927!",
+            role=User.Role.COORDINATOR,
+        )
+        self.client.force_login(coordinator)
+        self.assertEqual(self.client.get(reverse("admin:accounts_user_changelist")).status_code, 302)
+
         admin_user = User.objects.create_superuser(
             username="site-admin",
             email="admin@example.test",
@@ -221,7 +398,7 @@ class AccountFlowTests(TestCase):
 
     def test_company_registration_creates_company_profile(self):
         response = self.client.post(
-            reverse("accounts:register"),
+            reverse("accounts:company_register"),
             {
                 "username": "new-company",
                 "first_name": "North",

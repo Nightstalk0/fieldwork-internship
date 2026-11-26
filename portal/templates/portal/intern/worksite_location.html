@@ -1,0 +1,461 @@
+{% extends "base.html" %}{% block title %}Worksite Location | Fieldwork{% endblock %}
+{% block head %}<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">{% endblock %}
+{% block content %}
+<div class="page-heading"><div><p class="eyebrow">INTERN WORKSPACE</p><h1>Worksite Location</h1><p class="muted">Submit and manage the OJT worksite location used for approval and attendance.</p></div></div>
+<section class="panel form-panel" id="worksite-location">
+  <h2>OJT worksite location</h2>
+  {% if intern_worksites %}
+    {% for worksite in intern_worksites %}
+    <article class="weekly-report-entry">
+      <p class="status status-good">Approved · Active</p>
+      <p><strong>{% if worksite.company_id %}{{ worksite.company.company_name }} · {% endif %}{{ worksite.name }}</strong></p>
+      <p>{{ worksite.address }}</p>
+      <p class="muted">Approved location status: {{ worksite.get_approval_status_display }} · Official geofence radius: {{ worksite.radius_meters }} m</p>
+      <p class="muted">Coordinates: {{ worksite.latitude }}, {{ worksite.longitude }}{% if worksite.reported_accuracy_meters %} · Reported setup accuracy: ±{{ worksite.reported_accuracy_meters }} m{% endif %}</p>
+      <div
+        class="worksite-map intern-approved-worksite-map"
+        id="intern-approved-worksite-map-{{ forloop.counter }}"
+        data-latitude="{{ worksite.latitude }}"
+        data-longitude="{{ worksite.longitude }}"
+        data-radius="{{ worksite.radius_meters }}"
+        aria-label="Read-only approved worksite map"
+      ></div>
+    </article>
+    {% endfor %}
+    <p class="muted">This official location is read-only. Submit a new request below if the worksite needs to change; the current location remains active until Admin approval.</p>
+  {% else %}
+    <p class="status status-neutral">No approved OJT worksite is on file yet. Submit your worksite details below for Admin review.</p>
+  {% endif %}
+  {% if pending_intern_worksite %}
+  <article class="weekly-report-entry">
+    <p class="status status-risk">Pending Admin Approval</p>
+    <p><strong>{{ pending_intern_worksite.name }}</strong></p>
+    <p>{{ pending_intern_worksite.address }}</p>
+    <p class="muted">Submitted {{ pending_intern_worksite.created_at|date:"M j, Y H:i" }}{% if pending_intern_worksite.reported_accuracy_meters %} · GPS accuracy ±{{ pending_intern_worksite.reported_accuracy_meters }} m{% endif %}</p>
+  </article>
+  {% endif %}
+  {% if rejected_intern_worksite %}
+  <article class="weekly-report-entry">
+    <p class="status status-risk">Worksite request needs corrections</p>
+    <p><strong>{{ rejected_intern_worksite.name }}</strong> · {{ rejected_intern_worksite.address }}</p>
+    <p><strong>Admin's reason:</strong> {{ rejected_intern_worksite.rejection_reason }}</p>
+  </article>
+  {% endif %}
+  <details class="worksite-request-details" {% if not intern_worksites or worksite_form.errors %}open{% endif %}>
+    <summary>{% if intern_worksites %}Request a worksite change{% else %}Submit OJT worksite for approval{% endif %}</summary>
+    <p class="muted">Your submission is reviewed by Admin and will not replace an approved location unless approved. The default geofence is 100 meters.</p>
+    <form method="post" action="{% url 'portal:intern_worksite_registration' %}" class="stack-form" id="intern-worksite-request-form">
+      {% csrf_token %}
+      {% if worksite_form.application %}
+      <p>{{ worksite_form.application.label_tag }} {{ worksite_form.application }} {{ worksite_form.application.errors }}</p>
+      {% endif %}
+      <p>{{ worksite_form.name.label_tag }} {{ worksite_form.name }} {{ worksite_form.name.errors }}</p>
+      <p>{{ worksite_form.address.label_tag }} {{ worksite_form.address }} {{ worksite_form.address.errors }}</p>
+      <div class="worksite-map-search">
+        <button class="button button-secondary" type="button" id="search-intern-worksite-address">Search address on OpenStreetMap</button>
+        <span class="muted">Search for a Philippine address, select a match, then review the address and pin.</span>
+      </div>
+      <div id="intern-worksite-address-results" class="address-search-results" role="listbox" aria-label="Philippine address search results" hidden></div>
+      <div id="intern-worksite-map" class="worksite-map" aria-label="Select your OJT worksite location"></div>
+      {{ worksite_form.latitude }}
+      {{ worksite_form.longitude }}
+      {{ worksite_form.latitude.errors }}
+      {{ worksite_form.longitude.errors }}
+      {{ worksite_form.reported_accuracy_meters }}
+      {{ worksite_form.reported_accuracy_meters.errors }}
+      <div class="clock-actions">
+        <button class="button button-secondary" type="button" id="capture-intern-worksite-location">Get current location</button>
+        <span class="muted" id="intern-worksite-location-confirmation" aria-live="polite">Select a map pin or use current location. GPS accuracy must be {{ gps_max_accuracy_meters }} m or better.</span>
+      </div>
+      <p>{{ worksite_form.confirm_location.label_tag }} {{ worksite_form.confirm_location }} {{ worksite_form.confirm_location.errors }}</p>
+      <button class="button button-primary" type="submit" id="submit-intern-worksite-request" disabled>Submit for Admin approval</button>
+    </form>
+  </details>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+  window.ensureFieldworkLeaflet = () => {
+    if (window.L) return Promise.resolve();
+    if (!window.fieldworkLeafletPromise) {
+      window.fieldworkLeafletPromise = new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+        script.integrity = "sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=";
+        script.crossOrigin = "";
+        script.onload = resolve;
+        script.onerror = () => reject(new Error("The map could not be loaded."));
+        document.head.append(script);
+      });
+    }
+    return window.fieldworkLeafletPromise;
+  };
+
+  const internWorksiteForm = document.getElementById("intern-worksite-request-form");
+  if (internWorksiteForm) {
+    const captureLocationButton = document.getElementById("capture-intern-worksite-location");
+    const worksiteLocationStatus = document.getElementById("intern-worksite-location-confirmation");
+    const submitWorksiteButton = document.getElementById("submit-intern-worksite-request");
+    const worksiteNameField = document.getElementById("id_name");
+    const addressField = document.getElementById("id_address");
+    const addressResults = document.getElementById("intern-worksite-address-results");
+    const latitudeField = document.getElementById("id_latitude");
+    const longitudeField = document.getElementById("id_longitude");
+    const accuracyField = document.getElementById("id_reported_accuracy_meters");
+    const confirmationCheckbox = document.getElementById("id_confirm_location");
+    const maximumAccuracyMeters = {{ gps_max_accuracy_meters }};
+    let internWorksiteMap = null;
+    let internWorksiteMarker = null;
+    let internWorksiteCircle = null;
+    const requestDetails = internWorksiteForm.closest("details");
+    let reverseGeocodeRequestId = 0;
+    let lastNominatimRequestAt = 0;
+    let nominatimRequestQueue = Promise.resolve();
+    const fetchNominatim = (url, isCurrent = () => true) => {
+      const request = nominatimRequestQueue.then(async () => {
+        const delay = Math.max(0, 1000 - (Date.now() - lastNominatimRequestAt));
+        if (delay) await new Promise((resolve) => window.setTimeout(resolve, delay));
+        if (!isCurrent()) return null;
+        lastNominatimRequestAt = Date.now();
+        return fetch(url, { headers: { "Accept-Language": "en-PH,en" } });
+      });
+      nominatimRequestQueue = request.then(() => undefined, () => undefined);
+      return request;
+    };
+    const setInternWorksiteCoordinates = (latitude, longitude) => {
+      latitudeField.value = Number(latitude).toFixed(6);
+      longitudeField.value = Number(longitude).toFixed(6);
+    };
+    const updateInternWorksitePin = (latitude, longitude, recenter = true) => {
+      if (!internWorksiteMarker || !internWorksiteMap) return;
+      const point = [latitude, longitude];
+      internWorksiteMarker.setLatLng(point);
+      internWorksiteCircle.setLatLng(point);
+      if (recenter) internWorksiteMap.setView(point);
+    };
+    const updateInternWorksiteForm = () => {
+      const accuracy = Number(accuracyField.value);
+      const accuracyIsAcceptable = !accuracyField.value
+        || Number.isFinite(accuracy) && accuracy > 0 && accuracy <= maximumAccuracyMeters;
+      submitWorksiteButton.disabled = !(
+        worksiteNameField.value.trim()
+        && addressField.value.trim()
+        && latitudeField.value
+        && longitudeField.value
+        && accuracyIsAcceptable
+        && confirmationCheckbox.checked
+      );
+    };
+    const showLocationMessage = (title, detail) => {
+      const heading = document.createElement("strong");
+      heading.textContent = title;
+      const paragraph = document.createElement("p");
+      paragraph.textContent = detail;
+      worksiteLocationStatus.replaceChildren(heading, paragraph);
+    };
+
+    const reverseGeocodeWorksiteAddress = async (latitude, longitude, accuracy = null) => {
+      const requestId = ++reverseGeocodeRequestId;
+      const addressBeforeLookup = addressField.value;
+      const accuracyMessage = accuracy
+        ? `GPS accuracy is about ±${accuracy} m${accuracy > maximumAccuracyMeters ? `; it must be ${maximumAccuracyMeters} m or better` : ""}. `
+        : "";
+      showLocationMessage("Finding readable address", `${accuracyMessage}Looking up the selected map location with OpenStreetMap…`);
+      try {
+        const url = new URL("https://nominatim.openstreetmap.org/reverse");
+        url.search = new URLSearchParams({
+          lat: String(latitude),
+          lon: String(longitude),
+          format: "jsonv2",
+          zoom: "18",
+          addressdetails: "1",
+          "accept-language": "en-PH,en",
+        });
+        const response = await fetchNominatim(url, () => requestId === reverseGeocodeRequestId);
+        if (!response || requestId !== reverseGeocodeRequestId) return;
+        if (!response.ok) throw new Error("Address lookup is temporarily unavailable.");
+        const result = await response.json();
+        if (requestId !== reverseGeocodeRequestId) return;
+        const addressParts = result && result.address
+          ? [
+            result.address.house_number,
+            result.address.road,
+            result.address.neighbourhood,
+            result.address.suburb,
+            result.address.city_district,
+            result.address.city || result.address.town || result.address.village || result.address.municipality,
+            result.address.state,
+            result.address.postcode,
+            result.address.country,
+          ].filter(Boolean)
+          : [];
+        const readableAddress = (
+          result && typeof result.display_name === "string" && result.display_name.trim()
+        ) || addressParts.join(", ");
+        if (!readableAddress) throw new Error("No readable address was found for this location.");
+        if (addressField.value !== addressBeforeLookup) {
+          showLocationMessage("Address kept", "Your address changed during the lookup, so it was not overwritten. Review it against the selected map pin.");
+          return;
+        }
+        addressField.value = readableAddress;
+        updateInternWorksiteForm();
+        showLocationMessage(
+          "Readable address found",
+          `${accuracyMessage}${readableAddress} Review the address and pin, then confirm before submitting.`,
+        );
+        return true;
+      } catch {
+        if (requestId !== reverseGeocodeRequestId) return;
+        const existingAddressMessage = addressBeforeLookup.trim()
+          ? "Your existing address was kept."
+          : "No address was added.";
+        showLocationMessage(
+          "Address lookup unavailable",
+          `${accuracyMessage}${existingAddressMessage} Your selected pin and coordinates are unchanged. Search for or enter the address manually, then review and confirm.`,
+        );
+        return false;
+      }
+    };
+
+    const saveInternWorksitePin = (latitude, longitude) => {
+      setInternWorksiteCoordinates(latitude, longitude);
+      accuracyField.value = "";
+      confirmationCheckbox.checked = false;
+      updateInternWorksiteForm();
+      void reverseGeocodeWorksiteAddress(latitude, longitude);
+    };
+
+    captureLocationButton.addEventListener("click", () => {
+      if (!navigator.geolocation) {
+        showLocationMessage("Location unavailable", "This browser does not support geolocation.");
+        return;
+      }
+      captureLocationButton.disabled = true;
+      submitWorksiteButton.disabled = true;
+      showLocationMessage("Getting your location…", "Keep this page open while your device determines its position.");
+      navigator.geolocation.getCurrentPosition(async (position) => {
+        const { latitude, longitude, accuracy: reportedAccuracy } = position.coords;
+        if (
+          !Number.isFinite(latitude) || !Number.isFinite(longitude) || !Number.isFinite(reportedAccuracy)
+          || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180 || reportedAccuracy < 0
+        ) {
+          showLocationMessage("Invalid location", "Your device returned invalid coordinates. Try capturing your location again.");
+          captureLocationButton.disabled = false;
+          return;
+        }
+        const accuracy = Math.max(1, Math.ceil(reportedAccuracy));
+        setInternWorksiteCoordinates(latitude, longitude);
+        accuracyField.value = accuracy;
+        confirmationCheckbox.checked = false;
+        updateInternWorksitePin(latitude, longitude);
+        updateInternWorksiteForm();
+        await reverseGeocodeWorksiteAddress(latitude, longitude, accuracy);
+        captureLocationButton.disabled = false;
+      }, (error) => {
+        const messages = {
+          1: "Location permission was denied. Allow location access in your browser and try again.",
+          2: "Your device could not determine a location. Move to an area with a better GPS signal and try again.",
+          3: "The location request timed out. Try again.",
+        };
+        const heading = document.createElement("strong");
+        heading.textContent = "Could not capture location";
+        const detail = document.createElement("p");
+        detail.textContent = messages[error.code] || "An unexpected location error occurred.";
+        worksiteLocationStatus.replaceChildren(heading, detail);
+        captureLocationButton.disabled = false;
+      }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+    });
+
+    worksiteNameField.addEventListener("input", updateInternWorksiteForm);
+    addressField.addEventListener("input", () => {
+      reverseGeocodeRequestId += 1;
+      latitudeField.value = "";
+      longitudeField.value = "";
+      accuracyField.value = "";
+      confirmationCheckbox.checked = false;
+      addressResults.replaceChildren();
+      addressResults.hidden = true;
+      updateInternWorksiteForm();
+    });
+    confirmationCheckbox.addEventListener("change", updateInternWorksiteForm);
+    internWorksiteForm.addEventListener("submit", (event) => {
+      const accuracy = Number(accuracyField.value);
+      if (
+        !worksiteNameField.value.trim()
+        || !addressField.value.trim()
+        || !latitudeField.value
+        || !longitudeField.value
+        || !confirmationCheckbox.checked
+        || accuracyField.value && (!Number.isFinite(accuracy) || accuracy <= 0 || accuracy > maximumAccuracyMeters)
+      ) {
+        event.preventDefault();
+        worksiteLocationStatus.focus();
+      }
+    });
+    updateInternWorksiteForm();
+
+    const initializeInternWorksiteMap = () => {
+      if (!requestDetails.open) return;
+      if (internWorksiteMap) {
+        internWorksiteMap.invalidateSize();
+        return;
+      }
+      const defaultPosition = [14.9500, 120.9167];
+      const latitude = Number(latitudeField.value);
+      const longitude = Number(longitudeField.value);
+      const hasSavedPosition = latitudeField.value && longitudeField.value
+        && Number.isFinite(latitude) && Number.isFinite(longitude);
+      const initialPosition = hasSavedPosition ? [latitude, longitude] : defaultPosition;
+      internWorksiteMap = L.map("intern-worksite-map").setView(initialPosition, 16);
+      window.internWorksiteRequestMap = internWorksiteMap;
+      const worksiteTiles = L.tileLayer("https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        subdomains: ["a", "b", "c"],
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors | HOT map style by <a href="https://www.openstreetmap.fr/">OpenStreetMap France</a>',
+      });
+      let tileErrorShown = false;
+      worksiteTiles.on("tileerror", () => {
+        if (tileErrorShown) return;
+        tileErrorShown = true;
+        showLocationMessage("Map tiles unavailable", "The map background could not be loaded. The pin can still be adjusted.");
+      });
+      worksiteTiles.addTo(internWorksiteMap);
+      internWorksiteMarker = L.marker(initialPosition, { draggable: true }).addTo(internWorksiteMap);
+      internWorksiteCircle = L.circle(initialPosition, {
+        radius: 100,
+        color: "#4A1D1F",
+        fillColor: "#4A1D1F",
+        fillOpacity: 0.2,
+        weight: 1,
+      }).addTo(internWorksiteMap);
+      internWorksiteMarker.on("dragend", (event) => {
+        const position = event.target.getLatLng();
+        saveInternWorksitePin(position.lat, position.lng);
+      });
+      internWorksiteMap.on("click", (event) => {
+        internWorksiteMarker.setLatLng(event.latlng);
+        saveInternWorksitePin(event.latlng.lat, event.latlng.lng);
+      });
+
+      document.getElementById("search-intern-worksite-address").addEventListener("click", async (event) => {
+        const searchButton = event.currentTarget;
+        const searchRequestId = ++reverseGeocodeRequestId;
+        const query = addressField.value.trim();
+        if (!query) {
+          showLocationMessage("Enter an address", "Enter a worksite address before searching.");
+          addressField.focus();
+          return;
+        }
+        searchButton.disabled = true;
+        addressResults.replaceChildren();
+        addressResults.hidden = true;
+        addressResults.setAttribute("aria-busy", "true");
+        showLocationMessage("Searching address", "Looking up the address with OpenStreetMap…");
+        try {
+          const url = new URL("https://nominatim.openstreetmap.org/search");
+          url.search = new URLSearchParams({
+            q: query,
+            format: "jsonv2",
+            limit: "5",
+            countrycodes: "ph",
+            addressdetails: "1",
+          });
+          const response = await fetchNominatim(url, () => searchRequestId === reverseGeocodeRequestId);
+          if (!response || searchRequestId !== reverseGeocodeRequestId) return;
+          if (!response.ok) throw new Error("Address search is temporarily unavailable.");
+          const results = await response.json();
+          if (searchRequestId !== reverseGeocodeRequestId) return;
+          const matchingResults = (Array.isArray(results) ? results : []).filter((result) => {
+            const latitude = Number(result.lat);
+            const longitude = Number(result.lon);
+            return Number.isFinite(latitude) && Number.isFinite(longitude)
+              && latitude >= -90 && latitude <= 90
+              && longitude >= -180 && longitude <= 180;
+          });
+          if (!matchingResults.length) {
+            showLocationMessage("No Philippine match found", "Try a company name, barangay, city or province, or move the pin manually.");
+            return;
+          }
+          const options = matchingResults.map((result) => {
+            const option = document.createElement("button");
+            option.type = "button";
+            option.className = "address-search-result";
+            option.setAttribute("role", "option");
+            option.textContent = result.display_name || query;
+            option.addEventListener("click", () => {
+              reverseGeocodeRequestId += 1;
+              const selectedLatitude = Number(result.lat);
+              const selectedLongitude = Number(result.lon);
+              addressField.value = result.display_name || query;
+              setInternWorksiteCoordinates(selectedLatitude, selectedLongitude);
+              accuracyField.value = "";
+              confirmationCheckbox.checked = false;
+              updateInternWorksitePin(selectedLatitude, selectedLongitude);
+              updateInternWorksiteForm();
+              addressResults.replaceChildren();
+              addressResults.hidden = true;
+              showLocationMessage("Address selected", "Review the address and map pin, then confirm before submitting.");
+            });
+            return option;
+          });
+          addressResults.replaceChildren(...options);
+          addressResults.hidden = false;
+          showLocationMessage("Select a matching address", `${matchingResults.length} Philippine match${matchingResults.length === 1 ? "" : "es"} found.`);
+        } catch (error) {
+          addressResults.replaceChildren();
+          addressResults.hidden = true;
+          showLocationMessage(
+            "Address search failed",
+            error instanceof Error ? error.message : "Try again or move the pin manually.",
+          );
+        } finally {
+          addressResults.removeAttribute("aria-busy");
+          window.setTimeout(() => { searchButton.disabled = false; }, 1000);
+        }
+      });
+    };
+
+    const initializeVisibleInternWorksiteMap = () => {
+      if (!requestDetails.open) return;
+      window.ensureFieldworkLeaflet().then(() => {
+        window.setTimeout(initializeInternWorksiteMap, 0);
+      }).catch(() => {
+        showLocationMessage("Map unavailable", "The map could not be loaded. Try again later.");
+      });
+    };
+    requestDetails.addEventListener("toggle", initializeVisibleInternWorksiteMap);
+    initializeVisibleInternWorksiteMap();
+  }
+
+  {% if intern_worksites %}
+  const initializeApprovedWorksiteMaps = () => {
+    document.querySelectorAll(".intern-approved-worksite-map").forEach((container) => {
+      const latitude = Number(container.dataset.latitude);
+      const longitude = Number(container.dataset.longitude);
+      const radius = Number(container.dataset.radius);
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || !Number.isFinite(radius)) return;
+      const position = [latitude, longitude];
+      const map = L.map(container).setView(position, 16);
+      L.tileLayer("https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        subdomains: ["a", "b", "c"],
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors | HOT map style by <a href="https://www.openstreetmap.fr/">OpenStreetMap France</a>',
+      }).addTo(map);
+      L.marker(position).addTo(map);
+      L.circle(position, {
+        radius,
+        color: "#4A1D1F",
+        fillColor: "#4A1D1F",
+        fillOpacity: 0.2,
+        weight: 1,
+      }).addTo(map);
+    });
+  };
+  window.ensureFieldworkLeaflet().then(initializeApprovedWorksiteMaps).catch(() => {
+    document.querySelectorAll(".intern-approved-worksite-map").forEach((map) => {
+      map.textContent = "The approved worksite map could not be loaded.";
+    });
+  });
+  {% endif %}
+</script>
+{% endblock %}

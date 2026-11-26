@@ -10,6 +10,12 @@ load_dotenv(BASE_DIR / ".env")
 
 DEBUG = os.getenv("DEBUG", "true").lower() in {"1", "true", "yes"}
 FACE_CAPTURE_DIAGNOSTICS = os.getenv("FACE_CAPTURE_DIAGNOSTICS", "false").lower() in {"1", "true", "yes"}
+try:
+    GPS_MAX_ACCURACY_METERS = int(os.getenv("GPS_MAX_ACCURACY_METERS", "30"))
+except ValueError as exc:
+    raise ImproperlyConfigured("GPS_MAX_ACCURACY_METERS must be a positive integer.") from exc
+if GPS_MAX_ACCURACY_METERS < 1:
+    raise ImproperlyConfigured("GPS_MAX_ACCURACY_METERS must be a positive integer.")
 SECRET_KEY = os.getenv("SECRET_KEY")
 FACE_EMBEDDING_ENCRYPTION_KEY = os.getenv("FACE_EMBEDDING_ENCRYPTION_KEY", "")
 if not SECRET_KEY:

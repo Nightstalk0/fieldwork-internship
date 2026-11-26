@@ -10,24 +10,25 @@
   </div>
   <a class="button button-secondary" href="{% url 'portal:attendance_export' %}">Download DTR PDF</a>
 </div>
-<section class="panel requirement-notice {% if location_enrolled %}requirement-notice-good{% endif %}">
-  {% if location_enrolled %}
-  <strong>Worksite location is enrolled</strong>
-  <p>Allow location access when submitting time-in and time-out. Your position must be within the radius set for your assigned worksite.</p>
-  {% for worksite in worksite_locations %}<p><strong>{{ worksite.name }}</strong> · {{ worksite.radius_meters }} m radius</p>{% endfor %}
-  {% elif pending_worksite_request %}
-  <strong>Worksite location awaiting supervisor review</strong>
-  <p>{{ pending_worksite_request.name }} has been submitted. Attendance geofencing will use it after approval.</p>
-  {% else %}
-  <strong>Worksite location is not set up</strong>
-  <p>Attendance is unavailable until a worksite is approved. You can <a href="{% url 'portal:profile' %}">register your current OJT location from your profile</a>, or ask your host company/coordinator to assign one.</p>
-  {% endif %}
-</section>
-<section class="panel">
-  <h2>Face verification required</h2>
-  <p class="muted">Click Time in or Time out to open the camera. A face match within your assigned site's radius is approved automatically. If you are outside the radius or GPS is unavailable, provide a reason and submit it for supervisor review. Face exceptions also require review. Submitted camera images are encrypted and retained for up to 30 days. Face matching is not liveness detection.</p>
+<section class="panel attendance-action-card">
+  <div class="attendance-status-bar" aria-label="Attendance readiness">
+    {% if face_ready %}
+    <span id="attendance-face-status" class="status status-good">✓ Face Ready</span>
+    {% else %}
+    <a id="attendance-face-status" class="status status-risk" href="{% url 'portal:profile' %}">Face enrollment needed</a>
+    {% endif %}
+    {% if location_enrolled %}
+    <span id="attendance-geofence-status" class="status status-neutral">📍 {{ worksite_locations.0.name }} · {{ worksite_locations.0.radius_meters|default:100 }}m zone</span>
+    {% elif pending_worksite_request %}
+    <a id="attendance-geofence-status" class="status status-risk" href="{% url 'portal:profile' %}">Worksite awaiting admin approval</a>
+    {% else %}
+    <a id="attendance-geofence-status" class="status status-risk" href="{% url 'portal:profile' %}">Register a worksite</a>
+    {% endif %}
+    <span class="status status-neutral">💡 Look straight at the camera in good light</span>
+  </div>
   <div class="clock-actions">
-    <span id="camera-status" class="muted" aria-live="polite">Camera starts when you choose Time in or Time out.</span>
+    <h2>{% if 'time_in' in pending_face_events %}Time in awaiting approval{% elif today_log.clock_in %}Shift in progress{% else %}{{ today|date:"l, F j" }} · Attendance{% endif %}</h2>
+    <span id="camera-status" class="muted" aria-live="polite">Choose Time in or Time out to open the camera.</span>
   </div>
   <div id="face-capture-panel" hidden>
     <div class="face-camera-frame" id="attendance-camera-frame">
@@ -47,9 +48,52 @@
       <p id="location-check-result" aria-live="polite"></p>
       <div class="clock-actions">
         <button class="button button-secondary" id="retake-face" type="button">Retake face</button>
-        <button class="button button-primary" id="proceed-face" type="button">Submit for approval</button>
+        <button class="button button-primary" id="proceed-face" type="button">Record attendance</button>
       </div>
     </section>
+  </div>
+  <label class="note-label">Work note (optional)<input id="attendance-note" type="text" maxlength="255" placeholder="Add a short note" value="{{ today_log.notes }}"></label>
+  <div class="clock-actions">
+    {% if not today_log.clock_in and 'time_in' not in pending_face_events %}
+      {% if location_enrolled %}
+      <form method="post" class="clock-form" data-action="clock_in">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="clock_in">
+        <input type="hidden" name="clock_in_latitude">
+        <input type="hidden" name="clock_in_longitude">
+        <input type="hidden" name="clock_in_accuracy_meters">
+        <input type="hidden" name="clock_in_location_reason">
+        <input type="hidden" name="face_image">
+        <input type="hidden" name="notes">
+        <button class="button button-primary" type="submit">Time in</button>
+      </form>
+      {% else %}
+      <button class="button button-primary" type="button" disabled>Time in unavailable</button>
+      {% endif %}
+    {% elif 'time_in' in pending_face_events %}
+      <span class="status">Time in pending review</span>
+    {% elif not today_log.clock_out and 'time_out' not in pending_face_events %}
+    {% if location_enrolled %}
+    <form method="post" class="clock-form" data-action="clock_out">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="clock_out">
+      <input type="hidden" name="clock_out_latitude">
+      <input type="hidden" name="clock_out_longitude">
+      <input type="hidden" name="clock_out_accuracy_meters">
+      <input type="hidden" name="clock_out_location_reason">
+      <input type="hidden" name="face_image">
+      <input type="hidden" name="notes">
+      <button class="button button-primary" type="submit">Time out</button>
+    </form>
+    {% else %}
+    <button class="button button-primary" type="button" disabled>Time out unavailable</button>
+    {% endif %}
+    {% elif 'time_out' in pending_face_events %}
+    <span class="status">Time out pending company/admin approval</span>
+    {% else %}
+    <span class="status status-good">Today's attendance is complete</span>
+    {% endif %}
+    <span id="location-status" class="muted" aria-live="polite">GPS is checked when you capture your face.</span>
   </div>
 </section>
 <dialog id="location-reason-dialog" class="location-reason-dialog">
@@ -64,54 +108,7 @@
     </div>
   </form>
 </dialog>
-<section class="panel attendance-panel">
-  <div>
-    <p class="eyebrow">{{ today|date:"l, F j" }}</p>
-    <h2>{% if 'time_in' in pending_face_events %}Time in awaiting approval{% elif today_log.clock_in %}Shift in progress{% else %}Ready to start?{% endif %}</h2>
-    <p class="muted">{% if 'time_in' in pending_face_events %}Face verified{% if today_log.clock_in_face_status != 'matched' %} with an exception{% endif %}; no approved time-in yet. Your company/admin must review it before time-out is available.{% elif today_log.clock_in %}Time in at {{ today_log.clock_in|date:"H:i" }}{% if today_log.clock_out %}; time out at {{ today_log.clock_out|date:"H:i" }}{% endif %}{% else %}Your device time is never used to determine attendance.{% endif %}</p>
-  </div>
-  <label class="note-label">Optional work note<input id="attendance-note" type="text" maxlength="255" placeholder="Add a short note for this entry" value="{{ today_log.notes }}"></label>
-  <div class="clock-actions">
-    {% if not today_log.clock_in and 'time_in' not in pending_face_events %}
-      {% if location_enrolled %}
-      <form method="post" class="clock-form" data-action="clock_in">
-        {% csrf_token %}
-        <input type="hidden" name="action" value="clock_in">
-        <input type="hidden" name="clock_in_latitude">
-        <input type="hidden" name="clock_in_longitude">
-        <input type="hidden" name="clock_in_location_reason">
-        <input type="hidden" name="face_image">
-        <input type="hidden" name="notes">
-        <button class="button button-primary" type="submit">Time in</button>
-      </form>
-      {% else %}
-      <button class="button button-primary" type="button" disabled>Time in unavailable</button>
-      {% endif %}
-    {% elif 'time_in' in pending_face_events %}
-      <span class="status">Time in pending company/admin approval</span>
-    {% elif not today_log.clock_out and 'time_out' not in pending_face_events %}
-    {% if location_enrolled %}
-    <form method="post" class="clock-form" data-action="clock_out">
-      {% csrf_token %}
-      <input type="hidden" name="action" value="clock_out">
-      <input type="hidden" name="clock_out_latitude">
-      <input type="hidden" name="clock_out_longitude">
-      <input type="hidden" name="clock_out_location_reason">
-      <input type="hidden" name="face_image">
-      <input type="hidden" name="notes">
-      <button class="button button-primary" type="submit">Time out</button>
-    </form>
-    {% else %}
-    <button class="button button-primary" type="button" disabled>Time out unavailable</button>
-    {% endif %}
-    {% elif 'time_out' in pending_face_events %}
-    <span class="status">Time out pending company/admin approval</span>
-    {% else %}
-    <span class="status status-good">Today's attendance is complete</span>
-    {% endif %}
-    <span id="location-status" class="muted" aria-live="polite">Location access is required.</span>
-  </div>
-</section>
+{{ attendance_worksites_json|json_script:"attendance-worksites-data" }}
 {% include "portal/_dtr_breakdown.html" %}
 {% endblock %}
 {% block scripts %}
@@ -122,6 +119,9 @@
   noteInput.addEventListener("input", () => localStorage.setItem(noteKey, noteInput.value));
 
   const locationStatus = document.getElementById("location-status");
+  const geofenceStatus = document.getElementById("attendance-geofence-status");
+  const maximumGpsAccuracyMeters = {{ gps_max_accuracy_meters }};
+  const attendanceWorksites = JSON.parse(document.getElementById("attendance-worksites-data").textContent);
   const cameraStatus = document.getElementById("camera-status");
   const video = document.getElementById("camera-preview");
   const cameraPanel = document.getElementById("face-capture-panel");
@@ -142,8 +142,46 @@
   let pendingFaceImage = "";
   let pendingLocationRequiresReason = true;
   let pendingLocationStatus = "unavailable";
+  let pendingClosestWorksite = null;
   let attendanceSubmitting = false;
   let stopFaceDetection = null;
+
+  const distanceInMeters = (latitudeA, longitudeA, latitudeB, longitudeB) => {
+    const radians = (degrees) => degrees * Math.PI / 180;
+    const deltaLatitude = radians(latitudeB - latitudeA);
+    const deltaLongitude = radians(longitudeB - longitudeA);
+    const latitudeRadians = radians(latitudeA);
+    const targetLatitudeRadians = radians(latitudeB);
+    const haversine = Math.sin(deltaLatitude / 2) ** 2
+      + Math.cos(latitudeRadians) * Math.cos(targetLatitudeRadians)
+      * Math.sin(deltaLongitude / 2) ** 2;
+    const boundedHaversine = Math.min(1, haversine);
+    return 6371000 * 2 * Math.atan2(Math.sqrt(boundedHaversine), Math.sqrt(1 - boundedHaversine));
+  };
+
+  const findClosestWorksite = (latitude, longitude) => {
+    const distances = attendanceWorksites.map((worksite) => ({
+      worksite,
+      distance: distanceInMeters(latitude, longitude, worksite.latitude, worksite.longitude),
+    }));
+    const insideSites = distances.filter(({ worksite, distance }) => distance <= worksite.radius_meters);
+    return (insideSites.length ? insideSites : distances)
+      .sort((left, right) => left.distance - right.distance)[0] || null;
+  };
+
+  const setGeofenceStatus = (locationStatus, distance, radius, worksiteName) => {
+    if (!geofenceStatus) return;
+    if (locationStatus === "inside") {
+      geofenceStatus.className = "status status-good";
+      geofenceStatus.textContent = `${Math.round(distance)}m from ${worksiteName} — Within ${radius}m`;
+    } else if (locationStatus === "outside") {
+      geofenceStatus.className = "status status-risk";
+      geofenceStatus.textContent = `${Math.round(distance)}m from ${worksiteName} — Outside ${radius}m`;
+    } else {
+      geofenceStatus.className = "status status-neutral";
+      geofenceStatus.textContent = "GPS location needs review";
+    }
+  };
 
   const startCamera = async () => {
     cameraStream = await navigator.mediaDevices.getUserMedia({
@@ -201,7 +239,7 @@
     captureActions.hidden = false;
     captureButton.disabled = false;
     video.hidden = false;
-    proceedButton.textContent = "Submit without a face image";
+    proceedButton.textContent = "Face verification required";
     cameraPanel.hidden = false;
     captureStatus.textContent = "Center your face inside the oval, then capture.";
   };
@@ -210,42 +248,92 @@
     checkResult.className = `face-check-result face-check-${result.quality}`;
     checkLabel.textContent = result.label;
     checkMessage.textContent = result.message;
+    const faceVerified = result.quality === "good";
+    proceedButton.disabled = !faceVerified;
     checkScore.textContent = result.similarity === null || result.similarity === undefined
       ? ""
-      : `Face similarity: ${Number(result.similarity).toFixed(3)}. The company/admin makes the approval decision.`;
+      : `Face similarity: ${Number(result.similarity).toFixed(3)}.`;
     pendingLocationStatus = result.location_status || "unavailable";
-    pendingLocationRequiresReason = result.location_requires_reason !== false;
+    pendingLocationRequiresReason = faceVerified && result.location_requires_reason !== false;
+    if (result.distance_meters !== null && result.distance_meters !== undefined && pendingClosestWorksite) {
+      setGeofenceStatus(
+        pendingLocationStatus,
+        Number(result.distance_meters),
+        Number(result.allowed_radius_meters),
+        pendingClosestWorksite.worksite.name,
+      );
+    } else if (pendingLocationStatus === "unavailable") {
+      setGeofenceStatus("unavailable");
+    }
     locationCheckResult.className = pendingLocationRequiresReason ? "status" : "status status-good";
-    if (pendingLocationRequiresReason) {
+    if (!faceVerified) {
+      locationCheckResult.className = "status status-risk";
+      locationCheckResult.textContent = "A successful single-face match is required before attendance can be submitted.";
+    } else if (pendingLocationRequiresReason) {
       checkResult.classList.add("face-check-location-warning");
+      const accuracy = result.accuracy_meters === null || result.accuracy_meters === undefined
+        ? null
+        : Number(result.accuracy_meters);
       const locationText = pendingLocationStatus === "outside"
         ? `Outside the allowed radius${result.distance_meters === null ? "" : ` (${Number(result.distance_meters).toFixed(0)} m away; allowed ${result.allowed_radius_meters} m)`}. A reason is required for supervisor review.`
-        : "GPS is unavailable. A reason is required for supervisor review.";
+        : accuracy !== null && accuracy > maximumGpsAccuracyMeters
+        ? `GPS accuracy is ±${accuracy.toFixed(0)} m; ±${maximumGpsAccuracyMeters} m or better is required for automatic verification. A reason is required for supervisor review.`
+        : "GPS is unavailable or too imprecise. A reason is required for supervisor review.";
       locationCheckResult.textContent = locationText;
     } else {
-      locationCheckResult.textContent = "Within the assigned worksite radius.";
+      locationCheckResult.textContent = pendingClosestWorksite
+        ? `${pendingClosestWorksite.worksite.name}: ${Math.round(pendingClosestWorksite.distance)}m away, within the ${pendingClosestWorksite.worksite.radius_meters}m zone.`
+        : "Within the assigned worksite radius.";
     }
     captureActions.hidden = true;
     checkResult.hidden = false;
-    proceedButton.textContent = pendingLocationRequiresReason
+    proceedButton.textContent = !faceVerified
+      ? "Face verification required"
+      : pendingLocationRequiresReason
       ? "Provide reason and submit"
-      : result.quality === "good" ? "Record attendance" : "Submit for review";
+      : "Record attendance";
   };
 
   const captureLocationForPreview = () => new Promise((resolve) => {
     const latitudeField = currentForm.elements[`${currentForm.dataset.action}_latitude`];
     const longitudeField = currentForm.elements[`${currentForm.dataset.action}_longitude`];
+    const accuracyField = currentForm.elements[`${currentForm.dataset.action}_accuracy_meters`];
     latitudeField.value = "";
     longitudeField.value = "";
+    accuracyField.value = "";
     if (!navigator.geolocation) {
+      pendingClosestWorksite = null;
+      setGeofenceStatus("unavailable");
       resolve(false);
       return;
     }
     navigator.geolocation.getCurrentPosition((position) => {
-      latitudeField.value = position.coords.latitude.toFixed(6);
-      longitudeField.value = position.coords.longitude.toFixed(6);
+      const { latitude, longitude } = position.coords;
+      const accuracy = Number(position.coords.accuracy);
+      latitudeField.value = latitude.toFixed(6);
+      longitudeField.value = longitude.toFixed(6);
+      accuracyField.value = Number.isFinite(accuracy) && accuracy > 0 ? accuracy.toFixed(1) : "";
+      locationStatus.textContent = Number.isFinite(accuracy) && accuracy > maximumGpsAccuracyMeters
+        ? `GPS accuracy ±${accuracy.toFixed(0)} m exceeds the ±${maximumGpsAccuracyMeters} m threshold; this event will require review.`
+        : `GPS accuracy ±${Number.isFinite(accuracy) ? accuracy.toFixed(0) : "unknown"} m captured.`;
+      pendingClosestWorksite = findClosestWorksite(latitude, longitude);
+      if (pendingClosestWorksite) {
+        setGeofenceStatus(
+          pendingClosestWorksite.distance <= pendingClosestWorksite.worksite.radius_meters ? "inside" : "outside",
+          pendingClosestWorksite.distance,
+          pendingClosestWorksite.worksite.radius_meters,
+          pendingClosestWorksite.worksite.name,
+        );
+      } else {
+        setGeofenceStatus("unavailable");
+      }
       resolve(true);
-    }, () => resolve(false), { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+    }, () => {
+      pendingClosestWorksite = null;
+      accuracyField.value = "";
+      setGeofenceStatus("unavailable");
+      resolve(false);
+    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
   });
 
   const checkCapturedFrame = async (faceImage) => {
@@ -258,8 +346,9 @@
       const locationAvailable = await captureLocationForPreview();
       body.set(`${currentForm.dataset.action}_latitude`, currentForm.elements[`${currentForm.dataset.action}_latitude`].value);
       body.set(`${currentForm.dataset.action}_longitude`, currentForm.elements[`${currentForm.dataset.action}_longitude`].value);
+      body.set(`${currentForm.dataset.action}_accuracy_meters`, currentForm.elements[`${currentForm.dataset.action}_accuracy_meters`].value);
       locationStatus.textContent = locationAvailable
-        ? "Location captured. Checking the assigned worksite…"
+        ? locationStatus.textContent
         : "GPS unavailable. You can submit an explanation for supervisor review.";
       const response = await fetch("{% url 'portal:attendance_face_preview' %}", {
         method: "POST",
@@ -280,10 +369,8 @@
         label: "Face check unavailable",
         message: error instanceof Error
           ? error.message
-          : "The system could not check this frame right now. Retake it or submit it as an exception for company/admin review.",
+          : "The system could not check this frame right now. Retake it before recording attendance.",
         similarity: null,
-        location_status: "unavailable",
-        location_requires_reason: true,
       });
     }
   };
@@ -316,12 +403,12 @@
     }).catch(() => {
       stopCamera();
       video.hidden = true;
-      captureStatus.textContent = "Camera unavailable or permission denied. You may submit an exception for company/admin review, or cancel and try again.";
+      captureStatus.textContent = "Camera unavailable or permission denied. Allow camera access and try again.";
       captureActions.hidden = true;
       showCheckResult({
         quality: "poor",
         label: "Poor capture — no camera frame",
-        message: "Allow camera access and retake, or submit without an image for company/admin review.",
+        message: "Allow camera access and retake before recording attendance.",
         similarity: null,
       });
     });
@@ -338,11 +425,11 @@
       stopFaceDetection?.();
       checkCapturedFrame(faceImage);
     } catch {
-      captureStatus.textContent = "Could not capture this frame. Retake or submit without an image for review.";
+      captureStatus.textContent = "Could not capture this frame. Retake it before recording attendance.";
       showCheckResult({
         quality: "poor",
         label: "Poor capture — frame unavailable",
-        message: "Try capturing again, or submit without an image for company/admin review.",
+        message: "Try capturing again before recording attendance.",
         similarity: null,
       });
     }
@@ -363,7 +450,7 @@
       showCheckResult({
         quality: "poor",
         label: "Poor capture — camera unavailable",
-        message: "Allow camera access to retake, or submit without an image for company/admin review.",
+        message: "Allow camera access to retake before recording attendance.",
         similarity: null,
       });
       return;

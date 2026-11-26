@@ -2,6 +2,7 @@ import base64
 import tempfile
 from datetime import datetime, timedelta, timezone as datetime_timezone
 from io import BytesIO
+from types import SimpleNamespace
 from unittest.mock import patch
 from zipfile import ZipFile
 
@@ -11,14 +12,13 @@ from django.core.management import call_command
 from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 from django.urls import reverse
-from django.test import override_settings
 from django.utils import timezone
 from docx import Document as DocxDocument
 from PIL import Image
 from cryptography.fernet import Fernet
 
 from accounts.models import User
-from ml_engine.face_recognition import FaceImageError, decrypt_embedding
+from ml_engine.face_recognition import FaceImageError, decrypt_embedding, encrypt_embedding
 from .forms import (
     ApplicationSubmissionForm,
     CompanyProfileForm,
@@ -28,8 +28,9 @@ from .forms import (
     ScorecardSelectionForm,
     WorksiteLocationForm,
 )
-from .models import AcademicPeriod, Application, AttendanceFaceCapture, AttendanceLog, CompanyProfile, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, InternProfile, Posting, RiskAssessment, Scorecard, WeeklyReport, WorksiteLocation
+from .models import AcademicPeriod, Application, AttendanceFaceCapture, AttendanceLog, CompanyProfile, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, FaceReenrollmentRequest, InternProfile, Posting, RiskAssessment, Scorecard, WeeklyReport, WorksiteLocation
 from .utils import haversine_distance_km
+from .views import _attendance_location_status
 from .validators import FileSizeAndTypeValidator
 
 
@@ -113,6 +114,7 @@ class PortalWorkflowTests(TestCase):
             "action": action,
             f"{action}_latitude": "14.600000",
             f"{action}_longitude": "121.000000",
+            f"{action}_accuracy_meters": "10",
             **extra,
         }
 
@@ -124,12 +126,12 @@ class PortalWorkflowTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, self.company.organization)
-        self.assertContains(response, "Review attendance")
-        self.assertContains(response, "Set up worksite locations")
+        self.assertContains(response, "Attendance monitoring")
+        self.assertContains(response, "Open DTR queue")
+        self.assertContains(response, "Approved worksite locations")
         self.assertEqual(response.context["active_worksite_count"], 0)
 
-
-    def test_company_can_enroll_and_deactivate_multiple_worksites(self):
+    def test_company_users_cannot_submit_or_deactivate_worksites(self):
         self.client.force_login(self.company_user)
         url = reverse("portal:company_worksites")
         payload = {
@@ -139,24 +141,465 @@ class PortalWorkflowTests(TestCase):
             "latitude": "14.600000",
             "longitude": "121.000000",
             "radius_meters": "100",
+            "reported_accuracy_meters": "20",
+            "confirm_location": "on",
         }
 
         created = self.client.post(url, payload)
 
-        self.assertRedirects(created, url)
-        worksite = WorksiteLocation.objects.get(company=self.company)
-        self.assertEqual(worksite.name, "North office")
-        self.assertEqual(worksite.radius_meters, 100)
-        self.assertTrue(worksite.is_active)
+        self.assertEqual(created.status_code, 403)
+        self.assertFalse(WorksiteLocation.objects.filter(company=self.company).exists())
 
+        worksite = WorksiteLocation.objects.create(
+            company=self.company,
+            name="Approved office",
+            address="10 North Road",
+            latitude="14.600000",
+            longitude="121.000000",
+            approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+            is_active=True,
+        )
         deactivated = self.client.post(url, {
             "action": "deactivate",
             "worksite_id": worksite.pk,
         })
 
-        self.assertRedirects(deactivated, url)
+        self.assertEqual(deactivated.status_code, 403)
         worksite.refresh_from_db()
+        self.assertTrue(worksite.is_active)
+
+    def test_company_worksite_page_shows_approved_location_read_only(self):
+        worksite = WorksiteLocation.objects.create(
+            company=self.company,
+            name="North office",
+            address="10 North Road, Barangay San Isidro, Tanauan, Batangas",
+            latitude="14.600000",
+            longitude="121.000000",
+            radius_meters=150,
+            approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+            is_active=True,
+        )
+        WorksiteLocation.objects.create(
+            company=self.company,
+            name="Former office",
+            address="2 Old Road, Tanauan, Batangas",
+            latitude="14.610000",
+            longitude="121.010000",
+            approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+            is_active=False,
+        )
+        self.client.force_login(self.company_user)
+        response = self.client.get(reverse("portal:company_worksites"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, worksite.address)
+        self.assertContains(response, "Approved · Active")
+        self.assertContains(response, "Approved · Inactive")
+        self.assertContains(response, "150 m")
+        self.assertContains(response, 'class="worksite-map company-worksite-map"')
+        self.assertContains(response, "tile.openstreetmap.fr/hot")
+        self.assertNotContains(response, "id=\"worksite-form\"")
+        self.assertNotContains(response, "id=\"id_address\"")
+
+    def test_company_worksite_page_explains_intern_and_admin_workflow_when_empty(self):
+        self.client.force_login(self.company_user)
+        response = self.client.get(reverse("portal:company_worksites"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "No approved worksite is on file yet.")
+        self.assertContains(response, "The Intern must submit the location")
+        self.assertContains(response, "an Admin must approve it")
+        self.assertNotContains(response, 'id="worksite-form"')
+
+    def test_intern_worksite_page_displays_approved_company_worksite_read_only(self):
+        self._complete_intern_details()
+        self.company.company_name = "Assigned Host Company"
+        self.company.save()
+        worksite = self._enroll_attendance_location()
+        self.client.force_login(self.intern_user)
+
+        profile = self.client.get(reverse("portal:profile"))
+        response = self.client.get(reverse("portal:intern_worksite_registration"))
+
+        self.assertEqual(profile.status_code, 200)
+        self.assertContains(profile, 'name="placement_type"')
+        self.assertContains(profile, 'name="student_id"')
+        self.assertContains(profile, 'name="university"')
+        self.assertContains(profile, 'name="course"')
+        self.assertContains(profile, 'name="resume"')
+        self.assertNotContains(profile, "OJT worksite location")
+        self.assertNotContains(profile, "intern-worksite-request-form")
+        self.assertNotContains(profile, worksite.address)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Assigned Host Company")
+        self.assertContains(response, worksite.name)
+        self.assertContains(response, worksite.address)
+        self.assertContains(response, "Approved · Active")
+        self.assertContains(response, "Official geofence radius: 100 m")
+        self.assertContains(response, 'class="worksite-map intern-approved-worksite-map"')
+        self.assertContains(response, 'data-latitude="14.600000"')
+        self.assertContains(response, 'data-longitude="121.000000"')
+        self.assertContains(response, "tile.openstreetmap.fr/hot")
+        self.assertContains(response, "OpenStreetMap France")
+        self.assertNotContains(response, "No approved OJT worksite has been assigned")
+        self.assertContains(response, 'id="intern-worksite-request-form"')
+        self.assertContains(response, "Request a worksite change")
+        self.assertContains(response, "Get current location")
+
+    def test_intern_worksite_page_shows_pending_and_unassigned_states(self):
+        self.client.force_login(self.intern_user)
+        profile = self.client.get(reverse("portal:profile"))
+        no_assignment = self.client.get(reverse("portal:intern_worksite_registration"))
+        self.assertNotContains(profile, "No approved OJT worksite")
+        self.assertNotContains(profile, "intern-worksite-request-form")
+        self.assertContains(
+            no_assignment,
+            "No approved OJT worksite is on file yet. Submit your worksite details below for Admin review.",
+        )
+        self.assertContains(no_assignment, 'id="intern-worksite-request-form"')
+        self.assertContains(no_assignment, 'id="intern-worksite-map"')
+        self.assertNotContains(no_assignment, "An accepted internship assignment is required")
+        self.assertNotContains(no_assignment, "intern-approved-worksite-map")
+
+        Application.objects.create(
+            intern=self.intern,
+            posting=self.posting,
+            status=Application.Status.ACCEPTED,
+        )
+        pending_company_site = WorksiteLocation.objects.create(
+            company=self.company,
+            name="Pending Company worksite",
+            address="9 Company Road",
+            latitude="14.600000",
+            longitude="121.000000",
+            approval_status=WorksiteLocation.ApprovalStatus.PENDING,
+            is_active=False,
+            created_by=self.company_user,
+        )
+        pending_company_response = self.client.get(reverse("portal:intern_worksite_registration"))
+        self.assertContains(
+            pending_company_response,
+            "No approved OJT worksite is on file yet. Submit your worksite details below for Admin review.",
+        )
+        self.assertNotContains(pending_company_response, pending_company_site.name)
+        self.assertNotContains(pending_company_response, "intern-approved-worksite-map")
+
+        Application.objects.filter(intern=self.intern).delete()
+        self._complete_intern_details(external=True)
+        pending_site = WorksiteLocation.objects.create(
+            intern=self.intern,
+            name="Pending external OJT site",
+            address="7 Placement Road",
+            latitude="14.700000",
+            longitude="121.100000",
+            approval_status=WorksiteLocation.ApprovalStatus.PENDING,
+            is_active=False,
+            created_by=self.intern_user,
+        )
+        pending_response = self.client.get(reverse("portal:intern_worksite_registration"))
+        self.assertContains(
+            pending_response,
+            "No approved OJT worksite is on file yet. Submit your worksite details below for Admin review.",
+        )
+        self.assertContains(pending_response, "Pending Admin Approval")
+        self.assertContains(pending_response, pending_site.name)
+        self.assertNotContains(pending_response, "intern-approved-worksite-map")
+
+    def test_intern_without_assignment_can_submit_worksite_for_admin_approval(self):
+        self.client.force_login(self.intern_user)
+        self.assertFalse(Application.objects.filter(intern=self.intern).exists())
+        self.assertFalse(WorksiteLocation.objects.filter(intern=self.intern).exists())
+
+        page = self.client.get(reverse("portal:intern_worksite_registration"))
+        self.assertContains(page, 'id="intern-worksite-request-form"')
+        self.assertContains(page, "Search address on OpenStreetMap")
+
+        address = "Richwell Colleges, Plaridel, Bulacan, Philippines"
+        response = self.client.post(reverse("portal:intern_worksite_registration"), {
+            "name": "New Intern Worksite",
+            "address": address,
+            "latitude": "14.700000",
+            "longitude": "121.100000",
+            "reported_accuracy_meters": "18",
+            "confirm_location": "on",
+        })
+
+        self.assertRedirects(response, reverse("portal:intern_worksite_registration"))
+        worksite = WorksiteLocation.objects.get(intern=self.intern)
+        self.assertIsNone(worksite.application_id)
+        self.assertIsNone(worksite.company_id)
+        self.assertEqual(worksite.address, address)
+        self.assertEqual(worksite.approval_status, WorksiteLocation.ApprovalStatus.PENDING)
         self.assertFalse(worksite.is_active)
+        self.assertEqual(
+            WorksiteLocation.objects.filter(intern=self.intern).count(),
+            1,
+        )
+        pending_page = self.client.get(reverse("portal:intern_worksite_registration"))
+        self.assertContains(pending_page, "Pending Admin Approval")
+        self.assertContains(pending_page, address)
+        pending_attendance = self.client.post(
+            reverse("portal:attendance_face_preview"),
+            self._attendance_payload("clock_in", face_image=self._camera_data_url()),
+        )
+        self.assertEqual(pending_attendance.status_code, 409)
+
+        admin = User.objects.create_user(username="no-assignment-site-admin", role=User.Role.COORDINATOR)
+        self.client.force_login(admin)
+        approval_url = reverse("portal:admin_approvals")
+        approved = self.client.post(approval_url, {
+            "action": "approve_worksite",
+            "request_id": worksite.pk,
+        })
+        self.assertRedirects(approved, approval_url)
+        worksite.refresh_from_db()
+        self.assertEqual(worksite.approval_status, WorksiteLocation.ApprovalStatus.APPROVED)
+        self.assertTrue(worksite.is_active)
+
+        self.client.force_login(self.intern_user)
+        with patch(
+            "portal.views._attendance_face_check",
+            return_value=(AttendanceLog.FaceCheckStatus.MATCHED, 0.82, None),
+        ):
+            approved_attendance = self.client.post(
+                reverse("portal:attendance_face_preview"),
+                self._attendance_payload(
+                    "clock_in",
+                    clock_in_latitude="14.700000",
+                    clock_in_longitude="121.100000",
+                    face_image=self._camera_data_url(),
+                ),
+            )
+        self.assertEqual(approved_attendance.status_code, 200)
+        self.assertEqual(approved_attendance.json()["location_status"], AttendanceFaceCapture.LocationStatus.INSIDE)
+
+    def test_intern_and_admin_sidebar_icons_have_consistent_active_states(self):
+        map_pin = '<path d="M20 10c0 5-8 12-8 12S4 15 4 10a8 8 0 1 1 16 0Z"/>'
+        self.client.force_login(self.intern_user)
+        regular_profile = self.client.get(reverse("portal:profile"))
+        regular_content = regular_profile.content.decode()
+        profile_link_start = regular_content.index('href="/intern/profile/" ')
+        profile_link = regular_content[profile_link_start:regular_content.index("</a>", profile_link_start)]
+        self.assertIn('class="nav-link-active" aria-current="page"', profile_link)
+
+        intern_profile = self.client.get(reverse("portal:intern_worksite_registration"))
+        intern_content = intern_profile.content.decode()
+        intern_link_start = intern_content.index('href="/intern/profile/worksite-location/"')
+        intern_link = intern_content[intern_link_start:intern_content.index("</a>", intern_link_start)]
+        self.assertIn("Worksite Location", intern_link)
+        self.assertIn('class="nav-icon" width="20" height="20"', intern_link)
+        self.assertIn(map_pin, intern_link)
+        self.assertIn('class="nav-link-active" aria-current="page"', intern_link)
+        legacy_worksite_link = self.client.get(reverse("portal:profile"), {"section": "worksite"})
+        self.assertRedirects(legacy_worksite_link, reverse("portal:intern_worksite_registration"))
+
+        admin = User.objects.create_user(username="worksite-sidebar-admin", role=User.Role.COORDINATOR)
+        self.client.force_login(admin)
+        admin_dashboard = self.client.get(reverse("portal:coordinator_dashboard"))
+        dashboard_content = admin_dashboard.content.decode()
+        dashboard_link_start = dashboard_content.index('href="/admin/dashboard/"')
+        dashboard_link = dashboard_content[dashboard_link_start:dashboard_content.index("</a>", dashboard_link_start)]
+        self.assertIn('class="nav-link-active" aria-current="page"', dashboard_link)
+
+        admin_approvals = self.client.get(reverse("portal:admin_approvals"))
+        admin_content = admin_approvals.content.decode()
+        admin_link_start = admin_content.index('href="/admin/approvals/"')
+        admin_link = admin_content[admin_link_start:admin_content.index("</a>", admin_link_start)]
+        self.assertIn("Admin approvals", admin_link)
+        self.assertIn('class="nav-icon" width="20" height="20"', admin_link)
+        self.assertIn('<circle cx="12" cy="12" r="9"/>', admin_link)
+        self.assertIn('class="nav-link-active" aria-current="page"', admin_link)
+        journals = self.client.get(reverse("portal:admin_daily_reports"))
+        journals_content = journals.content.decode()
+        journal_link_start = journals_content.index('href="/admin/daily-reports/"')
+        journal_link = journals_content[journal_link_start:journals_content.index("</a>", journal_link_start)]
+        self.assertIn("All intern journals", journal_link)
+        self.assertIn('class="nav-icon" width="20" height="20"', journal_link)
+        self.assertIn('class="nav-link-active" aria-current="page"', journal_link)
+
+    def test_company_and_admin_worksite_management_pages_remain_available(self):
+        self.client.force_login(self.company_user)
+        company_response = self.client.get(reverse("portal:company_worksites"))
+        self.assertEqual(company_response.status_code, 200)
+        self.assertContains(company_response, "No approved worksite is on file yet.")
+        self.assertNotContains(company_response, "Search address on OpenStreetMap")
+        self.assertNotContains(company_response, "Get current location")
+
+        admin = User.objects.create_user(username="worksite-page-admin", role=User.Role.COORDINATOR)
+        self.assertTrue(admin.is_admin)
+        self.client.force_login(admin)
+        admin_response = self.client.get(reverse("portal:company_worksites"))
+        self.assertEqual(admin_response.status_code, 200)
+        self.assertContains(admin_response, "Register directly approved sites for a selected Company")
+        self.assertContains(admin_response, "Search address on OpenStreetMap")
+        self.assertContains(admin_response, "Get current location")
+        created = self.client.post(reverse("portal:company_worksites"), {
+            "action": "create",
+            "company": self.company.pk,
+            "name": "Admin registered branch",
+            "address": "11 Admin Road",
+            "latitude": "14.610000",
+            "longitude": "121.010000",
+            "radius_meters": "100",
+            "reported_accuracy_meters": "18",
+            "confirm_location": "on",
+        })
+        self.assertRedirects(created, reverse("portal:company_worksites"))
+        admin_site = WorksiteLocation.objects.get(name="Admin registered branch")
+        self.assertEqual(admin_site.company, self.company)
+        self.assertEqual(admin_site.approval_status, WorksiteLocation.ApprovalStatus.APPROVED)
+        self.assertTrue(admin_site.is_active)
+
+    def test_intern_submission_is_hidden_until_approval_and_used_for_attendance(self):
+        application = Application.objects.create(
+            intern=self.intern,
+            posting=self.posting,
+            status=Application.Status.ACCEPTED,
+        )
+        current_site = WorksiteLocation.objects.create(
+            company=self.company,
+            name="Current office",
+            address="10 Old Road",
+            latitude="14.600000",
+            longitude="121.000000",
+            approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+            is_active=True,
+        )
+        self.client.force_login(self.company_user)
+        worksites_url = reverse("portal:company_worksites")
+        company_attempt = self.client.post(worksites_url, {
+            "action": "create",
+            "name": "Relocated office",
+            "address": "20 New Road",
+            "latitude": "14.700000",
+            "longitude": "121.100000",
+            "radius_meters": "100",
+            "reported_accuracy_meters": "15",
+            "confirm_location": "on",
+        })
+        self.assertEqual(company_attempt.status_code, 403)
+        self.assertFalse(WorksiteLocation.objects.filter(name="Relocated office").exists())
+
+        self.client.force_login(self.intern_user)
+        requested = self.client.post(reverse("portal:intern_worksite_registration"), {
+            "application": application.pk,
+            "name": "Relocated office",
+            "address": "20 New Road, Tanauan, Batangas",
+            "latitude": "14.700000",
+            "longitude": "121.100000",
+            "reported_accuracy_meters": "15",
+            "confirm_location": "on",
+        })
+        self.assertRedirects(requested, reverse("portal:intern_worksite_registration"))
+        replacement = WorksiteLocation.objects.get(name="Relocated office")
+        self.assertEqual(replacement.approval_status, WorksiteLocation.ApprovalStatus.PENDING)
+        self.assertFalse(replacement.is_active)
+        current_site.refresh_from_db()
+        self.assertTrue(current_site.is_active)
+
+        self.client.force_login(self.company_user)
+        company_page = self.client.get(worksites_url)
+        self.assertNotContains(company_page, "Relocated office")
+
+        self.client.force_login(User.objects.create_user(
+            username="location-approver",
+            role=User.Role.COORDINATOR,
+        ))
+        approval_url = reverse("portal:admin_approvals")
+        self.assertContains(self.client.get(approval_url), "Relocated office")
+        approved = self.client.post(approval_url, {
+            "action": "approve_worksite",
+            "request_id": replacement.pk,
+        })
+
+        self.assertRedirects(approved, approval_url)
+        replacement.refresh_from_db()
+        current_site.refresh_from_db()
+        self.assertTrue(replacement.is_active)
+        self.assertEqual(replacement.approval_status, WorksiteLocation.ApprovalStatus.APPROVED)
+        self.assertTrue(current_site.is_active)
+
+        self.client.force_login(self.company_user)
+        approved_company_page = self.client.get(worksites_url)
+        self.assertContains(approved_company_page, "20 New Road, Tanauan, Batangas")
+
+        self._complete_intern_profile()
+        self.client.force_login(self.intern_user)
+        with patch(
+            "portal.views._attendance_face_check",
+            return_value=(AttendanceLog.FaceCheckStatus.MATCHED, 0.82, b"encrypted frame"),
+        ):
+            attendance = self.client.post(
+                reverse("portal:attendance"),
+                self._attendance_payload(
+                    "clock_in",
+                    clock_in_latitude="14.700000",
+                    clock_in_longitude="121.100000",
+                ),
+            )
+        self.assertRedirects(attendance, reverse("portal:attendance"))
+        log = AttendanceLog.objects.get(intern=self.intern)
+        self.assertTrue(log.time_in_approved)
+        self.assertEqual(log.clock_in_distance_meters, 0)
+
+    def test_admin_worksite_form_uses_openstreetmap_without_google_maps(self):
+        self.client.force_login(self.company_user)
+
+        response = self.client.get(reverse("portal:company_worksites"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'id="worksite-map"')
+        self.assertNotContains(response, "nominatim.openstreetmap.org/search")
+
+        admin = User.objects.create_user(username="admin-worksite-map", role=User.Role.COORDINATOR)
+        self.client.force_login(admin)
+        admin_response = self.client.get(reverse("portal:company_worksites"))
+        self.assertEqual(admin_response.status_code, 200)
+        self.assertContains(admin_response, 'id="worksite-map"')
+        self.assertContains(admin_response, 'id="id_address"')
+        self.assertContains(admin_response, 'id="search-worksite-address"')
+        self.assertContains(admin_response, "nominatim.openstreetmap.org/search")
+        self.assertContains(admin_response, "tile.openstreetmap.fr/hot")
+        self.assertContains(admin_response, "OpenStreetMap France")
+        self.assertNotContains(admin_response, "maps.googleapis.com")
+        self.assertNotContains(admin_response, "libraries=places")
+        self.assertContains(admin_response, "dragend")
+        self.assertContains(admin_response, "exact entrance")
+        self.assertContains(admin_response, "Get current location")
+        self.assertContains(admin_response, "confirm_location")
+
+    def test_haversine_worksite_check_allows_gps_drift_and_defaults_null_radius(self):
+        worksite = SimpleNamespace(
+            latitude=14.6,
+            longitude=121.0,
+            radius_meters=None,
+        )
+
+        inside_status, inside_distance, inside_radius = _attendance_location_status(
+            [worksite],
+            14.6004,
+            121.0,
+            10,
+        )
+        outside_status, outside_distance, outside_radius = _attendance_location_status(
+            [worksite],
+            14.6011,
+            121.0,
+            10,
+        )
+        poor_accuracy_status, _, _ = _attendance_location_status(
+            [worksite],
+            14.6004,
+            121.0,
+            31,
+        )
+
+        self.assertEqual(inside_status, AttendanceFaceCapture.LocationStatus.INSIDE)
+        self.assertLess(inside_distance, inside_radius)
+        self.assertEqual(inside_radius, 100)
+        self.assertEqual(outside_status, AttendanceFaceCapture.LocationStatus.OUTSIDE)
+        self.assertGreater(outside_distance, outside_radius)
+        self.assertEqual(poor_accuracy_status, AttendanceFaceCapture.LocationStatus.UNAVAILABLE)
 
     def test_coordinator_can_assign_external_intern_worksite(self):
         self._complete_intern_details(external=True)
@@ -172,46 +615,118 @@ class PortalWorkflowTests(TestCase):
             "latitude": "14.600000",
             "longitude": "121.000000",
             "radius_meters": "100",
+            "confirm_location": "on",
         })
 
         self.assertRedirects(response, url)
         worksite = WorksiteLocation.objects.get(intern=self.intern)
         self.assertIsNone(worksite.company_id)
         self.assertEqual(worksite.created_by, coordinator)
+        self.assertEqual(worksite.approval_status, WorksiteLocation.ApprovalStatus.PENDING)
+        self.assertFalse(worksite.is_active)
 
-    def test_intern_worksite_registration_stays_pending_until_supervisor_approval(self):
-        Application.objects.create(
-            intern=self.intern,
-            posting=self.posting,
-            status=Application.Status.ACCEPTED,
-        )
+    def test_external_intern_can_submit_worksite_location_for_admin_approval(self):
+        self._complete_intern_details(external=True)
         self.client.force_login(self.intern_user)
         url = reverse("portal:intern_worksite_registration")
+        profile = self.client.get(reverse("portal:profile"))
+        self.assertNotContains(profile, 'id="intern-worksite-request-form"')
+        worksite_page = self.client.get(url)
+        self.assertContains(worksite_page, 'id="intern-worksite-request-form"')
+        self.assertContains(worksite_page, "Search address on OpenStreetMap")
+        self.assertContains(worksite_page, "Get current location")
+        self.assertTrue(worksite_page.context["worksite_form"].fields["latitude"].widget.is_hidden)
+        self.assertTrue(worksite_page.context["worksite_form"].fields["longitude"].widget.is_hidden)
+        self.assertContains(worksite_page, 'id="id_latitude"')
+        self.assertContains(worksite_page, 'id="id_longitude"')
+        self.assertContains(worksite_page, 'id="intern-worksite-map"')
+        self.assertContains(worksite_page, 'countrycodes: "ph"')
+        self.assertContains(worksite_page, "tile.openstreetmap.fr/hot")
+        self.assertContains(worksite_page, 'role="listbox"')
+        self.assertContains(worksite_page, 'setAttribute("role", "option")')
+        self.assertContains(worksite_page, 'internWorksiteMarker.on("dragend"')
+        self.assertContains(worksite_page, 'nominatim.openstreetmap.org/reverse')
+        self.assertContains(worksite_page, '"accept-language": "en-PH,en"')
+        self.assertContains(worksite_page, "await reverseGeocodeWorksiteAddress(latitude, longitude, accuracy)")
+        self.assertContains(worksite_page, "addressField.value = readableAddress")
+        self.assertContains(worksite_page, "Your existing address was kept.")
+        complete_address = "Richwell Colleges, Plaridel, Bulacan, Central Luzon, 3004, Philippines"
         payload = {
             "name": "Intern's OJT office",
-            "address": "30 Training Avenue",
+            "address": complete_address,
             "latitude": "14.700000",
             "longitude": "121.100000",
             "reported_accuracy_meters": "18",
+            "confirm_location": "on",
         }
 
         response = self.client.post(url, payload)
 
-        self.assertRedirects(response, reverse("portal:profile"))
+        self.assertRedirects(response, url)
         worksite = WorksiteLocation.objects.get(intern=self.intern)
+        self.assertIsNone(worksite.company_id)
+        self.assertIsNone(worksite.application_id)
         self.assertEqual(worksite.approval_status, WorksiteLocation.ApprovalStatus.PENDING)
         self.assertFalse(worksite.is_active)
         self.assertEqual(worksite.radius_meters, 100)
         self.assertEqual(worksite.reported_accuracy_meters, 18)
-        self.assertFalse(worksite.is_active)
+        self.assertEqual(worksite.address, complete_address)
+        worksite_page = self.client.get(url)
+        self.assertContains(worksite_page, "No approved OJT worksite is on file yet")
+        self.assertContains(worksite_page, "Pending Admin Approval")
+        self.assertContains(worksite_page, complete_address)
 
-        duplicate = self.client.post(url, payload)
+    def test_platform_intern_submission_is_pending_and_cannot_edit_company_worksite(self):
+        self._complete_intern_details()
+        application = Application.objects.create(
+            intern=self.intern,
+            posting=self.posting,
+            status=Application.Status.ACCEPTED,
+        )
+        official_site = WorksiteLocation.objects.create(
+            company=self.company,
+            name="Official office",
+            address="1 Company Road",
+            latitude="14.600000",
+            longitude="121.000000",
+            is_active=True,
+            approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+        )
+        self.client.force_login(self.intern_user)
+        response = self.client.post(reverse("portal:intern_worksite_registration"), {
+            "application": application.pk,
+            "name": "Requested OJT office",
+            "address": "25 Training Avenue",
+            "latitude": "14.700000",
+            "longitude": "121.100000",
+            "reported_accuracy_meters": "12",
+            "confirm_location": "on",
+        })
 
-        self.assertRedirects(duplicate, reverse("portal:profile"))
-        self.assertEqual(WorksiteLocation.objects.filter(intern=self.intern).count(), 1)
-        self.assertContains(self.client.get(reverse("portal:profile")), "Pending supervisor review")
+        self.assertRedirects(response, reverse("portal:intern_worksite_registration"))
+        request = WorksiteLocation.objects.get(intern=self.intern)
+        self.assertEqual(request.application, application)
+        self.assertEqual(request.approval_status, WorksiteLocation.ApprovalStatus.PENDING)
+        self.assertFalse(request.is_active)
+        self.assertEqual(self.client.get(reverse("portal:company_worksites")).status_code, 403)
+        edit_attempt = self.client.post(reverse("portal:company_worksites"), {
+            "action": "create",
+            "worksite_id": official_site.pk,
+            "name": "Forged replacement",
+            "address": "999 Other Road",
+            "latitude": "15.000000",
+            "longitude": "122.000000",
+            "radius_meters": "5000",
+        })
+        self.assertEqual(edit_attempt.status_code, 403)
+        official_site.refresh_from_db()
+        self.assertTrue(official_site.is_active)
+        self.assertEqual(official_site.approval_status, WorksiteLocation.ApprovalStatus.APPROVED)
+        self.assertEqual(str(official_site.latitude), "14.600000")
+        self.assertEqual(str(official_site.longitude), "121.000000")
+        self.assertEqual(official_site.radius_meters, 100)
 
-    def test_company_supervisor_can_approve_and_reset_intern_worksite(self):
+    def test_admin_role_can_approve_and_reset_intern_worksites(self):
         Application.objects.create(
             intern=self.intern,
             posting=self.posting,
@@ -233,72 +748,256 @@ class PortalWorkflowTests(TestCase):
         url = reverse("portal:company_worksites")
 
         queue = self.client.get(url)
-        self.assertContains(queue, "Intern-requested office")
-        self.assertContains(queue, "Approve")
-        approved = self.client.post(url, {
+        self.assertNotContains(queue, "Intern-requested office")
+        self.assertNotContains(queue, ">Approve<")
+        company_attempt = self.client.post(url, {
             "action": "review_intern_request",
             "decision": "approve",
             "worksite_id": worksite.pk,
         })
 
-        self.assertRedirects(approved, url)
+        self.assertEqual(company_attempt.status_code, 403)
+        worksite.refresh_from_db()
+        self.assertEqual(worksite.approval_status, WorksiteLocation.ApprovalStatus.PENDING)
+        self.assertFalse(worksite.is_active)
+
+        admin = User.objects.create_superuser(username="worksite-admin", password="Safe-example-Password-927!")
+        self.client.force_login(admin)
+        approve_url = reverse("portal:admin_approvals")
+        approved = self.client.post(approve_url, {
+            "action": "approve_worksite",
+            "request_id": worksite.pk,
+        })
+
+        self.assertRedirects(approved, approve_url)
         worksite.refresh_from_db()
         self.assertEqual(worksite.approval_status, WorksiteLocation.ApprovalStatus.APPROVED)
         self.assertTrue(worksite.is_active)
-        self.assertEqual(worksite.reviewed_by, self.company_user)
+        self.assertEqual(worksite.reviewed_by, admin)
 
-        reset = self.client.post(url, {
-            "action": "reset_intern_location",
-            "worksite_id": worksite.pk,
-        })
-
-        self.assertRedirects(reset, url)
+        coordinator = User.objects.create_user(username="not-admin-coordinator", role=User.Role.COORDINATOR)
+        self.client.force_login(coordinator)
+        self.assertEqual(self.client.get(approve_url).status_code, 200)
+        reset_url = reverse("portal:coordinator_reset_user_worksite", args=(self.intern.pk,))
+        self.assertRedirects(self.client.post(reset_url), reverse("portal:coordinator_users"))
         worksite.refresh_from_db()
         self.assertFalse(worksite.is_active)
 
+        self.client.force_login(admin)
+        self.assertEqual(self.client.get(approve_url).status_code, 200)
+        self.assertRedirects(self.client.post(reset_url), reverse("portal:coordinator_users"))
+
         self.client.force_login(self.intern_user)
-        self.client.post(reverse("portal:intern_worksite_registration"), {
+        response = self.client.post(reverse("portal:intern_worksite_registration"), {
+            "application": Application.objects.get(intern=self.intern).pk,
             "name": "Replacement OJT office",
             "address": "40 Training Avenue",
             "latitude": "14.710000",
             "longitude": "121.110000",
             "reported_accuracy_meters": "12",
+            "confirm_location": "on",
         })
-        self.assertEqual(WorksiteLocation.objects.filter(
+        self.assertRedirects(response, reverse("portal:intern_worksite_registration"))
+        self.assertTrue(WorksiteLocation.objects.filter(
             intern=self.intern,
             approval_status=WorksiteLocation.ApprovalStatus.PENDING,
-        ).count(), 1)
+        ).exists())
 
-    def test_coordinator_can_approve_external_intern_worksite_request(self):
+    def test_admin_can_assign_and_approve_external_intern_worksite(self):
         self._complete_intern_details(external=True)
-        self.client.force_login(self.intern_user)
-        submitted = self.client.post(reverse("portal:intern_worksite_registration"), {
+        coordinator = User.objects.create_user(username="external-site-reviewer", role=User.Role.COORDINATOR)
+        self.client.force_login(coordinator)
+        external_sites_url = reverse("portal:coordinator_external_worksites")
+        submitted = self.client.post(external_sites_url, {
+            "action": "create",
+            "intern": self.intern.pk,
             "name": "External OJT site",
             "address": "50 Placement Road",
             "latitude": "14.700000",
             "longitude": "121.100000",
+            "radius_meters": "100",
             "reported_accuracy_meters": "24",
+            "confirm_location": "on",
         })
-        self.assertRedirects(submitted, reverse("portal:profile"))
+        self.assertRedirects(submitted, external_sites_url)
         worksite = WorksiteLocation.objects.get(intern=self.intern)
 
-        coordinator = User.objects.create_user(username="external-site-reviewer", role=User.Role.COORDINATOR)
-        self.client.force_login(coordinator)
-        review_url = reverse("portal:coordinator_external_worksites")
-        self.assertContains(self.client.get(review_url), "External OJT site")
-        approved = self.client.post(review_url, {
-            "action": "review_intern_request",
-            "decision": "approve",
-            "worksite_id": worksite.pk,
+        approve_url = reverse("portal:admin_approvals")
+        self.assertContains(self.client.get(approve_url), "External OJT site")
+        approved = self.client.post(reverse("portal:admin_approvals"), {
+            "action": "approve_worksite",
+            "request_id": worksite.pk,
         })
-
-        self.assertRedirects(approved, review_url)
+        self.assertRedirects(approved, approve_url)
         worksite.refresh_from_db()
         self.assertEqual(worksite.approval_status, WorksiteLocation.ApprovalStatus.APPROVED)
         self.assertTrue(worksite.is_active)
         self.assertEqual(worksite.reviewed_by, coordinator)
 
-    def test_attendance_prefers_approved_intern_worksite_over_company_sites(self):
+    def test_admin_worksite_review_displays_map_and_requires_reason_for_corrections(self):
+        self._complete_intern_details()
+        application = Application.objects.create(
+            intern=self.intern,
+            posting=self.posting,
+            status=Application.Status.ACCEPTED,
+        )
+        worksite = WorksiteLocation.objects.create(
+            intern=self.intern,
+            application=application,
+            name="Review this OJT site",
+            address="80 Admin Review Road",
+            latitude="14.700000",
+            longitude="121.100000",
+            reported_accuracy_meters=22,
+            approval_status=WorksiteLocation.ApprovalStatus.PENDING,
+            is_active=False,
+            created_by=self.intern_user,
+        )
+        admin = User.objects.create_user(username="worksite-corrections-admin", role=User.Role.COORDINATOR)
+        self.client.force_login(admin)
+        approval_url = reverse("portal:admin_approvals")
+
+        page = self.client.get(approval_url)
+
+        self.assertContains(page, self.intern_user.username)
+        self.assertContains(page, self.company.company_name)
+        self.assertContains(page, worksite.address)
+        self.assertContains(page, "data-latitude=\"14.700000\"")
+        self.assertContains(page, "data-longitude=\"121.100000\"")
+        self.assertContains(page, "OpenStreetMap")
+        self.assertContains(page, "tile.openstreetmap.fr/hot")
+        self.assertContains(page, "OpenStreetMap France")
+        self.assertContains(page, "Pending")
+        self.assertContains(page, "±22 m")
+
+        missing_reason = self.client.post(approval_url, {
+            "action": "reject_worksite",
+            "request_id": worksite.pk,
+        })
+        self.assertEqual(missing_reason.status_code, 400)
+        worksite.refresh_from_db()
+        self.assertEqual(worksite.approval_status, WorksiteLocation.ApprovalStatus.PENDING)
+
+        requested = self.client.post(approval_url, {
+            "action": "request_worksite_corrections",
+            "request_id": worksite.pk,
+            "review_reason": "Please confirm the entrance address.",
+        })
+
+        self.assertRedirects(requested, approval_url)
+        worksite.refresh_from_db()
+        self.assertEqual(worksite.approval_status, WorksiteLocation.ApprovalStatus.REJECTED)
+        self.assertFalse(worksite.is_active)
+        self.assertEqual(worksite.rejection_reason, "Please confirm the entrance address.")
+        self.assertEqual(worksite.reviewed_by, admin)
+        self.client.force_login(self.intern_user)
+        intern_profile = self.client.get(reverse("portal:intern_worksite_registration"))
+        self.assertContains(intern_profile, "Please confirm the entrance address.")
+        self.assertContains(intern_profile, 'id="intern-worksite-request-form"')
+        self.assertContains(intern_profile, '<details class="worksite-request-details" open>')
+
+        corrected_address = "Richwell Colleges, Plaridel, Bulacan, 3004, Philippines"
+        corrected_submission = self.client.post(reverse("portal:intern_worksite_registration"), {
+            "application": application.pk,
+            "name": "Corrected OJT site",
+            "address": corrected_address,
+            "latitude": "14.710000",
+            "longitude": "121.110000",
+            "reported_accuracy_meters": "18",
+            "confirm_location": "on",
+        })
+        self.assertRedirects(corrected_submission, reverse("portal:intern_worksite_registration"))
+        corrected_worksite = WorksiteLocation.objects.get(name="Corrected OJT site")
+        self.assertEqual(corrected_worksite.address, corrected_address)
+        self.assertEqual(corrected_worksite.approval_status, WorksiteLocation.ApprovalStatus.PENDING)
+        self.assertFalse(corrected_worksite.is_active)
+        profile_with_correction = self.client.get(reverse("portal:intern_worksite_registration"))
+        self.assertContains(profile_with_correction, "Pending Admin Approval")
+        self.assertContains(profile_with_correction, corrected_address)
+
+    def test_admin_approval_replaces_previous_intern_site_without_deleting_it(self):
+        self._complete_intern_details()
+        application = Application.objects.create(
+            intern=self.intern,
+            posting=self.posting,
+            status=Application.Status.ACCEPTED,
+        )
+        previous = WorksiteLocation.objects.create(
+            intern=self.intern,
+            application=application,
+            name="Previous approved location",
+            address="1 Old Road",
+            latitude="14.600000",
+            longitude="121.000000",
+            approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+            is_active=True,
+        )
+        request = WorksiteLocation.objects.create(
+            intern=self.intern,
+            application=application,
+            name="New approved location",
+            address="2 New Road",
+            latitude="14.700000",
+            longitude="121.100000",
+            approval_status=WorksiteLocation.ApprovalStatus.PENDING,
+            is_active=False,
+            created_by=self.intern_user,
+        )
+        admin = User.objects.create_user(username="worksite-replacement-admin", role=User.Role.COORDINATOR)
+        self.client.force_login(admin)
+
+        response = self.client.post(reverse("portal:admin_approvals"), {
+            "action": "approve_worksite",
+            "request_id": request.pk,
+            "radius_meters": "150",
+        })
+
+        self.assertRedirects(response, reverse("portal:admin_approvals"))
+        request.refresh_from_db()
+        previous.refresh_from_db()
+        self.assertEqual(request.approval_status, WorksiteLocation.ApprovalStatus.APPROVED)
+        self.assertTrue(request.is_active)
+        self.assertEqual(request.radius_meters, 150)
+        self.assertEqual(previous.approval_status, WorksiteLocation.ApprovalStatus.APPROVED)
+        self.assertFalse(previous.is_active)
+        self.assertTrue(WorksiteLocation.objects.filter(pk=previous.pk).exists())
+        self.client.force_login(self.intern_user)
+        intern_profile = self.client.get(reverse("portal:intern_worksite_registration"))
+        self.assertContains(intern_profile, "2 New Road")
+        self.assertContains(intern_profile, "Official geofence radius: 150 m")
+
+    def test_unapproved_company_worksite_cannot_be_used_for_attendance(self):
+        Application.objects.create(
+            intern=self.intern,
+            posting=self.posting,
+            status=Application.Status.ACCEPTED,
+        )
+        WorksiteLocation.objects.create(
+            company=self.company,
+            name="Pending office",
+            address="Pending Road",
+            latitude="14.600000",
+            longitude="121.000000",
+            approval_status=WorksiteLocation.ApprovalStatus.PENDING,
+            is_active=False,
+        )
+        self.client.force_login(self.intern_user)
+
+        preview = self.client.post(
+            reverse("portal:attendance_face_preview"),
+            self._attendance_payload("clock_in", face_image=self._camera_data_url()),
+        )
+
+        self.assertEqual(preview.status_code, 409)
+        self.assertFalse(AttendanceLog.objects.filter(intern=self.intern).exists())
+        attendance = self.client.post(
+            reverse("portal:attendance"),
+            self._attendance_payload("clock_in"),
+        )
+        self.assertRedirects(attendance, reverse("portal:attendance"))
+        self.assertFalse(AttendanceLog.objects.filter(intern=self.intern).exists())
+
+    def test_platform_attendance_uses_only_approved_assigned_company_worksites(self):
         self._complete_intern_profile()
         self._enroll_attendance_location()
         personal_site = WorksiteLocation.objects.create(
@@ -312,24 +1011,71 @@ class PortalWorkflowTests(TestCase):
         )
         self.client.force_login(self.intern_user)
 
-        with patch(
-            "portal.views._attendance_face_check",
-            return_value=(AttendanceLog.FaceCheckStatus.MATCHED, 0.82, b"encrypted frame"),
-        ):
-            response = self.client.post(
-                reverse("portal:attendance"),
-                self._attendance_payload(
-                    "clock_in",
-                    clock_in_latitude="14.700000",
-                    clock_in_longitude="121.100000",
-                ),
-            )
+        response = self.client.post(
+            reverse("portal:attendance"),
+            self._attendance_payload(
+                "clock_in",
+                clock_in_latitude="14.700000",
+                clock_in_longitude="121.100000",
+            ),
+        )
 
         self.assertRedirects(response, reverse("portal:attendance"))
-        log = AttendanceLog.objects.get(intern=self.intern)
-        self.assertTrue(log.clock_in_within_location)
-        self.assertEqual(log.clock_in_distance_meters, 0)
-        self.assertEqual(log.clock_in_allowed_radius_meters, personal_site.radius_meters)
+        self.assertFalse(AttendanceLog.objects.filter(intern=self.intern).exists())
+        self.assertTrue(personal_site.is_active)
+
+    def test_attendance_ignores_intern_supplied_company_coordinates_and_flags(self):
+        self._complete_intern_profile()
+        self._enroll_attendance_location()
+        other_company_user = User.objects.create_user(
+            username="other-worksite-company",
+            role=User.Role.COMPANY,
+        )
+        other_company = CompanyProfile.objects.get(user=other_company_user)
+        foreign_site = WorksiteLocation.objects.create(
+            company=other_company,
+            name="Other company's office",
+            address="1 Foreign Road",
+            latitude="15.000000",
+            longitude="122.000000",
+            is_active=True,
+            approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+        )
+        self.client.force_login(self.intern_user)
+
+        response = self.client.post(reverse("portal:attendance"), {
+            "action": "clock_in",
+            "company_latitude": "14.600000",
+            "company_longitude": "121.000000",
+            "location_verified": "true",
+            "distance": "0",
+        })
+
+        self.assertRedirects(response, reverse("portal:attendance"))
+        self.assertFalse(AttendanceLog.objects.filter(intern=self.intern).exists())
+        foreign_location_attempt = self.client.post(
+            reverse("portal:attendance"),
+            self._attendance_payload(
+                "clock_in",
+                clock_in_latitude=str(foreign_site.latitude),
+                clock_in_longitude=str(foreign_site.longitude),
+                company_id=other_company.pk,
+                company_latitude=str(foreign_site.latitude),
+                company_longitude=str(foreign_site.longitude),
+            ),
+        )
+        self.assertRedirects(foreign_location_attempt, reverse("portal:attendance"))
+        self.assertFalse(AttendanceLog.objects.filter(intern=self.intern).exists())
+        invalid_position = self.client.post(
+            reverse("portal:attendance"),
+            self._attendance_payload(
+                "clock_in",
+                clock_in_latitude="NaN",
+                clock_in_longitude="Infinity",
+            ),
+        )
+        self.assertRedirects(invalid_position, reverse("portal:attendance"))
+        self.assertFalse(AttendanceLog.objects.filter(intern=self.intern).exists())
 
     def test_academic_period_rejects_reversed_or_overlapping_ranges(self):
         prelim = AcademicPeriod.objects.create(
@@ -556,7 +1302,7 @@ class PortalWorkflowTests(TestCase):
         second_page = self.client.get(reverse("portal:coordinator_users"), {"page": 2})
         self.assertEqual(len(second_page.context["users_page"].object_list), 2)
 
-    def test_coordinator_user_directory_reset_actions(self):
+    def test_admin_role_can_reset_face_and_worksite_from_user_directory(self):
         self._complete_intern_details(external=True)
         enrollment = FaceEnrollment.objects.create(
             intern=self.intern,
@@ -599,7 +1345,6 @@ class PortalWorkflowTests(TestCase):
         reset_face = self.client.post(
             reverse("portal:coordinator_reset_user_face", args=(self.intern.pk,)),
         )
-
         self.assertRedirects(reset_face, reverse("portal:coordinator_users"))
         self.assertFalse(FaceEnrollment.objects.filter(pk=enrollment.pk).exists())
         self.assertFalse(AttendanceFaceCapture.objects.filter(pk=capture.pk).exists())
@@ -617,6 +1362,16 @@ class PortalWorkflowTests(TestCase):
         self.assertFalse(active_site.is_active)
         self.assertFalse(pending_site.is_active)
         self.assertEqual(pending_site.approval_status, WorksiteLocation.ApprovalStatus.REJECTED)
+
+        superuser = User.objects.create_superuser(
+            username="directory-reset-superuser",
+            password="Safe-example-Password-927!",
+        )
+        self.client.force_login(superuser)
+        self.assertEqual(
+            self.client.get(reverse("portal:admin_approvals")).status_code,
+            200,
+        )
 
     def test_user_directory_and_reset_actions_are_coordinator_only(self):
         self.client.force_login(self.intern_user)
@@ -649,6 +1404,33 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(reverse("portal:intern_dashboard"), "/intern/dashboard/")
         self.assertEqual(reverse("portal:company_dashboard"), "/supervisor/dashboard/")
         self.assertEqual(reverse("portal:coordinator_dashboard"), "/admin/dashboard/")
+
+    def test_superuser_without_staff_flag_is_sent_to_admin_dashboard(self):
+        superuser = User.objects.create_user(
+            username="dashboard-superuser",
+            password="Safe-example-Password-927!",
+            is_superuser=True,
+            is_staff=False,
+        )
+        self.client.force_login(superuser)
+
+        response = self.client.get(reverse("portal:dashboard"))
+
+        self.assertRedirects(response, reverse("portal:coordinator_dashboard"))
+
+    def test_nonstaff_superuser_is_not_treated_as_an_intern_by_face_api(self):
+        superuser = User.objects.create_user(
+            username="face-api-superuser",
+            password="Safe-example-Password-927!",
+            is_superuser=True,
+            is_staff=False,
+        )
+        self.client.force_login(superuser)
+
+        response = self.client.post(reverse("portal:face_detection_preview"), {})
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"], "Only interns can use face capture.")
 
     def test_current_navigation_item_is_highlighted(self):
         self._complete_intern_profile()
@@ -749,6 +1531,28 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(self.intern.course, "Information Technology")
         self.assertEqual(self.intern.year_level, 3)
 
+    def test_intern_cannot_change_an_accepted_company_placement_to_external(self):
+        Application.objects.create(
+            intern=self.intern,
+            posting=self.posting,
+            status=Application.Status.ACCEPTED,
+        )
+        self.client.force_login(self.intern_user)
+
+        response = self.client.post(reverse("portal:profile"), {
+            "student_id": "TEST-STUDENT-ASSIGNED",
+            "university": "Example University",
+            "course": "Information Technology",
+            "year_level": 3,
+            "placement_type": InternProfile.PlacementType.EXTERNAL,
+            "external_host": "Untrusted host",
+        })
+
+        self.assertRedirects(response, reverse("portal:profile"))
+        self.intern.refresh_from_db()
+        self.assertEqual(self.intern.placement_type, InternProfile.PlacementType.PLATFORM)
+        self.assertEqual(self.intern.external_host, "")
+
     def test_profile_save_failure_is_logged_and_rolled_back(self):
         self.client.force_login(self.intern_user)
 
@@ -838,6 +1642,105 @@ class PortalWorkflowTests(TestCase):
         report = DailyReport.objects.get(intern=self.intern)
         self.assertEqual(report.status, DailyReport.Status.SUBMITTED)
 
+    def test_daily_report_submissions_are_immutable_and_visible_in_daily_weekly_histories(self):
+        self._complete_intern_profile()
+        Application.objects.create(
+            intern=self.intern,
+            posting=self.posting,
+            status=Application.Status.ACCEPTED,
+        )
+        self.client.force_login(self.intern_user)
+        report_url = reverse("portal:daily_report")
+        first_submission = self.client.post(report_url, {
+            "accomplishments": "Completed the inventory review.",
+            "challenges": "",
+        })
+        self.assertRedirects(first_submission, report_url)
+        first_report = DailyReport.objects.get(intern=self.intern)
+
+        second_submission = self.client.post(report_url, {
+            "accomplishments": "Prepared a handover summary.",
+            "challenges": "Waiting for final sign-off.",
+        })
+        self.assertRedirects(second_submission, report_url)
+        self.assertEqual(DailyReport.objects.filter(intern=self.intern).count(), 2)
+        first_report.refresh_from_db()
+        self.assertEqual(first_report.accomplishments, "Completed the inventory review.")
+
+        now = timezone.now()
+        AttendanceLog.objects.create(
+            intern=self.intern,
+            work_date=timezone.localdate(),
+            clock_in=now - timedelta(hours=8),
+            clock_out=now,
+            clock_in_distance_meters=24,
+            clock_in_allowed_radius_meters=100,
+            clock_in_within_location=True,
+            clock_out_distance_meters=31,
+            clock_out_allowed_radius_meters=100,
+            clock_out_within_location=True,
+            time_in_approved=True,
+            time_out_approved=True,
+        )
+        self.client.force_login(self.company_user)
+        attendance_logs = self.client.get(reverse("portal:company_attendance_history"))
+        self.assertContains(attendance_logs, "24 m / 100 m")
+        self.assertContains(attendance_logs, "Inside")
+        company_journals = self.client.get(reverse("portal:company_daily_reports"))
+        self.assertContains(company_journals, "Completed the inventory review.")
+        self.assertContains(company_journals, "Prepared a handover summary.")
+        self.assertContains(company_journals, "8.00")
+
+        weekly_journals = self.client.get(
+            reverse("portal:company_daily_reports"),
+            {"view": "weekly"},
+        )
+        self.assertContains(weekly_journals, "Weekly summary")
+        self.assertContains(weekly_journals, "Week of")
+        self.assertContains(weekly_journals, "8.00 approved hours")
+
+        admin = User.objects.create_superuser(username="journal-admin", password="Safe-example-Password-927!")
+        self.client.force_login(admin)
+        all_reports = self.client.get(
+            reverse("portal:admin_daily_reports"),
+            {"q": "intern", "date": timezone.localdate().isoformat()},
+        )
+        self.assertContains(all_reports, "Daily and Weekly Intern Reports")
+        self.assertContains(all_reports, "Search daily reports and weekly summaries from all interns.")
+        self.assertContains(all_reports, "Daily Reports")
+        self.assertContains(all_reports, "Review Pending Reports")
+        self.assertContains(all_reports, reverse("portal:coordinator_daily_reports"))
+        self.assertContains(all_reports, 'name="q"')
+        self.assertContains(all_reports, 'name="date"')
+        self.assertContains(all_reports, "2 daily reports")
+        daily_content = all_reports.content.decode()
+        daily_tabs_start = daily_content.index('<nav class="report-view-toggle"')
+        daily_tabs = daily_content[daily_tabs_start:daily_content.index("</nav>", daily_tabs_start)]
+        self.assertIn('button-primary" href="?view=daily', daily_tabs)
+        self.assertIn('aria-current="page"', daily_tabs)
+        self.assertContains(all_reports, "Completed the inventory review.")
+        self.assertContains(all_reports, "Prepared a handover summary.")
+
+        admin_weekly = self.client.get(
+            reverse("portal:admin_daily_reports"),
+            {"view": "weekly", "q": "intern", "week": timezone.localdate().isoformat()},
+        )
+        self.assertContains(admin_weekly, "Weekly Summaries")
+        self.assertContains(admin_weekly, "1 weekly summary")
+        self.assertContains(admin_weekly, "Week of")
+        weekly_content = admin_weekly.content.decode()
+        weekly_tabs_start = weekly_content.index('<nav class="report-view-toggle"')
+        weekly_tabs = weekly_content[weekly_tabs_start:weekly_content.index("</nav>", weekly_tabs_start)]
+        self.assertIn('button-primary" href="?view=weekly', weekly_tabs)
+        self.assertIn('aria-current="page"', weekly_tabs)
+
+        no_matches = self.client.get(
+            reverse("portal:admin_daily_reports"),
+            {"q": "no-matching-intern"},
+        )
+        self.assertContains(no_matches, "No daily reports found for the selected filters.")
+        self.assertContains(no_matches, "0 daily reports")
+
     def test_external_intern_uses_coordinator_workflow_instead_of_company_opportunities(self):
         self._complete_intern_profile(external=True)
         self.intern.external_host = "Northside Design Studio"
@@ -845,7 +1748,7 @@ class PortalWorkflowTests(TestCase):
         self.client.force_login(self.intern_user)
 
         page = self.client.get(reverse("portal:postings"))
-        self.assertContains(page, "Your external placement is managed directly with the OJT coordinator.")
+        self.assertContains(page, "Your external placement is managed directly with the OJT Admin.")
         self.assertNotContains(page, self.posting.title)
         self.assertNotContains(page, ">Opportunities</a>")
 
@@ -924,10 +1827,14 @@ class PortalWorkflowTests(TestCase):
         self._enroll_attendance_location()
         self.client.force_login(self.intern_user)
 
-        response = self.client.post(
-            reverse("portal:attendance"),
-            self._attendance_payload("clock_in"),
-        )
+        with patch(
+            "portal.views._attendance_face_check",
+            return_value=(AttendanceLog.FaceCheckStatus.MATCHED, 0.82, b"encrypted frame"),
+        ):
+            response = self.client.post(
+                reverse("portal:attendance"),
+                self._attendance_payload("clock_in"),
+            )
 
         self.assertRedirects(response, reverse("portal:attendance"))
         self.assertTrue(AttendanceLog.objects.filter(intern=self.intern).exists())
@@ -1055,6 +1962,14 @@ class PortalWorkflowTests(TestCase):
                     face_image=self._camera_data_url(),
                 ),
             )
+            inaccurate = self.client.post(
+                reverse("portal:attendance_face_preview"),
+                self._attendance_payload(
+                    "clock_in",
+                    clock_in_accuracy_meters="45",
+                    face_image=self._camera_data_url(),
+                ),
+            )
 
         self.assertEqual(inside.status_code, 200)
         self.assertEqual(inside.json()["location_status"], AttendanceFaceCapture.LocationStatus.INSIDE)
@@ -1062,18 +1977,49 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(outside.status_code, 200)
         self.assertEqual(outside.json()["location_status"], AttendanceFaceCapture.LocationStatus.OUTSIDE)
         self.assertTrue(outside.json()["location_requires_reason"])
+        self.assertEqual(inaccurate.json()["location_status"], AttendanceFaceCapture.LocationStatus.UNAVAILABLE)
+        self.assertTrue(inaccurate.json()["location_requires_reason"])
+        self.assertEqual(inaccurate.json()["max_accuracy_meters"], 30)
+
+    def test_poor_attendance_gps_accuracy_cannot_auto_approve(self):
+        self._complete_intern_profile()
+        self._enroll_attendance_location()
+        self.client.force_login(self.intern_user)
+        attendance_url = reverse("portal:attendance")
+        payload = self._attendance_payload("clock_in", clock_in_accuracy_meters="45")
+
+        rejected = self.client.post(attendance_url, payload)
+
+        self.assertRedirects(rejected, attendance_url)
+        self.assertFalse(AttendanceLog.objects.filter(intern=self.intern).exists())
+
+        with patch(
+            "portal.views._attendance_face_check",
+            return_value=(AttendanceLog.FaceCheckStatus.MATCHED, 0.82, b"encrypted frame"),
+        ):
+            submitted_for_review = self.client.post(attendance_url, {
+                **payload,
+                "clock_in_location_reason": "GPS accuracy was unstable at the site.",
+            })
+
+        self.assertRedirects(submitted_for_review, attendance_url)
+        log = AttendanceLog.objects.get(intern=self.intern)
+        capture = log.face_captures.get(event=AttendanceFaceCapture.Event.TIME_IN)
+        self.assertEqual(capture.location_status, AttendanceFaceCapture.LocationStatus.UNAVAILABLE)
+        self.assertEqual(capture.review_status, AttendanceFaceCapture.ReviewStatus.PENDING)
+        self.assertFalse(log.time_in_approved)
 
     def test_attendance_face_preview_classifies_capture_without_recording_attendance(self):
         self._complete_intern_profile()
         self._enroll_attendance_location()
         self.client.force_login(self.intern_user)
         cases = (
-            (AttendanceLog.FaceCheckStatus.MATCHED, "good"),
-            (AttendanceLog.FaceCheckStatus.NOT_MATCHED, "needs_review"),
-            (AttendanceLog.FaceCheckStatus.UNAVAILABLE, "poor"),
+            (AttendanceLog.FaceCheckStatus.MATCHED, 200),
+            (AttendanceLog.FaceCheckStatus.NOT_MATCHED, 403),
+            (AttendanceLog.FaceCheckStatus.UNAVAILABLE, 400),
         )
 
-        for face_status, expected_quality in cases:
+        for face_status, expected_status in cases:
             with self.subTest(face_status=face_status), patch(
                 "portal.views._attendance_face_check",
                 return_value=(face_status, 0.81, b"unused preview image"),
@@ -1083,17 +2029,18 @@ class PortalWorkflowTests(TestCase):
                     {"action": "clock_in", "face_image": self._camera_data_url()},
                 )
 
-                self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.json()["quality"], expected_quality)
-                self.assertIn("label", response.json())
-                self.assertIn("message", response.json())
-                self.assertEqual(response.json()["similarity"], 0.81)
+                self.assertEqual(response.status_code, expected_status)
+                if face_status == AttendanceLog.FaceCheckStatus.MATCHED:
+                    self.assertEqual(response.json()["quality"], "good")
+                    self.assertEqual(response.json()["similarity"], 0.81)
+                else:
+                    self.assertIn("error", response.json())
                 face_check.assert_called_once()
                 self.assertFalse(face_check.call_args.kwargs["retain_image"])
 
         self.assertFalse(AttendanceLog.objects.filter(intern=self.intern).exists())
 
-    def test_attendance_face_preview_does_not_require_profile_or_enrollment(self):
+    def test_attendance_face_preview_rejects_missing_face_enrollment(self):
         self._enroll_attendance_location()
         self.client.force_login(self.intern_user)
 
@@ -1102,9 +2049,9 @@ class PortalWorkflowTests(TestCase):
             {"action": "clock_in", "face_image": self._camera_data_url()},
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["quality"], "poor")
-        self.assertIsNone(response.json()["similarity"])
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["face_status"], AttendanceLog.FaceCheckStatus.NOT_ENROLLED)
+        self.assertIn("Enroll your face", response.json()["error"])
 
     def test_attendance_face_preview_returns_json_for_invalid_action(self):
         self._complete_intern_profile()
@@ -1133,7 +2080,13 @@ class PortalWorkflowTests(TestCase):
         self.client.force_login(self.intern_user)
         profile_url = reverse("portal:profile")
         enrollment_url = reverse("portal:intern_face_enrollment")
-        self.assertContains(self.client.get(profile_url), "Face enrollment for attendance")
+        profile = self.client.get(profile_url)
+        self.assertContains(profile, "Face enrollment for attendance")
+        self.assertContains(profile, "Bright, even lighting")
+        self.assertContains(profile, "Remove glasses or masks")
+        self.assertContains(profile, "Center your face in the oval")
+        self.assertContains(profile, "processed in memory")
+        self.assertContains(profile, 'id="submit-face-enrollment" type="submit" disabled')
         payload = {"face_image": self._camera_data_url()}
 
         missing_consent = self.client.post(enrollment_url, payload)
@@ -1149,7 +2102,147 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(record.enrolled_by, self.intern_user)
         self.assertEqual(record.consent_text_version, FACE_CONSENT_VERSION)
         self.assertEqual(decrypt_embedding(record.encrypted_embedding), b"intern embedding")
-        self.assertContains(self.client.get(profile_url), "Last updated")
+        enrolled_profile = self.client.get(profile_url)
+        self.assertContains(enrolled_profile, "Face Enrolled")
+        self.assertContains(enrolled_profile, "Request Face Re-Registration", count=1)
+        self.assertNotContains(enrolled_profile, 'id="intern-face-enrollment-form"')
+
+    @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
+    def test_face_reenrollment_is_locked_until_one_admin_approval(self):
+        FaceEnrollment.objects.create(
+            intern=self.intern,
+            encrypted_embedding=encrypt_embedding(b"original embedding"),
+            enrolled_by=self.intern_user,
+            consent_confirmed_at=timezone.now(),
+        )
+        self.client.force_login(self.intern_user)
+        profile_url = reverse("portal:profile")
+        enroll_url = reverse("portal:intern_face_enrollment")
+        payload = {
+            "consent_confirmed": "on",
+            "face_image": self._camera_data_url(),
+        }
+
+        locked_profile = self.client.get(profile_url)
+        self.assertContains(locked_profile, "Face Enrolled")
+        self.assertNotContains(locked_profile, 'id="intern-face-enrollment-form"')
+        denied_enrollment = self.client.post(enroll_url, payload)
+        self.assertRedirects(denied_enrollment, profile_url)
+        self.assertEqual(
+            decrypt_embedding(FaceEnrollment.objects.get(intern=self.intern).encrypted_embedding),
+            b"original embedding",
+        )
+
+        request_url = reverse("portal:intern_face_reenrollment_request")
+        submitted = self.client.post(request_url, {"reason": "My camera has stopped working."})
+        self.assertRedirects(submitted, profile_url)
+        request_record = FaceReenrollmentRequest.objects.get(intern=self.intern)
+        self.assertEqual(request_record.status, FaceReenrollmentRequest.Status.PENDING)
+        self.assertNotContains(self.client.get(profile_url), 'id="intern-face-enrollment-form"')
+
+        coordinator = User.objects.create_user(username="face-coordinator", role=User.Role.COORDINATOR)
+        self.client.force_login(coordinator)
+        self.assertEqual(self.client.get(reverse("portal:admin_approvals")).status_code, 200)
+
+        approval_url = reverse("portal:admin_approvals")
+        self.assertContains(self.client.get(approval_url), "My camera has stopped working.")
+        approved = self.client.post(approval_url, {
+            "action": "approve_face_reset",
+            "request_id": request_record.pk,
+        })
+        self.assertRedirects(approved, approval_url)
+        admin = User.objects.create_user(
+            username="face-admin",
+            password="Safe-example-Password-927!",
+            is_superuser=True,
+            is_staff=False,
+        )
+        self.client.force_login(admin)
+        self.assertEqual(self.client.get(approval_url).status_code, 200)
+
+        self.client.force_login(self.intern_user)
+        approved_profile = self.client.get(profile_url)
+        self.assertContains(approved_profile, "Re-registration approved")
+        self.assertContains(approved_profile, 'id="intern-face-enrollment-form"')
+        with (
+            patch("portal.views.create_face_embedding", return_value=b"replacement embedding"),
+            patch("portal.views._face_embedding_is_duplicate", return_value=False),
+        ):
+            enrolled = self.client.post(enroll_url, payload)
+        self.assertRedirects(enrolled, profile_url)
+        request_record.refresh_from_db()
+        self.assertEqual(request_record.status, FaceReenrollmentRequest.Status.COMPLETED)
+        self.assertEqual(
+            decrypt_embedding(FaceEnrollment.objects.get(intern=self.intern).encrypted_embedding),
+            b"replacement embedding",
+        )
+
+        with patch("portal.views.create_face_embedding", return_value=b"second replacement"):
+            second_enrollment = self.client.post(enroll_url, payload)
+        self.assertRedirects(second_enrollment, profile_url)
+        self.assertEqual(
+            decrypt_embedding(FaceEnrollment.objects.get(intern=self.intern).encrypted_embedding),
+            b"replacement embedding",
+        )
+
+    @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
+    def test_intern_face_enrollment_rejects_embedding_used_by_another_account(self):
+        from ml_engine.face_recognition import encrypt_embedding
+
+        other_user = User.objects.create_user(username="other-enrolled-face", role=User.Role.INTERN)
+        other_intern = InternProfile.objects.get(user=other_user)
+        FaceEnrollment.objects.create(
+            intern=other_intern,
+            encrypted_embedding=encrypt_embedding(b"existing embedding"),
+            enrolled_by=other_user,
+            consent_confirmed_at=timezone.now(),
+        )
+        self.client.force_login(self.intern_user)
+
+        with (
+            patch("portal.views.create_face_embedding", return_value=b"duplicate embedding"),
+            patch("portal.views.cosine_similarity", return_value=0.8) as similarity,
+        ):
+            response = self.client.post(
+                reverse("portal:intern_face_enrollment"),
+                {
+                    "consent_confirmed": "on",
+                    "face_image": self._camera_data_url(),
+                },
+                follow=True,
+            )
+
+        self.assertContains(response, "This face is already registered under another account.")
+        self.assertFalse(FaceEnrollment.objects.filter(intern=self.intern).exists())
+        similarity.assert_called_once()
+
+    @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
+    def test_intern_cannot_replace_face_enrollment_without_admin_approval(self):
+        FaceEnrollment.objects.create(
+            intern=self.intern,
+            encrypted_embedding=b"own legacy encrypted embedding",
+            enrolled_by=self.intern_user,
+            consent_confirmed_at=timezone.now(),
+        )
+        self.client.force_login(self.intern_user)
+
+        with patch("portal.views.create_face_embedding", return_value=b"replacement embedding") as create_embedding:
+            response = self.client.post(
+                reverse("portal:intern_face_enrollment"),
+                {
+                    "consent_confirmed": "on",
+                    "face_image": self._camera_data_url(),
+                },
+                follow=True,
+            )
+
+        self.assertContains(
+            response,
+            "An administrator must approve your face re-registration request before you can enroll again.",
+        )
+        create_embedding.assert_not_called()
+        record = FaceEnrollment.objects.get(intern=self.intern)
+        self.assertEqual(record.encrypted_embedding, b"own legacy encrypted embedding")
 
     @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
     def test_intern_face_enrollment_preview_requires_detectable_single_face(self):
@@ -1232,10 +2325,12 @@ class PortalWorkflowTests(TestCase):
         attendance = self.client.get(reverse("portal:attendance"))
         self.assertEqual(dashboard.status_code, 200)
         self.assertEqual(attendance.status_code, 200)
-        self.assertContains(attendance, "Worksite location is not set up")
+        self.assertContains(attendance, "Register a worksite")
+        self.assertNotContains(attendance, "Worksite location is not set up")
 
     def test_attendance_page_has_face_guide_and_capture_decision_controls(self):
         self._complete_intern_profile()
+        self._enroll_attendance_location()
         self.client.force_login(self.intern_user)
 
         response = self.client.get(reverse("portal:attendance"))
@@ -1245,9 +2340,15 @@ class PortalWorkflowTests(TestCase):
         self.assertContains(response, "face-detection-guide.js")
         self.assertContains(response, "Capture and check")
         self.assertContains(response, "Retake face")
-        self.assertContains(response, "Submit for approval")
+        self.assertContains(response, "Record attendance")
+        self.assertContains(response, "A successful single-face match is required")
+        self.assertContains(response, "Face Ready")
+        self.assertContains(response, "100m zone")
+        self.assertContains(response, "Look straight at the camera in good light")
+        self.assertNotContains(response, "Face verification required</h2>")
+        self.assertNotContains(response, "retained for up to 30 days")
 
-    def test_face_mismatch_does_not_record_attendance_and_creates_review_request(self):
+    def test_face_mismatch_is_rejected_without_creating_attendance(self):
         self._complete_intern_profile()
         self._enroll_attendance_location()
         self.client.force_login(self.intern_user)
@@ -1259,52 +2360,34 @@ class PortalWorkflowTests(TestCase):
             response = self.client.post(
                 reverse("portal:attendance"),
                 self._attendance_payload("clock_in"),
+                follow=True,
             )
 
-        self.assertRedirects(response, reverse("portal:attendance"))
-        log = AttendanceLog.objects.get(intern=self.intern)
-        self.assertIsNone(log.clock_in)
-        self.assertEqual(str(log.clock_in_latitude), "14.600000")
-        self.assertTrue(log.clock_in_within_location)
-        self.assertEqual(log.clock_in_face_status, AttendanceLog.FaceCheckStatus.NOT_MATCHED)
-        self.assertEqual(log.clock_in_face_score, 0.21)
-        capture = log.face_captures.get(event=AttendanceFaceCapture.Event.TIME_IN)
-        self.assertEqual(capture.review_status, AttendanceFaceCapture.ReviewStatus.PENDING)
-        self.assertEqual(bytes(capture.encrypted_image), b"encrypted test capture")
+        self.assertEqual(response.redirect_chain[0][0], reverse("portal:attendance"))
+        self.assertFalse(AttendanceLog.objects.filter(intern=self.intern).exists())
+        self.assertContains(
+            response,
+            "Face verification failed. Face does not match your registered profile.",
+        )
 
-    def test_rejecting_face_exception_preserves_the_location_verified_state(self):
+    def test_unavailable_or_multiple_face_capture_is_rejected(self):
         self._complete_intern_profile()
         self._enroll_attendance_location()
         self.client.force_login(self.intern_user)
 
         with patch(
             "portal.views._attendance_face_check",
-            return_value=(AttendanceLog.FaceCheckStatus.NOT_MATCHED, 0.21, b"encrypted test capture"),
+            return_value=(AttendanceLog.FaceCheckStatus.UNAVAILABLE, None, None),
         ):
-            self.client.post(
+            response = self.client.post(
                 reverse("portal:attendance"),
                 self._attendance_payload("clock_in"),
             )
 
-        log = AttendanceLog.objects.get(intern=self.intern)
-        capture = log.face_captures.get(event=AttendanceFaceCapture.Event.TIME_IN)
-        self.assertTrue(log.clock_in_within_location)
-        self.assertEqual(str(log.clock_in_latitude), "14.600000")
+        self.assertRedirects(response, reverse("portal:attendance"))
+        self.assertFalse(AttendanceLog.objects.filter(intern=self.intern).exists())
 
-        coordinator = User.objects.create_user(username="location-reviewer", role=User.Role.COORDINATOR)
-        self.client.force_login(coordinator)
-        rejected = self.client.post(
-            reverse("portal:review_attendance_face_capture", args=(capture.pk,)),
-            {"action": "reject"},
-        )
-
-        self.assertRedirects(rejected, reverse("portal:dtr_queue"))
-        log.refresh_from_db()
-        self.assertTrue(log.clock_in_within_location)
-        self.assertEqual(str(log.clock_in_latitude), "14.600000")
-        self.assertEqual(str(log.clock_in_longitude), "121.000000")
-
-    def test_company_can_approve_no_camera_time_in_without_server_error(self):
+    def test_no_camera_frame_is_rejected_without_creating_attendance(self):
         Application.objects.create(
             intern=self.intern,
             posting=self.posting,
@@ -1316,30 +2399,15 @@ class PortalWorkflowTests(TestCase):
         submitted = self.client.post(
             reverse("portal:attendance"),
             self._attendance_payload("clock_in"),
+            follow=True,
         )
-        self.assertRedirects(submitted, reverse("portal:attendance"))
+        self.assertEqual(submitted.redirect_chain[0][0], reverse("portal:attendance"))
 
-        log = AttendanceLog.objects.get(intern=self.intern)
-        capture = log.face_captures.get(event=AttendanceFaceCapture.Event.TIME_IN)
-        self.assertEqual(capture.face_status, AttendanceLog.FaceCheckStatus.NOT_CAPTURED)
-        self.assertIsNone(capture.encrypted_image)
-        self.assertIsNone(log.clock_in)
-
-        self.client.force_login(self.company_user)
-        queue = self.client.get(reverse("portal:company_dtr_queue"))
-        self.assertEqual(queue.status_code, 200)
-        approved = self.client.post(
-            reverse("portal:review_attendance_face_capture", args=(capture.pk,)),
-            {"action": "approve"},
+        self.assertFalse(AttendanceLog.objects.filter(intern=self.intern).exists())
+        self.assertContains(
+            submitted,
+            "Capture a face frame before recording attendance.",
         )
-        self.assertRedirects(approved, reverse("portal:company_dtr_queue"))
-
-        log.refresh_from_db()
-        capture.refresh_from_db()
-        self.assertIsNotNone(log.clock_in)
-        self.assertTrue(log.clock_in_within_location)
-        self.assertTrue(log.time_in_approved)
-        self.assertEqual(capture.review_status, AttendanceFaceCapture.ReviewStatus.APPROVED)
 
     def test_attendance_page_explains_required_face_verification(self):
         self._complete_intern_profile()
@@ -1348,9 +2416,10 @@ class PortalWorkflowTests(TestCase):
 
         response = self.client.get(reverse("portal:attendance"))
 
-        self.assertContains(response, "Face verification required")
-        self.assertContains(response, "retained for up to 30 days")
-        self.assertContains(response, "Camera starts when you choose Time in or Time out.")
+        self.assertContains(response, "Face Ready")
+        self.assertNotContains(response, "Face verification required</h2>")
+        self.assertNotContains(response, "retained for up to 30 days")
+        self.assertContains(response, "Choose Time in or Time out to open the camera.")
         self.assertNotContains(response, "Start camera")
         self.assertNotContains(response, "Capture face for attendance")
         self.assertContains(response, "Capture and check")
@@ -1402,7 +2471,7 @@ class PortalWorkflowTests(TestCase):
         )
 
     @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
-    def test_company_can_review_failure_and_view_only_its_attendance_capture(self):
+    def test_company_can_review_location_exception_and_view_only_its_capture(self):
         from ml_engine.face_recognition import encrypt_face_capture
 
         Application.objects.create(
@@ -1416,16 +2485,20 @@ class PortalWorkflowTests(TestCase):
         encrypted_image = encrypt_face_capture(b"test attendance jpeg")
         with patch(
             "portal.views._attendance_face_check",
-            return_value=(AttendanceLog.FaceCheckStatus.NOT_MATCHED, 0.21, encrypted_image),
+            return_value=(AttendanceLog.FaceCheckStatus.MATCHED, 0.81, encrypted_image),
         ):
             self.client.post(
                 reverse("portal:attendance"),
-                self._attendance_payload("clock_in"),
+                self._attendance_payload(
+                    "clock_in",
+                    clock_in_latitude="14.700000",
+                    clock_in_location_reason="The office GPS signal was inaccurate today.",
+                ),
             )
 
         log = AttendanceLog.objects.get(intern=self.intern)
         capture = log.face_captures.get()
-        self.assertIsNone(log.clock_in)
+        self.assertFalse(log.time_in_approved)
         self.client.force_login(self.company_user)
         queue = self.client.get(reverse("portal:company_dtr_queue"))
         self.assertContains(queue, "Approve time in")
@@ -1521,6 +2594,20 @@ class PortalWorkflowTests(TestCase):
             clock_in_face_score=0.8,
         )
 
+        deleted = self.client.post(url, {
+            "action": "delete",
+            "intern_id": self.intern.pk,
+        })
+        self.assertRedirects(deleted, url)
+        self.assertFalse(FaceEnrollment.objects.filter(pk=record.pk).exists())
+        record = FaceEnrollment.objects.create(
+            intern=self.intern,
+            encrypted_embedding=record.encrypted_embedding,
+            enrolled_by=coordinator,
+            consent_confirmed_at=record.consent_confirmed_at,
+        )
+        admin = User.objects.create_superuser(username="face-reset-superuser", password="Safe-example-Password-927!")
+        self.client.force_login(admin)
         deleted = self.client.post(url, {
             "action": "delete",
             "intern_id": self.intern.pk,

@@ -13,12 +13,13 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Avg, Count, DurationField, ExpressionWrapper, F, Q, Sum
-from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequest, JsonResponse
+from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequest, HttpResponseForbidden, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from django.core.paginator import Paginator
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_http_methods, require_POST
 from docx import Document
 from docx.opc.exceptions import PackageNotFoundError
 from docx.table import Table
@@ -29,16 +30,19 @@ from zipfile import BadZipFile, LargeZipFile, ZipFile
 from accounts.models import User
 
 from .forms import ApplicationSubmissionForm, CompanyProfileForm, DailyReportForm, DailyReportReviewForm, ExternalWorksiteLocationForm, InternProfileForm, InternWorksiteRequestForm, PostingForm, ScorecardForm, ScorecardSelectionForm, WorksiteLocationForm
-from .models import AcademicPeriod, Application, AttendanceFaceCapture, AttendanceLog, AuditLog, CompanyProfile, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, InternProfile, OJT_RENDERED_HOURS_CAP, Posting, RiskAssessment, Scorecard, WorksiteLocation, pending_attendance_approval_count
+from .models import AcademicPeriod, Application, AttendanceFaceCapture, AttendanceLog, AuditLog, CompanyProfile, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, FaceReenrollmentRequest, InternProfile, OJT_RENDERED_HOURS_CAP, Posting, RiskAssessment, Scorecard, WorksiteLocation, pending_attendance_approval_count
 from .utils import attendance_pdf, audit, certificate_pdf, haversine_distance_km
 from ml_engine.face_capture import FaceCaptureError, decode_camera_image, encode_camera_image
 from ml_engine.face_detector import detect_faces
 from ml_engine.face_recognition import (
+    COSINE_MATCH_THRESHOLD,
     FaceImageError,
     FaceModelError,
     compare_face_embedding,
+    cosine_similarity,
     create_face_embedding,
     decrypt_face_capture,
+    decrypt_embedding,
     encrypt_face_capture,
     encrypt_embedding,
 )
@@ -168,13 +172,24 @@ def role_required(*roles):
         @wraps(view)
         @login_required
         def wrapped(request, *args, **kwargs):
-            if not (request.user.is_staff or request.user.role in roles):
+            if not (request.user.is_staff or request.user.is_superuser or request.user.role in roles):
                 return render(request, "errors/403.html", status=403)
             return view(request, *args, **kwargs)
 
         return wrapped
 
     return decorate
+
+
+def admin_required(view):
+    @wraps(view)
+    @login_required
+    def wrapped(request, *args, **kwargs):
+        if not request.user.is_admin:
+            return render(request, "errors/403.html", status=403)
+        return view(request, *args, **kwargs)
+
+    return wrapped
 
 
 def intern_api_required():
@@ -184,7 +199,7 @@ def intern_api_required():
         def wrapped(request, *args, **kwargs):
             if not request.user.is_authenticated:
                 return JsonResponse({"error": "Your session expired. Sign in again and retry."}, status=401)
-            if request.user.is_staff or request.user.role != User.Role.INTERN:
+            if request.user.is_admin or request.user.role != User.Role.INTERN:
                 return JsonResponse({"error": "Only interns can use face capture."}, status=403)
 
             if not InternProfile.objects.filter(user=request.user).exists():
@@ -199,7 +214,7 @@ def intern_api_required():
 def dashboard(request):
     if not request.user.is_authenticated:
         return redirect("accounts:login")
-    if request.user.is_staff or request.user.role == User.Role.COORDINATOR:
+    if request.user.is_admin:
         return redirect("portal:coordinator_dashboard")
     if request.user.role == User.Role.COMPANY:
         return redirect("portal:company_dashboard")
@@ -224,6 +239,9 @@ def intern_dashboard(request):
 
 @role_required(User.Role.INTERN)
 def profile(request):
+    if request.GET.get("section") == "worksite":
+        return redirect("portal:intern_worksite_registration")
+
     intern = get_object_or_404(InternProfile, user=request.user)
     form = InternProfileForm(request.POST or None, request.FILES or None, instance=intern)
     if request.method == "POST" and form.is_valid():
@@ -239,161 +257,179 @@ def profile(request):
     return render(request, "portal/intern/profile.html", _intern_profile_context(intern, form=form))
 
 
-def _intern_profile_context(intern, *, form=None, worksite_request_form=None):
+def _intern_profile_context(intern, *, form=None):
     enrollment = FaceEnrollment.objects.filter(intern=intern).first()
+    face_reenrollment_request = intern.face_reenrollment_requests.filter(
+        status__in=(
+            FaceReenrollmentRequest.Status.PENDING,
+            FaceReenrollmentRequest.Status.APPROVED,
+        ),
+    ).first()
     return {
         "form": form or InternProfileForm(instance=intern),
-        "worksite_request_form": worksite_request_form or InternWorksiteRequestForm(),
         "intern": intern,
-        "can_request_intern_worksite": (
-            intern.placement_type == InternProfile.PlacementType.EXTERNAL
-            or Application.objects.filter(
-                intern=intern,
-                status=Application.Status.ACCEPTED,
-            ).exists()
-        ),
         "face_enrollment": enrollment,
         "face_enrollment_current": enrollment is not None and enrollment.consent_text_version == FACE_CONSENT_VERSION,
-        "intern_worksite": intern.attendance_worksites.filter(
-            Q(approval_status=WorksiteLocation.ApprovalStatus.PENDING)
-            | Q(approval_status=WorksiteLocation.ApprovalStatus.APPROVED, is_active=True)
-        ).order_by("-created_at").first(),
+        "face_reenrollment_request": face_reenrollment_request,
+    }
+
+
+def _intern_worksite_context(intern, *, worksite_form=None):
+    accepted_assignment_exists = Application.objects.filter(
+        intern=intern,
+        status=Application.Status.ACCEPTED,
+    ).exists()
+    accepted_applications = Application.objects.filter(
+        intern=intern,
+        status=Application.Status.ACCEPTED,
+    )
+    approved_intern_worksites = intern.attendance_worksites.filter(
+        is_active=True,
+        approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+    ).filter(
+        Q(application__in=accepted_applications) if accepted_assignment_exists
+        else Q(application__isnull=True)
+    )
+    approved_worksites = list(
+        (approved_intern_worksites if approved_intern_worksites.exists() else _worksites_for_attendance(intern))
+        .select_related("company")
+        .order_by("name", "pk")
+    )
+    pending_intern_worksite = intern.attendance_worksites.filter(
+        approval_status=WorksiteLocation.ApprovalStatus.PENDING,
+    ).select_related("application__posting__company").order_by("-created_at").first()
+    rejected_intern_worksite = intern.attendance_worksites.filter(
+        approval_status=WorksiteLocation.ApprovalStatus.REJECTED,
+    ).exclude(rejection_reason="").order_by("-reviewed_at", "-created_at").first()
+    return {
+        "worksite_form": worksite_form or InternWorksiteRequestForm(intern=intern),
+        "intern": intern,
+        "intern_worksites": approved_worksites,
+        "pending_intern_worksite": pending_intern_worksite,
+        "rejected_intern_worksite": rejected_intern_worksite,
+        "gps_max_accuracy_meters": settings.GPS_MAX_ACCURACY_METERS,
     }
 
 
 @role_required(User.Role.INTERN)
-@require_POST
+@require_http_methods(["GET", "POST"])
 def intern_worksite_registration(request):
-    form = InternWorksiteRequestForm(request.POST)
     intern = get_object_or_404(InternProfile, user=request.user)
-    if not form.is_valid():
-        return render(
-            request,
-            "portal/intern/profile.html",
-            _intern_profile_context(
-                intern,
-                worksite_request_form=form,
-            ),
-        )
-
-    if intern.placement_type == InternProfile.PlacementType.PLATFORM:
-        has_accepted_placement = Application.objects.filter(
-            intern=intern,
-            status=Application.Status.ACCEPTED,
-        ).exists()
-        if not has_accepted_placement:
-            messages.error(request, "An accepted company placement is required before requesting a worksite.")
-            return redirect("portal:profile")
-
-    with transaction.atomic():
-        locked_intern = InternProfile.objects.select_for_update().get(pk=intern.pk)
-        existing_request = WorksiteLocation.objects.filter(intern=locked_intern).filter(
-            Q(approval_status=WorksiteLocation.ApprovalStatus.PENDING)
-            | Q(approval_status=WorksiteLocation.ApprovalStatus.APPROVED, is_active=True)
-        ).exists()
-        if existing_request:
-            messages.error(
-                request,
-                "A worksite request is already pending or approved. Ask your supervisor to review or reset it before registering again.",
-            )
-            return redirect("portal:profile")
-
+    form = InternWorksiteRequestForm(
+        request.POST if request.method == "POST" else None,
+        intern=intern,
+    )
+    if request.method == "POST" and form.is_valid():
         worksite = form.save(commit=False)
-        worksite.intern = locked_intern
+        worksite.company = None
+        worksite.intern = intern
+        worksite.application = form.cleaned_data.get("application")
+        worksite.created_by = request.user
         worksite.radius_meters = 100
         worksite.approval_status = WorksiteLocation.ApprovalStatus.PENDING
+        worksite.rejection_reason = ""
         worksite.is_active = False
-        worksite.created_by = request.user
         worksite.save()
         audit(request.user, "worksite.registration_requested", worksite)
+        messages.success(request, "Your OJT worksite location was submitted for Admin approval.")
+        return redirect("portal:intern_worksite_registration")
 
-    messages.success(request, "Your worksite location was sent to your supervisor for review.")
-    return redirect("portal:profile")
+    return render(request, "portal/intern/worksite_location.html", {
+        **_intern_worksite_context(intern, worksite_form=form),
+    })
 
 
-@role_required(User.Role.COMPANY)
+@login_required
 def company_worksites(request):
-    company = get_object_or_404(CompanyProfile, user=request.user)
-    accepted_interns = accepted_company_interns(company)
+    is_admin = request.user.is_admin
+    is_company = request.user.role == User.Role.COMPANY and not is_admin
+    if not (is_admin or is_company):
+        return render(request, "errors/403.html", status=403)
+
+    if is_company and request.method == "POST":
+        return HttpResponseForbidden("Company users cannot create or change official worksite locations.")
+
+    company = None if is_admin else get_object_or_404(CompanyProfile, user=request.user)
+    form = WorksiteLocationForm(request.POST or None, allow_company_selection=True) if is_admin else None
+    if is_admin and request.method == "GET" and request.GET.get("company"):
+        form.fields["company"].initial = request.GET["company"]
+
     if request.method == "POST" and request.POST.get("action") == "deactivate":
-        worksite = get_object_or_404(company.worksites, pk=request.POST.get("worksite_id"))
+        if not is_admin:
+            return HttpResponseForbidden("Company worksite changes must be submitted for Admin approval.")
+        eligible_worksites = WorksiteLocation.objects.filter(company__isnull=False, intern__isnull=True)
+        worksite = get_object_or_404(eligible_worksites, pk=request.POST.get("worksite_id"))
         worksite.is_active = False
         worksite.save(update_fields=("is_active",))
         audit(request.user, "worksite.deactivated", worksite)
         messages.success(request, f"{worksite.name} was deactivated.")
         return redirect("portal:company_worksites")
 
-    if request.method == "POST" and request.POST.get("action") in {
-        "review_intern_request",
-        "reset_intern_location",
-    }:
-        worksite = get_object_or_404(
-            WorksiteLocation.objects.filter(intern__in=accepted_interns, company__isnull=True),
-            pk=request.POST.get("worksite_id"),
-        )
-        action = request.POST.get("action")
-        if action == "review_intern_request":
-            decision = request.POST.get("decision")
-            if worksite.approval_status != WorksiteLocation.ApprovalStatus.PENDING:
-                messages.info(request, "This worksite request has already been reviewed.")
-            elif decision not in {"approve", "reject"}:
-                messages.error(request, "Choose whether to approve or reject the worksite request.")
-            else:
-                worksite.approval_status = (
-                    WorksiteLocation.ApprovalStatus.APPROVED
-                    if decision == "approve"
-                    else WorksiteLocation.ApprovalStatus.REJECTED
-                )
-                worksite.is_active = decision == "approve"
-                worksite.reviewed_by = request.user
-                worksite.reviewed_at = timezone.now()
-                worksite.save(update_fields=(
-                    "approval_status",
-                    "is_active",
-                    "reviewed_by",
-                    "reviewed_at",
-                ))
-                audit(request.user, f"worksite.registration_{decision}", worksite)
-                outcome = "approved" if decision == "approve" else "rejected"
-                messages.success(request, f"{worksite.name} request {outcome}.")
-        elif worksite.is_active and worksite.approval_status == WorksiteLocation.ApprovalStatus.APPROVED:
-            worksite.is_active = False
-            worksite.reviewed_by = request.user
-            worksite.reviewed_at = timezone.now()
-            worksite.save(update_fields=("is_active", "reviewed_by", "reviewed_at"))
-            audit(request.user, "worksite.registration_reset", worksite)
-            messages.success(request, f"{worksite.name} was reset. The intern can request a new location.")
-        else:
-            messages.error(request, "Only an approved, active intern worksite can be reset.")
-        return redirect("portal:company_worksites")
-
-    form = WorksiteLocationForm(request.POST or None)
     if request.method == "POST" and request.POST.get("action") == "create":
         if form.is_valid():
             worksite = form.save(commit=False)
-            worksite.company = company
+            worksite.company = form.cleaned_data["company"] if is_admin else company
             worksite.created_by = request.user
+            worksite.approval_status = (
+                WorksiteLocation.ApprovalStatus.APPROVED
+                if is_admin
+                else WorksiteLocation.ApprovalStatus.PENDING
+            )
+            worksite.is_active = is_admin
             worksite.save()
-            audit(request.user, "worksite.enrolled", worksite)
-            messages.success(request, f"{worksite.name} was enrolled as an attendance location.")
+            if is_admin:
+                audit(request.user, "worksite.enrolled_by_admin", worksite)
+                messages.success(request, f"{worksite.name} was registered as an approved attendance location.")
+            else:
+                audit(request.user, "worksite.registration_requested", worksite)
+                messages.success(request, f"{worksite.name} was submitted for Admin approval.")
             return redirect("portal:company_worksites")
     elif request.method == "POST":
         messages.error(request, "Choose a valid worksite action.")
 
+    worksites = WorksiteLocation.objects.filter(company__isnull=False, intern__isnull=True) if is_admin else (
+        WorksiteLocation.objects.filter(
+            approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+        )
+        .filter(
+            Q(company=company, intern__isnull=True)
+            | Q(
+                company__isnull=True,
+                application__posting__company=company,
+                application__status=Application.Status.ACCEPTED,
+            )
+        )
+        .distinct()
+    )
+    pending_worksites = WorksiteLocation.objects.filter(
+            company__isnull=False,
+            intern__isnull=True,
+            approval_status=WorksiteLocation.ApprovalStatus.PENDING,
+        )
+    if not is_admin:
+        pending_worksites = WorksiteLocation.objects.none()
     return render(request, "portal/worksite_locations.html", {
         "form": form,
-        "worksites": WorksiteLocation.objects.filter(
-            Q(company=company)
-            | Q(company__isnull=True, intern__in=accepted_interns)
-        ).select_related("intern__user", "created_by", "reviewed_by"),
-        "pending_worksite_count": WorksiteLocation.objects.filter(
-            company__isnull=True,
-            intern__in=accepted_interns,
-            approval_status=WorksiteLocation.ApprovalStatus.PENDING,
-        ).count(),
+        "gps_max_accuracy_meters": settings.GPS_MAX_ACCURACY_METERS,
+        "worksites": worksites.select_related(
+            "company",
+            "intern__user",
+            "created_by",
+            "reviewed_by",
+            "application__posting__company",
+        ),
+        "pending_worksite_count": pending_worksites.count() if is_admin else 0,
+        "pending_worksite_label": "company worksite requests" if is_admin else "intern worksite requests",
+        "is_admin": is_admin,
+        "is_admin_company_manager": is_admin,
+        "is_read_only_company": is_company,
         "is_coordinator": False,
-        "page_title": "Worksite locations",
-        "page_description": "Enroll approved company worksites and review location requests from your accepted interns. An approved intern-specific location takes precedence for that intern.",
+        "page_title": "Company worksite locations" if is_admin else "Approved worksite locations",
+        "page_description": (
+            "Register an approved location for a selected Company."
+            if is_admin
+            else "Approved locations are shown here for reference. Interns submit worksite locations for Admin approval."
+        ),
     })
 
 
@@ -416,46 +452,18 @@ def coordinator_external_worksites(request):
         messages.success(request, f"{worksite.name} was deactivated.")
         return redirect("portal:coordinator_external_worksites")
 
-    if request.method == "POST" and request.POST.get("action") == "review_intern_request":
-        worksite = get_object_or_404(
-            WorksiteLocation.objects.filter(company__isnull=True, intern__in=external_interns),
-            pk=request.POST.get("worksite_id"),
-        )
-        decision = request.POST.get("decision")
-        if worksite.approval_status != WorksiteLocation.ApprovalStatus.PENDING:
-            messages.info(request, "This worksite request has already been reviewed.")
-        elif decision not in {"approve", "reject"}:
-            messages.error(request, "Choose whether to approve or reject the worksite request.")
-        else:
-            worksite.approval_status = (
-                WorksiteLocation.ApprovalStatus.APPROVED
-                if decision == "approve"
-                else WorksiteLocation.ApprovalStatus.REJECTED
-            )
-            worksite.is_active = decision == "approve"
-            worksite.reviewed_by = request.user
-            worksite.reviewed_at = timezone.now()
-            worksite.save(update_fields=(
-                "approval_status",
-                "is_active",
-                "reviewed_by",
-                "reviewed_at",
-            ))
-            audit(request.user, f"worksite.registration_{decision}", worksite)
-            outcome = "approved" if decision == "approve" else "rejected"
-            messages.success(request, f"{worksite.name} request {outcome}.")
-        return redirect("portal:coordinator_external_worksites")
-
     form = ExternalWorksiteLocationForm(request.POST or None)
     if request.method == "POST" and request.POST.get("action") == "create":
         if form.is_valid():
             worksite = form.save(commit=False)
             worksite.created_by = request.user
+            worksite.approval_status = WorksiteLocation.ApprovalStatus.PENDING
+            worksite.is_active = False
             worksite.save()
-            audit(request.user, "worksite.assigned_to_external_intern", worksite)
+            audit(request.user, "worksite.registration_requested", worksite)
             messages.success(
                 request,
-                f"{worksite.name} was assigned to {worksite.intern.user.get_full_name() or worksite.intern.user.username}.",
+                f"{worksite.name} was submitted for administrator approval.",
             )
             return redirect("portal:coordinator_external_worksites")
     elif request.method == "POST":
@@ -467,13 +475,14 @@ def coordinator_external_worksites(request):
     ).select_related("intern__user", "created_by")
     return render(request, "portal/worksite_locations.html", {
         "form": form,
+        "gps_max_accuracy_meters": settings.GPS_MAX_ACCURACY_METERS,
         "worksites": worksites,
         "pending_worksite_count": worksites.filter(
             approval_status=WorksiteLocation.ApprovalStatus.PENDING,
         ).count(),
         "is_coordinator": True,
         "page_title": "External intern worksites",
-        "page_description": "Assign worksite locations to external interns or review their self-registration requests before attendance can use them.",
+        "page_description": "Submit a location for an external intern. An administrator must approve it before attendance can use it.",
     })
 
 
@@ -483,6 +492,14 @@ def intern_face_enrollment(request):
     intern = get_object_or_404(InternProfile, user=request.user)
     if request.POST.get("consent_confirmed") != "on":
         messages.error(request, "Confirm your informed consent before enrolling your face.")
+        return redirect("portal:profile")
+
+    has_enrollment = FaceEnrollment.objects.filter(intern=intern).exists()
+    if has_enrollment and not FaceReenrollmentRequest.objects.filter(
+        intern=intern,
+        status=FaceReenrollmentRequest.Status.APPROVED,
+    ).exists():
+        messages.error(request, "An administrator must approve your face re-registration request before you can enroll again.")
         return redirect("portal:profile")
 
     try:
@@ -496,18 +513,249 @@ def intern_face_enrollment(request):
         messages.error(request, "Face enrollment could not be completed because the models are unavailable.")
         return redirect("portal:profile")
 
-    _, created = FaceEnrollment.objects.update_or_create(
-        intern=intern,
-        defaults={
-            "encrypted_embedding": embedding,
-            "enrolled_by": request.user,
-            "consent_confirmed_at": timezone.now(),
-            "consent_text_version": FACE_CONSENT_VERSION,
-        },
-    )
+    try:
+        if _face_embedding_is_duplicate(intern, decrypt_embedding(embedding)):
+            messages.error(request, "This face is already registered under another account.")
+            return redirect("portal:profile")
+    except FaceModelError:
+        LOGGER.exception("Could not verify face uniqueness for intern %s.", intern.pk)
+        messages.error(request, "Face uniqueness could not be verified. Please try again later.")
+        return redirect("portal:profile")
+
+    with transaction.atomic():
+        locked_intern = InternProfile.objects.select_for_update().get(pk=intern.pk)
+        existing_enrollment = FaceEnrollment.objects.filter(intern=locked_intern).first()
+        approved_request = FaceReenrollmentRequest.objects.select_for_update().filter(
+            intern=locked_intern,
+            status=FaceReenrollmentRequest.Status.APPROVED,
+        ).first()
+        if existing_enrollment:
+            if approved_request is None:
+                messages.error(request, "An administrator must approve your face re-registration request before you can enroll again.")
+                return redirect("portal:profile")
+
+        _, created = FaceEnrollment.objects.update_or_create(
+            intern=locked_intern,
+            defaults={
+                "encrypted_embedding": embedding,
+                "enrolled_by": request.user,
+                "consent_confirmed_at": timezone.now(),
+                "consent_text_version": FACE_CONSENT_VERSION,
+            },
+        )
+        if approved_request:
+            approved_request.status = FaceReenrollmentRequest.Status.COMPLETED
+            approved_request.save(update_fields=("status",))
+
     audit(request.user, "face_enrollment.created" if created else "face_enrollment.updated", intern)
-    messages.success(request, "Your encrypted face enrollment is saved. You can now use face recognition for attendance.")
+    if approved_request:
+        messages.success(request, "Your face enrollment is saved. The approved re-registration has been used.")
+    else:
+        messages.success(request, "Your encrypted face enrollment is saved. You can now use face recognition for attendance.")
     return redirect("portal:profile")
+
+
+@role_required(User.Role.INTERN)
+@require_POST
+def intern_face_reenrollment_request(request):
+    intern = get_object_or_404(InternProfile, user=request.user)
+    reason = request.POST.get("reason", "").strip()
+    if not FaceEnrollment.objects.filter(intern=intern).exists():
+        messages.error(request, "Enroll your face before requesting re-registration.")
+        return redirect("portal:profile")
+    if len(reason) < 10 or len(reason) > 500:
+        messages.error(request, "Enter a reason between 10 and 500 characters.")
+        return redirect("portal:profile")
+
+    with transaction.atomic():
+        InternProfile.objects.select_for_update().get(pk=intern.pk)
+        active_request = FaceReenrollmentRequest.objects.filter(
+            intern=intern,
+            status__in=(
+                FaceReenrollmentRequest.Status.PENDING,
+                FaceReenrollmentRequest.Status.APPROVED,
+            ),
+        ).exists()
+        if active_request:
+            messages.info(request, "A face re-registration request is already awaiting completion.")
+            return redirect("portal:profile")
+        reenrollment_request = FaceReenrollmentRequest.objects.create(
+            intern=intern,
+            reason=reason,
+        )
+        audit(request.user, "face_reenrollment.requested", reenrollment_request)
+
+    messages.success(request, "Your face re-registration request was sent to an administrator.")
+    return redirect("portal:profile")
+
+
+@admin_required
+def admin_approvals(request):
+    if request.method == "POST":
+        action = request.POST.get("action")
+        decision = {
+            "approve_face_reset": (
+                FaceReenrollmentRequest,
+                FaceReenrollmentRequest.Status.APPROVED,
+            ),
+            "reject_face_reset": (
+                FaceReenrollmentRequest,
+                FaceReenrollmentRequest.Status.REJECTED,
+            ),
+            "approve_worksite": (
+                WorksiteLocation,
+                WorksiteLocation.ApprovalStatus.APPROVED,
+            ),
+            "reject_worksite": (
+                WorksiteLocation,
+                WorksiteLocation.ApprovalStatus.REJECTED,
+            ),
+            "request_worksite_corrections": (
+                WorksiteLocation,
+                WorksiteLocation.ApprovalStatus.REJECTED,
+            ),
+        }.get(action)
+        if decision is None:
+            return HttpResponseBadRequest("Unknown approval action.")
+
+        model, status = decision
+        object_id = request.POST.get("request_id")
+        review_reason = request.POST.get("review_reason", "").strip()
+        if model is WorksiteLocation and status == WorksiteLocation.ApprovalStatus.REJECTED and not review_reason:
+            return HttpResponseBadRequest("Provide a reason when rejecting a worksite or requesting corrections.")
+
+        approved_radius = None
+        if model is WorksiteLocation and status == WorksiteLocation.ApprovalStatus.APPROVED:
+            radius_value = request.POST.get("radius_meters", "").strip()
+            if radius_value:
+                try:
+                    approved_radius = int(radius_value)
+                except ValueError:
+                    return HttpResponseBadRequest("The geofence radius must be a whole number of meters.")
+                if not 10 <= approved_radius <= 5000:
+                    return HttpResponseBadRequest("The geofence radius must be between 10 and 5000 meters.")
+
+        with transaction.atomic():
+            if model is FaceReenrollmentRequest:
+                approval_request = get_object_or_404(
+                    FaceReenrollmentRequest.objects.select_for_update(),
+                    pk=object_id,
+                    status=FaceReenrollmentRequest.Status.PENDING,
+                )
+                approval_request.status = status
+                approval_request.reviewed_by = request.user
+                approval_request.reviewed_at = timezone.now()
+                approval_request.save(update_fields=("status", "reviewed_by", "reviewed_at"))
+                audit(request.user, f"face_reenrollment.{status}", approval_request)
+                messages.success(request, f"Face re-registration request {status}.")
+            else:
+                worksite = get_object_or_404(
+                    WorksiteLocation.objects.select_for_update().filter(
+                        Q(intern__isnull=False) | Q(company__isnull=False),
+                    ),
+                    pk=object_id,
+                    approval_status=WorksiteLocation.ApprovalStatus.PENDING,
+                )
+                if status == WorksiteLocation.ApprovalStatus.APPROVED and worksite.intern_id:
+                    previous_intern_worksites = WorksiteLocation.objects.select_for_update().filter(
+                        intern_id=worksite.intern_id,
+                        application_id=worksite.application_id,
+                        approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+                        is_active=True,
+                    ).exclude(pk=worksite.pk)
+                    for previous_worksite in previous_intern_worksites:
+                        previous_worksite.is_active = False
+                        previous_worksite.save(update_fields=("is_active",))
+                        audit(
+                            request.user,
+                            "worksite.replaced",
+                            previous_worksite,
+                            replacement_id=worksite.pk,
+                        )
+
+                replacement_id = request.POST.get("replace_worksite_id", "").strip()
+                if replacement_id:
+                    if status != WorksiteLocation.ApprovalStatus.APPROVED:
+                        return HttpResponseBadRequest("A worksite can only be replaced when approving the new Company site.")
+                    if not worksite.company_id:
+                        return HttpResponseBadRequest("Only Company worksite requests can replace an existing site.")
+                    replaced_worksite = get_object_or_404(
+                        WorksiteLocation.objects.select_for_update(),
+                        pk=replacement_id,
+                        company_id=worksite.company_id,
+                        approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+                        is_active=True,
+                    )
+                    replaced_worksite.is_active = False
+                    replaced_worksite.save(update_fields=("is_active",))
+                    audit(
+                        request.user,
+                        "worksite.replaced",
+                        replaced_worksite,
+                        replacement_id=worksite.pk,
+                    )
+                worksite.approval_status = status
+                worksite.is_active = status == WorksiteLocation.ApprovalStatus.APPROVED
+                worksite.reviewed_by = request.user
+                worksite.reviewed_at = timezone.now()
+                worksite.rejection_reason = review_reason if status == WorksiteLocation.ApprovalStatus.REJECTED else ""
+                if approved_radius is not None:
+                    worksite.radius_meters = approved_radius
+                worksite.save(update_fields=(
+                    "approval_status",
+                    "is_active",
+                    "reviewed_by",
+                    "reviewed_at",
+                    "rejection_reason",
+                    "radius_meters",
+                ))
+                audit_action = (
+                    "worksite.corrections_requested"
+                    if action == "request_worksite_corrections"
+                    else f"worksite.registration_{status}"
+                )
+                audit(request.user, audit_action, worksite, reason=review_reason or None)
+                if action == "request_worksite_corrections":
+                    messages.success(request, f"Corrections were requested for {worksite.name}.")
+                else:
+                    messages.success(request, f"{worksite.name} was {status}.")
+        return redirect("portal:admin_approvals")
+
+    worksite_requests = list(
+        WorksiteLocation.objects.filter(
+            Q(intern__isnull=False) | Q(company__isnull=False),
+            approval_status=WorksiteLocation.ApprovalStatus.PENDING,
+        ).select_related(
+            "company",
+            "intern__user",
+            "application__posting__company",
+        )
+    )
+    for worksite in worksite_requests:
+        worksite.replacement_options = (
+            WorksiteLocation.objects.filter(
+                company_id=worksite.company_id,
+                approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+                is_active=True,
+            ).exclude(pk=worksite.pk)
+            if worksite.company_id
+            else WorksiteLocation.objects.none()
+        )
+
+    return render(request, "portal/admin/approvals.html", {
+        "face_requests": FaceReenrollmentRequest.objects.filter(
+            status=FaceReenrollmentRequest.Status.PENDING,
+        ).select_related("intern__user"),
+        "worksite_requests": worksite_requests,
+    })
+
+
+def _face_embedding_is_duplicate(intern, new_embedding):
+    for enrollment in FaceEnrollment.objects.exclude(intern=intern).iterator():
+        existing_embedding = decrypt_embedding(enrollment.encrypted_embedding)
+        if cosine_similarity(new_embedding, existing_embedding) >= COSINE_MATCH_THRESHOLD:
+            return True
+    return False
 
 
 @role_required(User.Role.INTERN)
@@ -605,6 +853,19 @@ def _coordinates(request, prefix):
     return latitude_value, longitude_value
 
 
+def _reported_accuracy_meters(request, prefix):
+    accuracy = request.POST.get(f"{prefix}_accuracy_meters", "").strip()
+    if not accuracy:
+        return None
+    try:
+        accuracy_value = Decimal(accuracy)
+    except InvalidOperation:
+        return None
+    if not accuracy_value.is_finite() or accuracy_value <= 0:
+        return None
+    return accuracy_value
+
+
 def _log_face_image_diagnostics(image, *, intern_id, endpoint, face_count=None):
     if not getattr(settings, "FACE_CAPTURE_DIAGNOSTICS", False):
         return
@@ -626,32 +887,34 @@ def _log_face_image_diagnostics(image, *, intern_id, endpoint, face_count=None):
 
 
 def _worksites_for_attendance(intern):
-    intern_location = WorksiteLocation.objects.filter(
-        intern=intern,
-        is_active=True,
-        approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
-    )
-    if intern_location.exists():
-        return intern_location
-
     locations = WorksiteLocation.objects.filter(
         is_active=True,
         approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
     )
-    if intern.placement_type == InternProfile.PlacementType.EXTERNAL:
-        return locations.filter(company__isnull=True, intern=intern)
+    accepted_applications = Application.objects.filter(
+        intern=intern,
+        status=Application.Status.ACCEPTED,
+    )
+    approved_intern_worksites = locations.filter(
+        intern=intern,
+        application__in=accepted_applications,
+    )
+    if approved_intern_worksites.exists():
+        return approved_intern_worksites
 
     accepted_companies = CompanyProfile.objects.filter(
         postings__applications__intern=intern,
         postings__applications__status=Application.Status.ACCEPTED,
     )
-    return locations.filter(
-        company__in=accepted_companies,
-        intern__isnull=True,
-    ).distinct()
+    if accepted_companies.exists():
+        return locations.filter(
+            company__in=accepted_companies,
+            intern__isnull=True,
+        ).distinct()
+    return locations.filter(company__isnull=True, intern=intern)
 
 
-def _attendance_location_status(worksites, latitude, longitude):
+def _attendance_location_status(worksites, latitude, longitude, accuracy_meters=None):
     if latitude is None or longitude is None:
         return AttendanceFaceCapture.LocationStatus.UNAVAILABLE, None, None
 
@@ -663,10 +926,11 @@ def _attendance_location_status(worksites, latitude, longitude):
             worksite.latitude,
             worksite.longitude,
         ) * 1000
-        if distance_meters <= worksite.radius_meters:
-            distances.append((distance_meters, worksite.radius_meters, True))
+        allowed_radius_meters = worksite.radius_meters or 100
+        if distance_meters <= allowed_radius_meters:
+            distances.append((distance_meters, allowed_radius_meters, True))
         else:
-            distances.append((distance_meters, worksite.radius_meters, False))
+            distances.append((distance_meters, allowed_radius_meters, False))
 
     if not distances:
         return AttendanceFaceCapture.LocationStatus.UNAVAILABLE, None, None
@@ -676,11 +940,14 @@ def _attendance_location_status(worksites, latitude, longitude):
         eligible_sites or distances,
         key=lambda entry: entry[0],
     )
-    location_status = (
-        AttendanceFaceCapture.LocationStatus.INSIDE
-        if within_location
-        else AttendanceFaceCapture.LocationStatus.OUTSIDE
-    )
+    if accuracy_meters is None or accuracy_meters > settings.GPS_MAX_ACCURACY_METERS:
+        location_status = AttendanceFaceCapture.LocationStatus.UNAVAILABLE
+    else:
+        location_status = (
+            AttendanceFaceCapture.LocationStatus.INSIDE
+            if within_location
+            else AttendanceFaceCapture.LocationStatus.OUTSIDE
+        )
     return location_status, round(distance_meters, 2), radius_meters
 
 
@@ -705,6 +972,12 @@ def _distance_decimal(distance_meters):
 
 
 def _attendance_face_check(request, intern, *, retain_image=True):
+    enrollment = FaceEnrollment.objects.filter(intern=intern).first()
+    if enrollment is None:
+        return AttendanceLog.FaceCheckStatus.NOT_ENROLLED, None, None
+    if enrollment.consent_text_version != FACE_CONSENT_VERSION:
+        return AttendanceLog.FaceCheckStatus.CONSENT_REQUIRED, None, None
+
     image_data = request.POST.get("face_image", "").strip()
     if not image_data:
         return AttendanceLog.FaceCheckStatus.NOT_CAPTURED, None, None
@@ -716,12 +989,6 @@ def _attendance_face_check(request, intern, *, retain_image=True):
         return AttendanceLog.FaceCheckStatus.ERROR, None, None
 
     _log_face_image_diagnostics(image, intern_id=intern.pk, endpoint="attendance")
-
-    enrollment = FaceEnrollment.objects.filter(intern=intern).first()
-    if enrollment is None:
-        return AttendanceLog.FaceCheckStatus.NOT_ENROLLED, None, None
-    if enrollment.consent_text_version != FACE_CONSENT_VERSION:
-        return AttendanceLog.FaceCheckStatus.CONSENT_REQUIRED, None, None
 
     encrypted_image = None
     if retain_image:
@@ -752,9 +1019,9 @@ def _face_check_feedback(face_status):
         }
     if face_status == AttendanceLog.FaceCheckStatus.NOT_MATCHED:
         return {
-            "quality": "needs_review",
-            "label": "Needs review — face detected",
-            "message": "A face was detected, but the system could not confirm a match. Retake the frame or submit it for company/admin review.",
+            "quality": "poor",
+            "label": "Face verification failed",
+            "message": "Face verification failed. The captured face does not match your registered profile.",
         }
     messages_by_status = {
         AttendanceLog.FaceCheckStatus.NOT_CAPTURED: "No camera frame was captured.",
@@ -768,9 +1035,21 @@ def _face_check_feedback(face_status):
         "label": "Poor capture — retake recommended",
         "message": messages_by_status.get(
             face_status,
-            "The face could not be checked. Retake the frame or submit it as an exception for company/admin review.",
+            "The face could not be checked. Retake the frame before recording attendance.",
         ),
     }
+
+
+def _attendance_face_rejection_message(face_status):
+    messages_by_status = {
+        AttendanceLog.FaceCheckStatus.NOT_CAPTURED: "Capture a face frame before recording attendance.",
+        AttendanceLog.FaceCheckStatus.NOT_ENROLLED: "Enroll your face before recording attendance.",
+        AttendanceLog.FaceCheckStatus.CONSENT_REQUIRED: "Update your face enrollment and consent before recording attendance.",
+        AttendanceLog.FaceCheckStatus.NOT_MATCHED: "Face verification failed. Face does not match your registered profile.",
+        AttendanceLog.FaceCheckStatus.UNAVAILABLE: "The frame must contain exactly one clearly visible face. Retake it and try again.",
+        AttendanceLog.FaceCheckStatus.ERROR: "The face frame could not be verified. Retake it or try again later.",
+    }
+    return messages_by_status.get(face_status, "Face verification is required before recording attendance.")
 
 
 @intern_api_required()
@@ -782,16 +1061,19 @@ def attendance_face_preview(request):
     intern = InternProfile.objects.get(user=request.user)
     today = timezone.localdate()
     log = AttendanceLog.objects.filter(intern=intern, work_date=today).first()
-    if not _worksites_for_attendance(intern).exists():
+    worksites = list(_worksites_for_attendance(intern))
+    if not worksites:
         return JsonResponse(
             {"error": "No active worksite is assigned to your placement. Ask your coordinator or host company to enroll one."},
             status=409,
         )
     latitude, longitude = _coordinates(request, action)
+    accuracy_meters = _reported_accuracy_meters(request, action)
     location_status, distance_meters, allowed_radius_meters = _attendance_location_status(
-        _worksites_for_attendance(intern),
+        worksites,
         latitude,
         longitude,
+        accuracy_meters,
     )
     if action == "clock_out" and (
         not log or not log.clock_in or not log.time_in_approved
@@ -809,12 +1091,30 @@ def attendance_face_preview(request):
         return JsonResponse({"error": "This attendance event is already recorded or awaiting review."}, status=409)
 
     face_status, face_score, _ = _attendance_face_check(request, intern, retain_image=False)
+    if face_status != AttendanceLog.FaceCheckStatus.MATCHED:
+        status_code = (
+            503
+            if face_status == AttendanceLog.FaceCheckStatus.ERROR
+            else 403
+            if face_status in {
+                AttendanceLog.FaceCheckStatus.NOT_ENROLLED,
+                AttendanceLog.FaceCheckStatus.CONSENT_REQUIRED,
+                AttendanceLog.FaceCheckStatus.NOT_MATCHED,
+            }
+            else 400
+        )
+        return JsonResponse(
+            {"error": _attendance_face_rejection_message(face_status), "face_status": face_status},
+            status=status_code,
+        )
     return JsonResponse({
         **_face_check_feedback(face_status),
         "similarity": face_score,
         "location_status": location_status,
         "distance_meters": distance_meters,
         "allowed_radius_meters": allowed_radius_meters,
+        "accuracy_meters": float(accuracy_meters) if accuracy_meters is not None else None,
+        "max_accuracy_meters": settings.GPS_MAX_ACCURACY_METERS,
         "location_requires_reason": location_status != AttendanceFaceCapture.LocationStatus.INSIDE,
     })
 
@@ -895,10 +1195,12 @@ def attendance(request):
             )
             return redirect("portal:attendance")
         latitude, longitude = _coordinates(request, action)
+        accuracy_meters = _reported_accuracy_meters(request, action)
         location_status, distance_meters, allowed_radius_meters = _attendance_location_status(
             worksite_locations,
             latitude,
             longitude,
+            accuracy_meters,
         )
         location_reason = request.POST.get(f"{action}_location_reason", "").strip()[:1000]
         requires_location_reason = location_status != AttendanceFaceCapture.LocationStatus.INSIDE
@@ -918,6 +1220,10 @@ def attendance(request):
             messages.info(request, "This attendance event is already waiting for company/admin review.")
             return redirect("portal:attendance")
         face_status, face_score, encrypted_image = _attendance_face_check(request, intern)
+        if face_status != AttendanceLog.FaceCheckStatus.MATCHED:
+            messages.error(request, _attendance_face_rejection_message(face_status))
+            return redirect("portal:attendance")
+
         captured_at = timezone.now()
         try:
             with transaction.atomic():
@@ -1021,17 +1327,13 @@ def attendance(request):
                         request,
                         f"{event.replace('_', ' ').title()} was submitted with a location exception and is awaiting supervisor review.",
                     )
-                else:
-                    audit(request.user, "attendance.face_review_requested", log, event=event, capture_id=capture.pk)
-                    messages.warning(
-                        request,
-                        "Face verification did not pass. Attendance is awaiting company/admin review.",
-                    )
         except IntegrityError:
             messages.info(request, "Today's attendance record was already created. Refresh and try again.")
         return redirect("portal:attendance")
 
     today_log = AttendanceLog.objects.filter(intern=intern, work_date=today).first()
+    worksite_rows = list(worksite_locations)
+    face_enrollment = FaceEnrollment.objects.filter(intern=intern).first()
     dtr_context = _dtr_breakdown_context(intern, request.GET.get("period", "all"))
     pending_face_events = set()
     if today_log:
@@ -1043,8 +1345,22 @@ def attendance(request):
     return render(request, "portal/intern/attendance.html", {
         "today_log": today_log,
         "today": today,
-        "location_enrolled": worksite_locations.exists(),
-        "worksite_locations": worksite_locations,
+        "location_enrolled": bool(worksite_rows),
+        "worksite_locations": worksite_rows,
+        "gps_max_accuracy_meters": settings.GPS_MAX_ACCURACY_METERS,
+        "attendance_worksites_json": [
+            {
+                "name": worksite.name,
+                "latitude": float(worksite.latitude),
+                "longitude": float(worksite.longitude),
+                "radius_meters": worksite.radius_meters or 100,
+            }
+            for worksite in worksite_rows
+        ],
+        "face_ready": (
+            face_enrollment is not None
+            and face_enrollment.consent_text_version == FACE_CONSENT_VERSION
+        ),
         "pending_worksite_request": intern.attendance_worksites.filter(
             approval_status=WorksiteLocation.ApprovalStatus.PENDING,
         ).first(),
@@ -1076,6 +1392,15 @@ def coordinator_face_enrollment(request):
         except FaceModelError:
             LOGGER.exception("Face enrollment failed for intern %s.", intern.pk)
             messages.error(request, "Face enrollment could not be completed because the models are unavailable.")
+            return redirect("portal:coordinator_face_enrollment")
+
+        try:
+            if _face_embedding_is_duplicate(intern, decrypt_embedding(embedding)):
+                messages.error(request, "This face is already registered under another account.")
+                return redirect("portal:coordinator_face_enrollment")
+        except FaceModelError:
+            LOGGER.exception("Could not verify face uniqueness for intern %s.", intern.pk)
+            messages.error(request, "Face uniqueness could not be verified. Please try again later.")
             return redirect("portal:coordinator_face_enrollment")
 
         enrollment, created = FaceEnrollment.objects.update_or_create(
@@ -1145,39 +1470,32 @@ def attendance_export(request):
 def daily_report(request):
     intern = get_object_or_404(InternProfile, user=request.user)
     today = timezone.localdate()
-    existing = DailyReport.objects.filter(intern=intern, work_date=today).first()
-    if request.method == "POST" and existing and existing.status == DailyReport.Status.REVIEWED:
-        messages.info(request, "Today's report has already been reviewed and cannot be changed.")
-        return redirect("portal:daily_report")
-    if existing and existing.status == DailyReport.Status.REVIEWED:
-        form = DailyReportForm(instance=existing)
-        form.fields["accomplishments"].disabled = True
-        form.fields["challenges"].disabled = True
-    else:
-        form = DailyReportForm(request.POST or None, instance=existing)
+    form = DailyReportForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
         report = form.save(commit=False)
         report.intern = intern
         report.work_date = today
         report.status = DailyReport.Status.SUBMITTED
-        report.supervisor_feedback = ""
-        report.reviewer = None
-        report.submitted_at = timezone.now()
-        report.reviewed_at = None
         try:
             with transaction.atomic():
                 report.save()
         except IntegrityError:
-            messages.error(request, "Today's report was just saved. Refresh and try again.")
+            messages.error(request, "The report could not be saved. Refresh the page and try again.")
         else:
             audit(request.user, "daily_report.submitted", report)
-            messages.success(request, "Daily report submitted for coordinator review.")
+            messages.success(request, "Daily report saved. Previous submissions remain in your history.")
             return redirect("portal:daily_report")
+    page_obj = Paginator(
+        intern.daily_reports.select_related("reviewer").order_by("-work_date", "-submitted_at"),
+        30,
+    ).get_page(request.GET.get("page"))
+    page_reports = list(page_obj.object_list)
+    _attach_approved_report_hours(page_reports)
     return render(request, "portal/intern/daily_report.html", {
         "form": form,
-        "report": existing,
         "today": today,
-        "reports": intern.daily_reports.select_related("reviewer")[:14],
+        "reports": page_reports,
+        "page_obj": page_obj,
     })
 
 
@@ -1237,6 +1555,134 @@ def review_daily_report(request, report_id):
     )
     messages.success(request, "Daily report review saved.")
     return redirect("portal:coordinator_daily_reports")
+
+
+def _attach_approved_report_hours(reports):
+    if not reports:
+        return
+    intern_ids = {report.intern_id for report in reports}
+    work_dates = {report.work_date for report in reports}
+    approved_logs = AttendanceLog.objects.approved().filter(
+        intern_id__in=intern_ids,
+        work_date__in=work_dates,
+    ).only("intern_id", "work_date", "clock_in", "clock_out")
+    hours_by_day = {
+        (log.intern_id, log.work_date): log.hours_worked
+        for log in approved_logs
+    }
+    for report in reports:
+        report.hours_worked = hours_by_day.get((report.intern_id, report.work_date), 0)
+
+
+def _daily_report_history_context(request, reports, *, is_admin, company=None):
+    view_mode = request.GET.get("view", "daily")
+    if view_mode not in {"daily", "weekly"}:
+        return HttpResponseBadRequest("Choose a daily or weekly report view.")
+
+    search = request.GET.get("q", "").strip()
+    if search:
+        reports = reports.filter(
+            Q(intern__user__first_name__icontains=search)
+            | Q(intern__user__last_name__icontains=search)
+            | Q(intern__user__username__icontains=search)
+            | Q(intern__student_id__icontains=search)
+        )
+
+    date_filter = request.GET.get("date", "").strip()
+    week_filter = request.GET.get("week", "").strip()
+    if date_filter:
+        selected_date = parse_date(date_filter)
+        if selected_date is None:
+            return HttpResponseBadRequest("Enter a valid report date.")
+        reports = reports.filter(work_date=selected_date)
+    if week_filter:
+        selected_week = parse_date(week_filter)
+        if selected_week is None:
+            return HttpResponseBadRequest("Enter a valid date for the selected week.")
+        week_start = selected_week - timedelta(days=selected_week.weekday())
+        reports = reports.filter(
+            work_date__range=(week_start, week_start + timedelta(days=6)),
+        )
+    reports = reports.select_related("intern__user", "intern", "reviewer").order_by(
+        "-work_date",
+        "-submitted_at",
+        "intern__user__last_name",
+    )
+    report_rows = list(reports)
+    _attach_approved_report_hours(report_rows)
+    paginator = Paginator(report_rows, 30)
+
+    if view_mode == "daily":
+        page_obj = paginator.get_page(request.GET.get("page"))
+        rows = page_obj.object_list
+        weekly_groups = []
+        weekly_summary_count = 0
+    else:
+        grouped = {}
+        for report in report_rows:
+            week_start = report.work_date - timedelta(days=report.work_date.weekday())
+            group = grouped.setdefault(week_start, {
+                "start": week_start,
+                "end": week_start + timedelta(days=6),
+                "reports": [],
+                "hours": 0,
+                "hour_keys": set(),
+            })
+            group["reports"].append(report)
+            hour_key = (report.intern_id, report.work_date)
+            if hour_key not in group["hour_keys"]:
+                group["hours"] += report.hours_worked
+                group["hour_keys"].add(hour_key)
+        weeks = sorted(grouped.values(), key=lambda week: week["start"], reverse=True)
+        for week in weeks:
+            week.pop("hour_keys")
+        weekly_summary_count = len(weeks)
+        page_obj = Paginator(weeks, 10).get_page(request.GET.get("page"))
+        rows = []
+        weekly_groups = page_obj.object_list
+
+    params = request.GET.copy()
+    params.pop("page", None)
+    return {
+        "view_mode": view_mode,
+        "search": search,
+        "date_filter": date_filter,
+        "week_filter": week_filter,
+        "page_obj": page_obj,
+        "reports": rows,
+        "weekly_groups": weekly_groups,
+        "report_count": len(report_rows),
+        "weekly_summary_count": weekly_summary_count,
+        "is_admin": is_admin,
+        "company": company,
+        "query_string": params.urlencode(),
+    }
+
+
+@role_required(User.Role.COMPANY)
+def company_daily_reports(request):
+    company = get_object_or_404(CompanyProfile, user=request.user)
+    context = _daily_report_history_context(
+        request,
+        DailyReport.objects.filter(intern__in=accepted_company_interns(company)),
+        is_admin=False,
+        company=company,
+    )
+    if isinstance(context, HttpResponse):
+        return context
+    return render(request, "portal/report_history.html", context)
+
+
+@admin_required
+def admin_daily_reports(request):
+    context = _daily_report_history_context(
+        request,
+        DailyReport.objects.all(),
+        is_admin=True,
+    )
+    if isinstance(context, HttpResponse):
+        return context
+    return render(request, "portal/report_history.html", context)
 
 
 @role_required(User.Role.INTERN)
@@ -1420,7 +1866,8 @@ def coordinator_dtr_detail(request, intern_id):
 def coordinator_users(request):
     users = User.objects.filter(
         Q(role__in=(User.Role.INTERN, User.Role.COMPANY, User.Role.COORDINATOR))
-        | Q(is_staff=True),
+        | Q(is_staff=True)
+        | Q(is_superuser=True),
     )
     role_filter = request.GET.get("role", "")
     role_values = {
@@ -1431,7 +1878,11 @@ def coordinator_users(request):
     if role_filter and role_filter not in role_values:
         return HttpResponseBadRequest("Invalid user role filter.")
     if role_filter == "admin":
-        users = users.filter(Q(is_staff=True) | Q(role=User.Role.COORDINATOR))
+        users = users.filter(
+            Q(is_staff=True)
+            | Q(is_superuser=True)
+            | Q(role=User.Role.COORDINATOR)
+        )
     elif role_filter:
         users = users.filter(role=role_filter, is_staff=False)
 
@@ -1493,8 +1944,8 @@ def coordinator_users(request):
         user.directory_company = company
         user.directory_role = (
             "Admin"
-            if user.is_staff or user.role == User.Role.COORDINATOR
-            else "Company Supervisor"
+            if user.is_admin
+            else "Company"
             if user.role == User.Role.COMPANY
             else "Intern"
         )
@@ -1542,7 +1993,7 @@ def coordinator_users(request):
         "selected_face": face_filter,
         "role_choices": (
             (User.Role.INTERN, "Intern"),
-            (User.Role.COMPANY, "Company Supervisor"),
+            (User.Role.COMPANY, "Company"),
             ("admin", "Admin"),
         ),
         "placement_choices": (
@@ -1558,7 +2009,7 @@ def coordinator_users(request):
     })
 
 
-@role_required(User.Role.COORDINATOR)
+@admin_required
 @require_POST
 def coordinator_reset_user_face(request, intern_id):
     intern = get_object_or_404(InternProfile.objects.select_related("user"), pk=intern_id)
@@ -1566,7 +2017,7 @@ def coordinator_reset_user_face(request, intern_id):
     return redirect("portal:coordinator_users")
 
 
-@role_required(User.Role.COORDINATOR)
+@admin_required
 @require_POST
 def coordinator_reset_user_worksite(request, intern_id):
     intern = get_object_or_404(InternProfile.objects.select_related("user"), pk=intern_id)
@@ -1634,12 +2085,42 @@ def company_attendance_export(request):
 
 
 @role_required(User.Role.COMPANY)
+def company_attendance_history(request):
+    company = get_object_or_404(CompanyProfile, user=request.user)
+    logs = company_attendance_logs(company)
+    search = request.GET.get("q", "").strip()
+    if search:
+        logs = logs.filter(
+            Q(intern__user__first_name__icontains=search)
+            | Q(intern__user__last_name__icontains=search)
+            | Q(intern__user__username__icontains=search)
+            | Q(intern__student_id__icontains=search)
+        )
+    date_filter = request.GET.get("date", "").strip()
+    if date_filter:
+        selected_date = parse_date(date_filter)
+        if selected_date is None:
+            return HttpResponseBadRequest("Enter a valid attendance date.")
+        logs = logs.filter(work_date=selected_date)
+    page_obj = Paginator(logs, 50).get_page(request.GET.get("page"))
+    return render(request, "portal/company/attendance_history.html", {
+        "logs": page_obj.object_list,
+        "page_obj": page_obj,
+        "search": search,
+        "date_filter": date_filter,
+    })
+
+
+@role_required(User.Role.COMPANY)
 def company_dashboard(request):
     company = get_object_or_404(CompanyProfile, user=request.user)
+    accepted_interns = accepted_company_interns(company)
     return render(request, "portal/company/dashboard.html", {
         "company": company,
         "pending_dtr_count": pending_attendance_approval_count(company_attendance_logs(company)),
         "active_worksite_count": company.worksites.filter(is_active=True).count(),
+        "accepted_intern_count": accepted_interns.count(),
+        "daily_report_count": DailyReport.objects.filter(intern__in=accepted_interns).count(),
     })
 
 
@@ -1784,7 +2265,7 @@ def _reviewable_face_captures(request):
         "attendance_log__intern__user",
         "reviewed_by",
     )
-    if request.user.role == User.Role.COMPANY and not request.user.is_staff:
+    if request.user.role == User.Role.COMPANY and not request.user.is_admin:
         company = get_object_or_404(CompanyProfile, user=request.user)
         captures = captures.filter(attendance_log__in=company_attendance_logs(company))
     return captures
@@ -1873,7 +2354,7 @@ def _review_face_capture(request, capture_id, queue_name, audit_action):
 def review_attendance_face_capture(request, capture_id):
     queue_name = (
         "portal:dtr_queue"
-        if request.user.is_staff or request.user.role == User.Role.COORDINATOR
+        if request.user.is_admin
         else "portal:company_dtr_queue"
     )
     return _review_face_capture(
@@ -2036,6 +2517,13 @@ def coordinator_dashboard(request):
             attendance_worksites__is_active=True,
         ).distinct().count(),
         "active_worksite_count": WorksiteLocation.objects.filter(is_active=True).count(),
+        "pending_worksite_request_count": WorksiteLocation.objects.filter(
+            intern__isnull=False,
+            approval_status=WorksiteLocation.ApprovalStatus.PENDING,
+        ).count(),
+        "pending_face_reenrollment_count": FaceReenrollmentRequest.objects.filter(
+            status=FaceReenrollmentRequest.Status.PENDING,
+        ).count(),
     }
     return render(request, "portal/coordinator/dashboard.html", context)
 

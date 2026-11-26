@@ -1,107 +1,160 @@
 {% extends "base.html" %}{% load static %}{% block title %}My profile | Fieldwork{% endblock %}
+{% block head %}{% endblock %}
 {% block content %}
-<div class="page-heading"><div><p class="eyebrow">INTERN WORKSPACE</p><h1>Profile</h1><p class="muted">Keep your placement details and resume current.</p></div></div>
+<div class="page-heading"><div><p class="eyebrow">INTERN WORKSPACE</p><h1>Profile</h1><p class="muted">Keep your personal, academic, placement, and resume details current.</p></div></div>
 <section class="panel form-panel"><form method="post" enctype="multipart/form-data" class="stack-form">{% csrf_token %}{{ form.as_p }}<button class="button button-primary" type="submit">Save profile</button></form></section>
 <section class="panel form-panel">
-  <h2>OJT worksite location</h2>
-  {% if intern_worksite %}
-    <p class="status {% if intern_worksite.approval_status == 'approved' and intern_worksite.is_active %}status-good{% elif intern_worksite.approval_status == 'rejected' %}status-risk{% else %}status-neutral{% endif %}">
-      {{ intern_worksite.get_approval_status_display }}{% if intern_worksite.is_active %} · Active{% endif %}
-    </p>
-    <p><strong>{{ intern_worksite.name }}</strong> · {{ intern_worksite.address }}</p>
-    <p class="muted">Coordinates: {{ intern_worksite.latitude }}, {{ intern_worksite.longitude }} · Attendance radius: {{ intern_worksite.radius_meters }} m</p>
-    {% if intern_worksite.reported_accuracy_meters %}<p class="muted">Browser reported accuracy: about {{ intern_worksite.reported_accuracy_meters }} m.</p>{% endif %}
-    <p class="muted">{% if intern_worksite.approval_status == 'pending' %}Your supervisor must approve this location before it is used for attendance geofencing.{% else %}To change this location, ask your supervisor to reset it first. Attendance uses the approved location.{% endif %}</p>
-  {% elif can_request_intern_worksite %}
-    <p class="muted">While at your OJT site, capture its location and submit it for supervisor approval. The approved coordinates will then be used for attendance geofencing.</p>
-    <form method="post" action="{% url 'portal:intern_worksite_registration' %}" class="stack-form" id="intern-worksite-request-form">
-      {% csrf_token %}
-    {{ worksite_request_form.name.label_tag }}
-    {{ worksite_request_form.name }}{{ worksite_request_form.name.errors }}
-    {{ worksite_request_form.address.label_tag }}
-    {{ worksite_request_form.address }}{{ worksite_request_form.address.errors }}
-    {{ worksite_request_form.latitude }}{{ worksite_request_form.latitude.errors }}
-    {{ worksite_request_form.longitude }}{{ worksite_request_form.longitude.errors }}
-    {{ worksite_request_form.reported_accuracy_meters }}{{ worksite_request_form.reported_accuracy_meters.errors }}
-      <div class="clock-actions">
-        <button class="button button-secondary" type="button" id="capture-intern-worksite-location">Get current location</button>
-      </div>
-      <div class="panel location-confirmation" id="intern-worksite-location-confirmation" aria-live="polite" tabindex="-1">
-        <strong>Location not captured</strong>
-        <p>Capture your location to confirm the coordinates and accuracy before submitting.</p>
-      </div>
-      <p class="muted">The attendance radius is set to 100 m. Your location will remain pending and will not be used until a supervisor approves it.</p>
-      <button class="button button-primary" id="submit-intern-worksite-request" type="submit" disabled>Register My Current Location as OJT Worksite</button>
-    </form>
-  {% else %}
-    <p class="muted">An accepted company placement is required before requesting a personal OJT worksite. Once accepted, return here while at the site to register it.</p>
-  {% endif %}
-</section>
-<section class="panel form-panel">
   <h2>Face enrollment for attendance</h2>
+  {% if face_enrollment %}
   {% if face_enrollment_current %}
-  <p class="status status-good">Enrolled</p>
-  <p class="muted">Last updated {{ face_enrollment.updated_at|date:"M j, Y H:i" }}. You can recapture below to update your enrolled face.</p>
-  {% elif face_enrollment %}
-  <p class="status status-risk">Enrollment needs updating</p>
-  <p class="muted">Your enrollment uses an older consent version. Recapture below and confirm the current consent before your face can be checked.</p>
+  <p class="status status-good">Face Enrolled ✓ · Last updated {{ face_enrollment.updated_at|date:"M j, Y H:i" }}</p>
   {% else %}
-  <p class="status">Not enrolled</p>
-  <p class="muted">Only an encrypted face template is saved; this enrollment photo is processed in memory and discarded.</p>
+  <p class="status status-risk">Face enrolled · Updated consent is needed before attendance.</p>
   {% endif %}
-  <p class="muted">Complete face enrollment to use face matching during attendance. Only an encrypted face template is stored.</p>
-  <p class="muted">Attendance captures you submit are encrypted, can be viewed by authorized company/admin reviewers, and are deleted after 30 days. Face matching is not liveness detection.</p>
-  <div class="face-camera-frame face-enrollment-frame">
-    <video id="enrollment-camera" aria-label="Camera preview. Position your face inside the oval guide." autoplay muted playsinline hidden></video>
-    <div class="face-guide" aria-hidden="true"><span>Fit your face in the oval</span></div>
-    <span id="enrollment-detection-status" class="face-detection-status" aria-live="polite">Live face guide starts with your camera.</span>
-  </div>
-  <p id="enrollment-camera-status" class="muted" aria-live="polite">Start the camera to capture your enrollment image.</p>
-  <div class="clock-actions">
-    <button class="button button-secondary" id="start-enrollment-camera" type="button">Start camera</button>
-  </div>
-  <form method="post" action="{% url 'portal:intern_face_enrollment' %}" id="intern-face-enrollment-form" class="stack-form">
+  {% if face_reenrollment_request %}
+    {% if face_reenrollment_request.status == 'pending' %}
+    <p class="status status-neutral">Re-registration request awaiting admin approval</p>
+    <p class="muted">{{ face_reenrollment_request.reason }}</p>
+    {% elif face_reenrollment_request.status == 'approved' %}
+    <p class="status status-good">Re-registration approved · You may capture a replacement face once.</p>
+    {% endif %}
+  {% else %}
+  <form method="post" action="{% url 'portal:intern_face_reenrollment_request' %}" class="stack-form face-reenrollment-request-form">
+    {% csrf_token %}
+    <label for="face-reenrollment-reason">Reason for re-registration</label>
+    <textarea id="face-reenrollment-reason" name="reason" minlength="10" maxlength="500" rows="2" required placeholder="Briefly explain why you need to re-register"></textarea>
+    <button class="button button-secondary" type="submit">Request Face Re-Registration</button>
+  </form>
+  {% endif %}
+  {% else %}
+  <p class="status status-neutral">Not enrolled</p>
+  {% endif %}
+  {% if not face_enrollment or face_reenrollment_request and face_reenrollment_request.status == 'approved' %}
+  <form method="post" action="{% url 'portal:intern_face_enrollment' %}" id="intern-face-enrollment-form" class="face-enrollment-form">
     {% csrf_token %}
     <input type="hidden" name="face_image" id="enrollment-face-image">
-    <label class="consent-checkbox"><input type="checkbox" name="consent_confirmed" required> I understand that face verification is required for time-in and time-out, that submitted attendance images may be reviewed by authorized company/admin staff, and that those images are deleted after 30 days. I consent to storing an encrypted face template for matching.</label>
-    <button class="button button-primary" id="capture-face-enrollment" type="button" disabled>Capture and check</button>
-    <section id="enrollment-check-result" class="face-check-result" aria-live="polite" hidden>
-      <h3 id="enrollment-check-label"></h3>
-      <p id="enrollment-check-message"></p>
-      <div class="clock-actions">
-        <button class="button button-secondary" id="retake-face-enrollment" type="button">Retake face</button>
-        <button class="button button-primary" id="submit-face-enrollment" type="submit" hidden>Save face enrollment</button>
+    <div class="face-enrollment-layout">
+      <div>
+        <div class="face-camera-frame face-enrollment-frame">
+          <video id="enrollment-camera" aria-label="Camera preview. Position your face inside the oval guide." autoplay muted playsinline hidden></video>
+          <div class="face-guide" aria-hidden="true"><span>Fit your face in the oval</span></div>
+          <span id="enrollment-detection-status" class="face-detection-status" aria-live="polite">Live face guide starts with your camera.</span>
+        </div>
+        <p id="enrollment-camera-status" class="muted" aria-live="polite">Start the camera to capture your enrollment image.</p>
       </div>
-    </section>
+      <div class="face-enrollment-details">
+        <p class="face-privacy-badge">🔒 Enrollment photo is processed in memory; only an encrypted face template is saved.</p>
+        <ul class="face-enrollment-tips">
+          <li><span class="face-tip-icon" aria-hidden="true">☀</span>Bright, even lighting</li>
+          <li><span class="face-tip-icon" aria-hidden="true">◉</span>Remove glasses or masks</li>
+          <li><span class="face-tip-icon" aria-hidden="true">◎</span>Center your face in the oval</li>
+        </ul>
+        <div class="face-enrollment-consent-row">
+          <label class="consent-checkbox"><input type="checkbox" name="consent_confirmed" required> I understand that face verification is required for time-in and time-out, that submitted attendance images may be reviewed by authorized company/admin staff, and that those images are deleted after 30 days. I consent to storing an encrypted face template for matching.</label>
+          <button class="button button-secondary" id="start-enrollment-camera" type="button">Start camera</button>
+        </div>
+        <div class="face-enrollment-controls">
+          <button class="button button-primary" id="capture-face-enrollment" type="button" disabled>Capture and check</button>
+          <button class="button button-primary" id="submit-face-enrollment" type="submit" disabled>Save face enrollment</button>
+        </div>
+        <section id="enrollment-check-result" class="face-check-result" aria-live="polite" hidden>
+          <h3 id="enrollment-check-label"></h3>
+          <p id="enrollment-check-message"></p>
+          <div class="clock-actions">
+            <button class="button button-secondary" id="retake-face-enrollment" type="button">Retake face</button>
+          </div>
+        </section>
+      </div>
+    </div>
   </form>
-  {% if face_enrollment_current %}<p class="form-footnote">Face enrollment is complete.</p>{% else %}<p class="form-footnote">Complete face enrollment before recording attendance.</p>{% endif %}
+  <p class="form-footnote">Face matching verifies identity, not liveness.</p>
+  {% endif %}
 </section>
 {% endblock %}
 {% block scripts %}<script>
   const placementType = document.getElementById("id_placement_type");
   const externalHost = document.getElementById("id_external_host");
-  const externalHostRow = externalHost.closest("p");
-  const updateExternalHost = () => {
-    const isExternal = placementType.value === "external";
-    externalHostRow.hidden = !isExternal;
+  if (placementType && externalHost) {
+    const externalHostRow = externalHost.closest("p");
+    const updateExternalHost = () => {
+      externalHostRow.hidden = placementType.value !== "external";
+    };
+    placementType.addEventListener("change", updateExternalHost);
+    updateExternalHost();
+  }
+
+  {% if worksite_form %}
+  window.ensureFieldworkLeaflet = () => {
+    if (window.L) return Promise.resolve();
+    if (!window.fieldworkLeafletPromise) {
+      window.fieldworkLeafletPromise = new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+        script.integrity = "sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=";
+        script.crossOrigin = "";
+        script.onload = resolve;
+        script.onerror = () => reject(new Error("The map could not be loaded."));
+        document.head.append(script);
+      });
+    }
+    return window.fieldworkLeafletPromise;
   };
-  placementType.addEventListener("change", updateExternalHost);
-  updateExternalHost();
 
   const internWorksiteForm = document.getElementById("intern-worksite-request-form");
   if (internWorksiteForm) {
     const captureLocationButton = document.getElementById("capture-intern-worksite-location");
     const worksiteLocationStatus = document.getElementById("intern-worksite-location-confirmation");
     const submitWorksiteButton = document.getElementById("submit-intern-worksite-request");
-    const latitudeField = internWorksiteForm.elements.latitude;
-    const longitudeField = internWorksiteForm.elements.longitude;
-    const accuracyField = internWorksiteForm.elements.reported_accuracy_meters;
+    const worksiteNameField = document.getElementById("id_name");
+    const addressField = document.getElementById("id_address");
+    const addressResults = document.getElementById("intern-worksite-address-results");
+    const latitudeField = document.getElementById("id_latitude");
+    const longitudeField = document.getElementById("id_longitude");
+    const accuracyField = document.getElementById("id_reported_accuracy_meters");
+    const confirmationCheckbox = document.getElementById("id_confirm_location");
+    const maximumAccuracyMeters = {{ gps_max_accuracy_meters }};
+    let internWorksiteMap = null;
+    let internWorksiteMarker = null;
+    let internWorksiteCircle = null;
+    const requestDetails = internWorksiteForm.closest("details");
+    const setInternWorksiteCoordinates = (latitude, longitude) => {
+      latitudeField.value = Number(latitude).toFixed(6);
+      longitudeField.value = Number(longitude).toFixed(6);
+    };
+    const updateInternWorksitePin = (latitude, longitude, recenter = true) => {
+      if (!internWorksiteMarker || !internWorksiteMap) return;
+      const point = [latitude, longitude];
+      internWorksiteMarker.setLatLng(point);
+      internWorksiteCircle.setLatLng(point);
+      if (recenter) internWorksiteMap.setView(point);
+    };
+    const updateInternWorksiteForm = () => {
+      const accuracy = Number(accuracyField.value);
+      const accuracyIsAcceptable = !accuracyField.value
+        || Number.isFinite(accuracy) && accuracy > 0 && accuracy <= maximumAccuracyMeters;
+      submitWorksiteButton.disabled = !(
+        worksiteNameField.value.trim()
+        && addressField.value.trim()
+        && latitudeField.value
+        && longitudeField.value
+        && accuracyIsAcceptable
+        && confirmationCheckbox.checked
+      );
+    };
     const showLocationMessage = (title, detail) => {
       const heading = document.createElement("strong");
       heading.textContent = title;
       const paragraph = document.createElement("p");
       paragraph.textContent = detail;
       worksiteLocationStatus.replaceChildren(heading, paragraph);
+    };
+
+    const saveInternWorksitePin = (latitude, longitude) => {
+      setInternWorksiteCoordinates(latitude, longitude);
+      accuracyField.value = "";
+      confirmationCheckbox.checked = false;
+      updateInternWorksiteForm();
+      showLocationMessage("Pin location selected", `Latitude: ${latitudeField.value} · Longitude: ${longitudeField.value}`);
     };
 
     captureLocationButton.addEventListener("click", () => {
@@ -123,18 +176,22 @@
           return;
         }
         const accuracy = Math.max(1, Math.ceil(reportedAccuracy));
-        latitudeField.value = latitude.toFixed(6);
-        longitudeField.value = longitude.toFixed(6);
+        setInternWorksiteCoordinates(latitude, longitude);
         accuracyField.value = accuracy;
-        const coordinates = document.createElement("p");
-        coordinates.textContent = `Latitude: ${latitudeField.value} · Longitude: ${longitudeField.value}`;
-        const accuracyText = document.createElement("p");
-        accuracyText.textContent = `Estimated accuracy radius: about ${accuracy} m`;
-        worksiteLocationStatus.replaceChildren();
-        const heading = document.createElement("strong");
-        heading.textContent = "Review this location before submitting";
-        worksiteLocationStatus.append(heading, coordinates, accuracyText);
-        submitWorksiteButton.disabled = false;
+        confirmationCheckbox.checked = false;
+        updateInternWorksitePin(latitude, longitude);
+        updateInternWorksiteForm();
+        if (accuracy > maximumAccuracyMeters) {
+          showLocationMessage(
+            "GPS accuracy is insufficient",
+            `Your location is accurate to about ${accuracy} m; retry for ${maximumAccuracyMeters} m or better.`,
+          );
+        } else {
+          showLocationMessage(
+            "Current location selected",
+            `Accuracy is about ${accuracy} m. Review the address and pin, then confirm before submitting.`,
+          );
+        }
         captureLocationButton.disabled = false;
       }, (error) => {
         const messages = {
@@ -151,18 +208,171 @@
       }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
     });
 
+    worksiteNameField.addEventListener("input", updateInternWorksiteForm);
+    addressField.addEventListener("input", () => {
+      latitudeField.value = "";
+      longitudeField.value = "";
+      accuracyField.value = "";
+      confirmationCheckbox.checked = false;
+      addressResults.replaceChildren();
+      addressResults.hidden = true;
+      updateInternWorksiteForm();
+    });
+    confirmationCheckbox.addEventListener("change", updateInternWorksiteForm);
     internWorksiteForm.addEventListener("submit", (event) => {
-      if (!latitudeField.value || !longitudeField.value || !accuracyField.value) {
+      const accuracy = Number(accuracyField.value);
+      if (
+        !worksiteNameField.value.trim()
+        || !addressField.value.trim()
+        || !latitudeField.value
+        || !longitudeField.value
+        || !confirmationCheckbox.checked
+        || accuracyField.value && (!Number.isFinite(accuracy) || accuracy <= 0 || accuracy > maximumAccuracyMeters)
+      ) {
         event.preventDefault();
         worksiteLocationStatus.focus();
       }
     });
-  }
+    updateInternWorksiteForm();
 
+    const initializeInternWorksiteMap = () => {
+      if (!requestDetails.open) return;
+      if (internWorksiteMap) {
+        internWorksiteMap.invalidateSize();
+        return;
+      }
+      const defaultPosition = [14.9500, 120.9167];
+      const latitude = Number(latitudeField.value);
+      const longitude = Number(longitudeField.value);
+      const hasSavedPosition = latitudeField.value && longitudeField.value
+        && Number.isFinite(latitude) && Number.isFinite(longitude);
+      const initialPosition = hasSavedPosition ? [latitude, longitude] : defaultPosition;
+      internWorksiteMap = L.map("intern-worksite-map").setView(initialPosition, 16);
+      window.internWorksiteRequestMap = internWorksiteMap;
+      const worksiteTiles = L.tileLayer("https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        subdomains: ["a", "b", "c"],
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors | HOT map style by <a href="https://www.openstreetmap.fr/">OpenStreetMap France</a>',
+      });
+      let tileErrorShown = false;
+      worksiteTiles.on("tileerror", () => {
+        if (tileErrorShown) return;
+        tileErrorShown = true;
+        showLocationMessage("Map tiles unavailable", "The map background could not be loaded. The pin can still be adjusted.");
+      });
+      worksiteTiles.addTo(internWorksiteMap);
+      internWorksiteMarker = L.marker(initialPosition, { draggable: true }).addTo(internWorksiteMap);
+      internWorksiteCircle = L.circle(initialPosition, {
+        radius: 100,
+        color: "#4A1D1F",
+        fillColor: "#4A1D1F",
+        fillOpacity: 0.2,
+        weight: 1,
+      }).addTo(internWorksiteMap);
+      internWorksiteMarker.on("dragend", (event) => {
+        const position = event.target.getLatLng();
+        saveInternWorksitePin(position.lat, position.lng);
+      });
+      internWorksiteMap.on("click", (event) => {
+        internWorksiteMarker.setLatLng(event.latlng);
+        saveInternWorksitePin(event.latlng.lat, event.latlng.lng);
+      });
+
+      document.getElementById("search-intern-worksite-address").addEventListener("click", async (event) => {
+        const searchButton = event.currentTarget;
+        const query = addressField.value.trim();
+        if (!query) {
+          showLocationMessage("Enter an address", "Enter a worksite address before searching.");
+          addressField.focus();
+          return;
+        }
+        searchButton.disabled = true;
+        addressResults.replaceChildren();
+        addressResults.hidden = true;
+        addressResults.setAttribute("aria-busy", "true");
+        showLocationMessage("Searching address", "Looking up the address with OpenStreetMap…");
+        try {
+          const url = new URL("https://nominatim.openstreetmap.org/search");
+          url.search = new URLSearchParams({
+            q: query,
+            format: "jsonv2",
+            limit: "5",
+            countrycodes: "ph",
+            addressdetails: "1",
+          });
+          const response = await fetch(url, {
+            headers: { "Accept-Language": document.documentElement.lang || "en" },
+          });
+          if (!response.ok) throw new Error("Address search is temporarily unavailable.");
+          const results = await response.json();
+          const matchingResults = (Array.isArray(results) ? results : []).filter((result) => {
+            const latitude = Number(result.lat);
+            const longitude = Number(result.lon);
+            return Number.isFinite(latitude) && Number.isFinite(longitude)
+              && latitude >= -90 && latitude <= 90
+              && longitude >= -180 && longitude <= 180;
+          });
+          if (!matchingResults.length) {
+            showLocationMessage("No Philippine match found", "Try a company name, barangay, city or province, or move the pin manually.");
+            return;
+          }
+          const options = matchingResults.map((result) => {
+            const option = document.createElement("button");
+            option.type = "button";
+            option.className = "address-search-result";
+            option.setAttribute("role", "option");
+            option.textContent = result.display_name || query;
+            option.addEventListener("click", () => {
+              const selectedLatitude = Number(result.lat);
+              const selectedLongitude = Number(result.lon);
+              addressField.value = result.display_name || query;
+              setInternWorksiteCoordinates(selectedLatitude, selectedLongitude);
+              accuracyField.value = "";
+              confirmationCheckbox.checked = false;
+              updateInternWorksitePin(selectedLatitude, selectedLongitude);
+              updateInternWorksiteForm();
+              addressResults.replaceChildren();
+              addressResults.hidden = true;
+              showLocationMessage("Address selected", "Review the address and map pin, then confirm before submitting.");
+            });
+            return option;
+          });
+          addressResults.replaceChildren(...options);
+          addressResults.hidden = false;
+          showLocationMessage("Select a matching address", `${matchingResults.length} Philippine match${matchingResults.length === 1 ? "" : "es"} found.`);
+        } catch (error) {
+          addressResults.replaceChildren();
+          addressResults.hidden = true;
+          showLocationMessage(
+            "Address search failed",
+            error instanceof Error ? error.message : "Try again or move the pin manually.",
+          );
+        } finally {
+          addressResults.removeAttribute("aria-busy");
+          window.setTimeout(() => { searchButton.disabled = false; }, 1000);
+        }
+      });
+    };
+
+    const initializeVisibleInternWorksiteMap = () => {
+      if (!requestDetails.open) return;
+      window.ensureFieldworkLeaflet().then(() => {
+        window.setTimeout(initializeInternWorksiteMap, 0);
+      }).catch(() => {
+        showLocationMessage("Map unavailable", "The map could not be loaded. Try again later.");
+      });
+    };
+    requestDetails.addEventListener("toggle", initializeVisibleInternWorksiteMap);
+    initializeVisibleInternWorksiteMap();
+  }
+  {% endif %}
+
+  const enrollmentForm = document.getElementById("intern-face-enrollment-form");
+  if (enrollmentForm) {
   const enrollmentVideo = document.getElementById("enrollment-camera");
   const enrollmentStatus = document.getElementById("enrollment-camera-status");
   const captureEnrollmentButton = document.getElementById("capture-face-enrollment");
-  const enrollmentForm = document.getElementById("intern-face-enrollment-form");
+  const startEnrollmentButton = document.getElementById("start-enrollment-camera");
   const enrollmentResult = document.getElementById("enrollment-check-result");
   const enrollmentResultLabel = document.getElementById("enrollment-check-label");
   const enrollmentResultMessage = document.getElementById("enrollment-check-message");
@@ -182,11 +392,11 @@
     captureEnrollmentButton.disabled = true;
   };
 
-  document.getElementById("start-enrollment-camera").addEventListener("click", async () => {
+  startEnrollmentButton.addEventListener("click", async () => {
     stopEnrollmentCamera();
     enrollmentResult.hidden = true;
     document.getElementById("enrollment-face-image").value = "";
-    saveEnrollmentButton.hidden = true;
+    saveEnrollmentButton.disabled = true;
     try {
       enrollmentStream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
@@ -255,7 +465,7 @@
       enrollmentResultLabel.textContent = result.label || "Unable to check this capture";
       enrollmentResultMessage.textContent = result.message || "Retake the frame and try again.";
       document.getElementById("enrollment-face-image").value = result.quality === "good" ? faceImage : "";
-      saveEnrollmentButton.hidden = result.quality !== "good";
+      saveEnrollmentButton.disabled = result.quality !== "good";
       enrollmentResult.hidden = false;
       enrollmentStatus.textContent = result.quality === "good"
         ? "This face is ready to enroll. Save it or retake the frame."
@@ -267,7 +477,7 @@
         ? error.message
         : "The system could not check this frame. Retake it or try again later.";
       document.getElementById("enrollment-face-image").value = "";
-      saveEnrollmentButton.hidden = true;
+      saveEnrollmentButton.disabled = true;
       enrollmentResult.hidden = false;
       enrollmentStatus.textContent = "The capture was not saved. Retake the frame or try again later.";
     }
@@ -276,6 +486,7 @@
   document.getElementById("retake-face-enrollment").addEventListener("click", async () => {
     enrollmentResult.hidden = true;
     document.getElementById("enrollment-face-image").value = "";
+    saveEnrollmentButton.disabled = true;
     try {
       await enrollmentVideo.play();
       captureEnrollmentButton.disabled = false;
@@ -312,4 +523,41 @@
   });
 
   window.addEventListener("pagehide", stopEnrollmentCamera);
-</script><script src="{% static 'js/face-detection-guide.js' %}"></script>{% endblock %}
+  }
+</script>
+{% if intern_worksites %}
+<script>
+  const initializeApprovedWorksiteMaps = () => {
+    document.querySelectorAll(".intern-approved-worksite-map").forEach((container) => {
+      const latitude = Number(container.dataset.latitude);
+      const longitude = Number(container.dataset.longitude);
+      const radius = Number(container.dataset.radius);
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || !Number.isFinite(radius)) return;
+      const position = [latitude, longitude];
+      const map = L.map(container).setView(position, 16);
+      L.tileLayer("https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        subdomains: ["a", "b", "c"],
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors | HOT map style by <a href="https://www.openstreetmap.fr/">OpenStreetMap France</a>',
+      }).addTo(map);
+      L.marker(position).addTo(map);
+      L.circle(position, {
+        radius,
+        color: "#4A1D1F",
+        fillColor: "#4A1D1F",
+        fillOpacity: 0.2,
+        weight: 1,
+      }).addTo(map);
+    });
+  };
+  window.ensureFieldworkLeaflet().then(() => {
+    initializeApprovedWorksiteMaps();
+  }).catch(() => {
+    document.querySelectorAll(".intern-approved-worksite-map").forEach((map) => {
+      map.textContent = "The approved worksite map could not be loaded.";
+    });
+  });
+</script>
+{% endif %}
+<script src="{% static 'js/face-detection-guide.js' %}"></script>
+{% endblock %}

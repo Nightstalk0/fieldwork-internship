@@ -13,13 +13,28 @@ if settings.CAPTCHA_ENABLED:
 
 
 class LoginForm(AuthenticationForm):
-    username = forms.CharField(widget=forms.TextInput(attrs={"autocomplete": "username"}))
+    username = forms.CharField(
+        label="Email or username",
+        widget=forms.TextInput(attrs={"autocomplete": "username"}),
+    )
     password = forms.CharField(widget=forms.PasswordInput(attrs={
         "autocomplete": "current-password",
         "aria-describedby": "login-password-feedback",
     }))
     if settings.CAPTCHA_ENABLED:
         captcha = CaptchaField()
+
+    def clean_username(self):
+        identifier = self.cleaned_data["username"].strip()
+        if "@" not in identifier:
+            return identifier
+
+        usernames = list(
+            User.objects.filter(email__iexact=identifier)
+            .order_by("pk")
+            .values_list("username", flat=True)[:2]
+        )
+        return usernames[0] if len(usernames) == 1 else identifier
 
 
 class RegistrationForm(UserCreationForm):
@@ -210,3 +225,69 @@ class RegistrationForm(UserCreationForm):
 
     def clean_role(self):
         return self.cleaned_data.get("role") or User.Role.INTERN
+
+
+class CompanyRegistrationForm(RegistrationForm):
+    def __init__(self, *args, **kwargs):
+        bound_data = args[0] if args else kwargs.get("data")
+        if bound_data is not None:
+            bound_data = bound_data.copy()
+            bound_data["role"] = User.Role.COMPANY
+            if args:
+                args = (bound_data, *args[1:])
+            else:
+                kwargs["data"] = bound_data
+        initial = dict(kwargs.get("initial", {}))
+        initial["role"] = User.Role.COMPANY
+        kwargs["initial"] = initial
+        super().__init__(*args, **kwargs)
+        for field_name in (
+            "first_name",
+            "last_name",
+            "email",
+            "phone",
+            "student_id",
+            "university",
+            "course",
+            "year_level",
+            "placement_type",
+        ):
+            self.fields.pop(field_name)
+
+    def clean_role(self):
+        return User.Role.COMPANY
+
+
+class InternRegistrationForm(RegistrationForm):
+    company_fields = (
+        "company_name",
+        "company_address",
+        "barangay",
+        "city_municipality",
+        "province",
+        "postal_code",
+        "industry_type",
+        "contact_person_name",
+        "contact_person_position",
+        "official_email",
+        "contact_number",
+        "company_website",
+        "moa_reference_number",
+    )
+
+    def __init__(self, *args, **kwargs):
+        bound_data = args[0] if args else kwargs.get("data")
+        if bound_data is not None:
+            bound_data = bound_data.copy()
+            bound_data["role"] = User.Role.INTERN
+            if args:
+                args = (bound_data, *args[1:])
+            else:
+                kwargs["data"] = bound_data
+        super().__init__(*args, **kwargs)
+        self.fields["role"].choices = ((User.Role.INTERN, "Intern"),)
+        for field_name in self.company_fields:
+            self.fields.pop(field_name)
+
+    def clean_role(self):
+        return User.Role.INTERN
