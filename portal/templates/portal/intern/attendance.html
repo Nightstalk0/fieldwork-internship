@@ -30,25 +30,26 @@
     <h2>{% if 'time_in' in pending_face_events %}Time in awaiting approval{% elif today_log.clock_in %}Shift in progress{% else %}{{ today|date:"l, F j" }} · Attendance{% endif %}</h2>
     <span id="camera-status" class="muted" aria-live="polite">Choose Time in or Time out to open the camera.</span>
   </div>
-  <div id="face-capture-panel" hidden>
+  <div id="face-capture-panel" data-detection-url="{% url 'portal:face_detection_preview' %}" data-diagnostics-enabled="{{ face_capture_diagnostics|yesno:'true,false' }}" hidden>
     <div class="face-camera-frame" id="attendance-camera-frame">
       <video id="camera-preview" aria-label="Camera preview. Position your face inside the oval guide." autoplay muted playsinline></video>
-      <div class="face-guide" aria-hidden="true"><span>Fit your face in the oval</span></div>
-      <span id="attendance-detection-status" class="face-detection-status" aria-live="polite">Live face guide starts with your camera.</span>
+      <div class="face-guide" aria-hidden="true"><span>Center your face inside the circle</span></div>
+      <span id="attendance-detection-status" class="face-detection-status" aria-live="polite">Initializing camera...</span>
     </div>
     <p id="face-capture-status" class="muted" aria-live="polite">Center your face and look toward the camera.</p>
+    <p class="camera-permission-note muted">Camera access requires permission and a secure connection (HTTPS or localhost), depending on your browser and device.</p>
     <div id="face-capture-actions" class="clock-actions">
-      <button class="button button-primary" id="capture-face" type="button">Capture and check</button>
+      <button class="button button-primary" id="retry-camera" type="button" hidden>Retry camera</button>
+      <button class="button button-secondary" id="manual-face-capture" type="button" disabled>Capture Manually</button>
       <button class="button button-secondary" id="cancel-face-capture" type="button">Cancel</button>
     </div>
     <section id="face-check-result" class="face-check-result" aria-live="polite" hidden>
       <h3 id="face-check-label"></h3>
       <p id="face-check-message"></p>
-      <p id="face-check-score" class="muted"></p>
+      <p id="face-check-score" class="muted" hidden></p>
       <p id="location-check-result" aria-live="polite"></p>
       <div class="clock-actions">
-        <button class="button button-secondary" id="retake-face" type="button">Retake face</button>
-        <button class="button button-primary" id="proceed-face" type="button">Record attendance</button>
+        <button class="button button-secondary" id="retake-face" type="button">Try again now</button>
       </div>
     </section>
   </div>
@@ -64,6 +65,7 @@
         <input type="hidden" name="clock_in_accuracy_meters">
         <input type="hidden" name="clock_in_location_reason">
         <input type="hidden" name="face_image">
+        <input type="hidden" name="face_verification_token">
         <input type="hidden" name="notes">
         <button class="button button-primary" type="submit">Time in</button>
       </form>
@@ -82,6 +84,7 @@
       <input type="hidden" name="clock_out_accuracy_meters">
       <input type="hidden" name="clock_out_location_reason">
       <input type="hidden" name="face_image">
+      <input type="hidden" name="face_verification_token">
       <input type="hidden" name="notes">
       <button class="button button-primary" type="submit">Time out</button>
     </form>
@@ -122,6 +125,9 @@
   const geofenceStatus = document.getElementById("attendance-geofence-status");
   const maximumGpsAccuracyMeters = {{ gps_max_accuracy_meters }};
   const attendanceWorksites = JSON.parse(document.getElementById("attendance-worksites-data").textContent);
+  const requiredStableFaceFrames = 2;
+  const maximumStableFaceMovement = 0.08;
+  const maximumStableFaceSizeChange = 0.12;
   const cameraStatus = document.getElementById("camera-status");
   const video = document.getElementById("camera-preview");
   const cameraPanel = document.getElementById("face-capture-panel");
@@ -135,16 +141,117 @@
   const locationReasonDialog = document.getElementById("location-reason-dialog");
   const locationReasonForm = document.getElementById("location-reason-form");
   const locationReasonInput = document.getElementById("location-reason");
-  const captureButton = document.getElementById("capture-face");
-  const proceedButton = document.getElementById("proceed-face");
+  const retryCameraButton = document.getElementById("retry-camera");
+  const manualCaptureButton = document.getElementById("manual-face-capture");
+  const diagnosticsEnabled = cameraPanel.dataset.diagnosticsEnabled === "true";
   let cameraStream = null;
+  let cameraStartPromise = null;
+  let cameraGeneration = 0;
   let currentForm = null;
   let pendingFaceImage = "";
+  let pendingFaceVerificationToken = "";
   let pendingLocationRequiresReason = true;
   let pendingLocationStatus = "unavailable";
   let pendingClosestWorksite = null;
   let attendanceSubmitting = false;
   let stopFaceDetection = null;
+  let stableFaceFrames = 0;
+  let previousFacePosition = null;
+  let faceVerificationStarted = false;
+  let manualCaptureInProgress = false;
+  let detectionCallbackCount = 0;
+  let captureAttemptCount = 0;
+  let lastFaceMessage = "";
+
+  const setProgress = (key, text, state = "waiting") => {
+    if (diagnosticsEnabled) console.debug("[attendance-face]", key, text, state);
+  };
+
+  const setBlockedReason = (reason, state = "waiting") => {
+    setProgress("blockedReason", reason, state);
+  };
+
+  const setVerificationState = (state, reason, status = "active") => {
+    setProgress("state", state, status);
+    if (reason) setBlockedReason(reason, status === "fail" ? "fail" : "active");
+  };
+
+  const updateVideoDiagnostics = () => {
+    const readyStateNames = ["HAVE_NOTHING", "HAVE_METADATA", "HAVE_CURRENT_DATA", "HAVE_FUTURE_DATA", "HAVE_ENOUGH_DATA"];
+    setProgress("videoReady", `${readyStateNames[video.readyState] || "UNKNOWN"} (${video.readyState})`);
+    setProgress("videoDimensions", `${video.videoWidth} × ${video.videoHeight}`);
+  };
+
+  const resetFaceStability = (reason) => {
+    stableFaceFrames = 0;
+    previousFacePosition = null;
+    setProgress("stability", `0/${requiredStableFaceFrames}`);
+    if (reason) setBlockedReason(reason);
+  };
+
+  const handleDetectionDiagnostic = ({ state, error = "" }) => {
+    if (state === "started") {
+      detectionCallbackCount = 0;
+      setProgress("callback", "Running — waiting for first frame", "active");
+      setProgress("detection", "Searching for face", "active");
+      setVerificationState("DETECTING_FACE", "Waiting for a valid face detection.");
+    } else if (state === "detection-request-pending") {
+      setProgress("callback", `Running — request ${detectionCallbackCount + 1} pending`, "active");
+      setBlockedReason("Waiting for the face-detection endpoint to process the current frame.", "active");
+    } else if (state === "detection-response-success") {
+      setProgress("callback", "Running — response received", "active");
+    } else if (state === "callback-running") {
+      setProgress("callback", "Running — evaluating frame", "active");
+    } else if (state === "callback-complete") {
+      detectionCallbackCount += 1;
+      setProgress("callback", `Running — ${detectionCallbackCount} frames evaluated`, "pass");
+    } else if (state === "video-not-ready") {
+      updateVideoDiagnostics();
+      setProgress("callback", "Running — waiting for a usable video frame", "active");
+      setBlockedReason("The video is playing but has no current frame yet.", "active");
+    } else if (state === "error") {
+      setProgress("callback", "Detection error — retrying", "fail");
+      setProgress("detection", "Detection request failed", "fail");
+      setVerificationState("ERROR", error || "Face detection failed. Retry verification.", "fail");
+    } else if (state === "unavailable") {
+      setProgress("callback", "Stopped after repeated detection errors", "fail");
+      setVerificationState("ERROR", "Face detection is unavailable. Retry verification.", "fail");
+      captureStatus.textContent = "Face detection is unavailable. Please retry.";
+      retryCameraButton.textContent = "Retry verification";
+      retryCameraButton.hidden = false;
+      captureActions.hidden = false;
+    } else if (state === "stopped" && !faceVerificationStarted) {
+      setProgress("callback", `Stopped — ${error || "cleanup requested"}`, "fail");
+    }
+  };
+
+  const fetchJsonWithTimeout = async (url, options, timeoutMs = 30000) => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      if (response.redirected) {
+        throw new Error("Your session may have expired. Refresh the page and sign in again.");
+      }
+      if (!(response.headers.get("content-type") || "").includes("application/json")) {
+        throw new Error(`The server returned an unexpected response (HTTP ${response.status}). Refresh the page and try again.`);
+      }
+      let result;
+      try {
+        result = await response.json();
+      } catch {
+        throw new Error(`The server returned an unreadable response (HTTP ${response.status}). Try again shortly.`);
+      }
+      return { response, result };
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        throw new Error("The request timed out. Check your connection and retry.");
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  };
 
   const distanceInMeters = (latitudeA, longitudeA, latitudeB, longitudeB) => {
     const radians = (degrees) => degrees * Math.PI / 180;
@@ -183,45 +290,352 @@
     }
   };
 
-  const startCamera = async () => {
-    cameraStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
-      audio: false,
-    });
-    video.hidden = false;
-    video.srcObject = cameraStream;
-    await video.play();
-    if (!video.videoWidth || !video.videoHeight) {
-      await new Promise((resolve, reject) => {
-        const timeout = window.setTimeout(() => reject(new Error("Camera preview did not become ready.")), 5000);
-        video.addEventListener("loadeddata", () => {
-          window.clearTimeout(timeout);
-          resolve();
-        }, { once: true });
-      });
+  const cameraFailureMessage = (error) => {
+    if (error?.message === "Face detection code did not load.") {
+      return "Face verification is temporarily unavailable. Refresh the page and retry.";
     }
-    if (!video.videoWidth || !video.videoHeight) {
-      throw new Error("Camera preview did not become ready.");
+    if (error?.name === "NotAllowedError" || error?.name === "SecurityError") {
+      return "Camera permission was denied. Allow camera access and retry; some browsers require HTTPS or localhost.";
     }
-    stopFaceDetection?.();
+    if (error?.name === "NotFoundError" || error?.name === "DevicesNotFoundError") {
+      return "No camera is available. Connect or enable a camera, then retry.";
+    }
+    if (error?.name === "NotReadableError" || error?.name === "TrackStartError") {
+      return "The camera is busy or unavailable. Close other camera apps and retry.";
+    }
+    return "Camera could not start. Check browser permission and HTTPS/localhost, then retry.";
+  };
+
+  const evaluateLiveFace = (result, { manualValidation = false } = {}) => {
+    if (manualCaptureInProgress && !manualValidation) {
+      return { state: "processing", message: "Checking your face..." };
+    }
+    if (faceVerificationStarted || attendanceSubmitting) {
+      return { state: "detected", message: "Verifying your identity..." };
+    }
+    if (result.face_count > 1) {
+      setProgress("detection", `Multiple valid faces detected (${result.face_count})`, "fail");
+      setProgress("confidence", "—");
+      setProgress("bbox", "—");
+      setProgress("faceSize", "—");
+      setProgress("alignment", "Not aligned — multiple faces", "fail");
+      setProgress("quality", "Not checked — multiple faces", "waiting");
+      resetFaceStability("Only one valid face may be in the frame.");
+      setVerificationState("MULTIPLE_FACES", "Only one valid face may be in the frame.", "fail");
+      return { state: "multiple", message: "Only one clearly visible face should be in the camera frame." };
+    }
+    if (!result.face_count) {
+      setProgress("detection", "No face detected", "fail");
+      setProgress("confidence", "—");
+      setProgress("bbox", "—");
+      setProgress("faceSize", "—");
+      setProgress("alignment", "Waiting for face", "waiting");
+      setProgress("quality", "Waiting for face", "waiting");
+      resetFaceStability("No valid face was detected in the latest frame.");
+      setVerificationState("FACE_NOT_FOUND", "No valid face was detected in the latest frame.");
+      return { state: "", message: "Position your face inside the circle." };
+    }
+
+    const candidate = result.detections?.[0];
+    if (
+      !candidate
+      || !Array.isArray(candidate.bbox)
+      || candidate.bbox.length !== 4
+      || !result.image_width
+      || !result.image_height
+    ) {
+      resetFaceStability("The detector did not return valid frame geometry.");
+      return { state: "error", message: "Face detection could not validate this frame. Please try again." };
+    }
+    setProgress("detection", "Exactly one valid face detected", "pass");
+    setProgress("confidence", `${(Number(candidate.confidence) * 100).toFixed(1)}%`, "pass");
+    setProgress("bbox", candidate.bbox.map((value) => Math.round(value)).join(", "));
+    const faceWidth = candidate.bbox[2] - candidate.bbox[0];
+    const faceHeight = candidate.bbox[3] - candidate.bbox[1];
+    setProgress(
+      "faceSize",
+      `${Math.round(faceWidth)} × ${Math.round(faceHeight)} px (${Math.round(faceWidth / result.image_width * 100)}% × ${Math.round(faceHeight / result.image_height * 100)}% of frame)`,
+    );
+    if (candidate.quality_issue === "lighting") {
+      setProgress("quality", "Fail — lighting", "fail");
+      setProgress("alignment", "Waiting for usable image", "waiting");
+      resetFaceStability("Poor lighting is preventing face-quality validation.");
+      setVerificationState("CHECKING_FACE_QUALITY", "Move to a brighter area.");
+      return { state: "", message: "Please move to a brighter area." };
+    }
+    if (candidate.quality_issue === "blur") {
+      setProgress("quality", "Fail — blur", "fail");
+      setProgress("alignment", "Waiting for usable image", "waiting");
+      resetFaceStability("The face image is blurred.");
+      setVerificationState("CHECKING_FACE_QUALITY", "Keep your face steady; the image is blurry.");
+      return { state: "", message: "Keep your face steady; the image is blurry." };
+    }
+    if (candidate.quality_issue === "contrast") {
+      setProgress("quality", "Fail — contrast", "fail");
+      setProgress("alignment", "Waiting for usable image", "waiting");
+      resetFaceStability("Face contrast is too low.");
+      setVerificationState("CHECKING_FACE_QUALITY", "Move to even lighting so your face is clearly visible.");
+      return { state: "", message: "Please move to a brighter area so your face is clearly visible." };
+    }
+    if (candidate.quality_issue === "too_far") {
+      setProgress("quality", "Fail — face too far", "fail");
+      setProgress("alignment", "Waiting for usable face size", "waiting");
+      resetFaceStability("The detected face is too small for a reliable verification frame.");
+      setVerificationState("ALIGNING_FACE", "Move closer to the camera.");
+      return { state: "", message: "Move closer to the camera." };
+    }
+    if (candidate.roll_degrees !== null && Math.abs(candidate.roll_degrees) > 20) {
+      setProgress("quality", "PASS", "pass");
+      setProgress("alignment", "Fail — head angle", "fail");
+      resetFaceStability("Face landmarks are detected, but the head angle exceeds the existing alignment limit.");
+      setVerificationState("ALIGNING_FACE", "Keep your head level and look directly at the camera.");
+      return { state: "", message: "Keep your head level and look directly at the camera." };
+    }
+    if (!candidate.alignment_ready) {
+      setProgress("quality", "PASS", "pass");
+      setProgress("alignment", "Fail — landmarks/alignment", "fail");
+      resetFaceStability("The face landmarks do not satisfy the existing alignment check.");
+      setVerificationState("ALIGNING_FACE", "Look directly at the camera and keep your full face visible.");
+      return { state: "", message: "Look directly at the camera and keep your full face visible." };
+    }
+    setProgress("quality", "PASS", "pass");
+
+    const frame = document.getElementById("attendance-camera-frame");
+    const frameRect = frame.getBoundingClientRect();
+    const scale = Math.max(frameRect.width / video.videoWidth, frameRect.height / video.videoHeight);
+    const offsetX = (video.videoWidth * scale - frameRect.width) / 2;
+    const offsetY = (video.videoHeight * scale - frameRect.height) / 2;
+    const sourceScaleX = video.videoWidth / result.image_width;
+    const sourceScaleY = video.videoHeight / result.image_height;
+    const [x1, y1, x2, y2] = candidate.bbox;
+    const box = {
+      left: x1 * sourceScaleX * scale - offsetX,
+      top: y1 * sourceScaleY * scale - offsetY,
+      right: x2 * sourceScaleX * scale - offsetX,
+      bottom: y2 * sourceScaleY * scale - offsetY,
+    };
+    const width = box.right - box.left;
+    const height = box.bottom - box.top;
+    const centerX = (box.left + box.right) / 2;
+    const centerY = (box.top + box.bottom) / 2;
+    const guideWidth = frameRect.width * 0.58;
+    const guideHeight = frameRect.height * 0.78;
+    const guideLeft = (frameRect.width - guideWidth) / 2;
+    const guideTop = (frameRect.height - guideHeight) / 2;
+    const ellipseValue = (x, y) => (
+      ((x - frameRect.width / 2) / (guideWidth / 2)) ** 2
+      + ((y - frameRect.height / 2) / (guideHeight / 2)) ** 2
+    );
+
+    if (height / frameRect.height < 0.30) {
+      setProgress("alignment", "Fail — face too small", "fail");
+      resetFaceStability("The face is smaller than the existing guide-size minimum.");
+      setVerificationState("ALIGNING_FACE", "Move closer to the camera.");
+      return { state: "", message: "Move closer to the camera." };
+    }
+    if (height / frameRect.height > 0.67 || width / guideWidth > 0.92) {
+      setProgress("alignment", "Fail — face too large", "fail");
+      resetFaceStability("The face is larger than the existing guide-size maximum.");
+      setVerificationState("ALIGNING_FACE", "Move slightly farther away.");
+      return { state: "", message: "Move slightly farther away." };
+    }
+    if (
+      box.left < guideLeft
+      || box.right > guideLeft + guideWidth
+      || box.top < guideTop
+      || box.bottom > guideTop + guideHeight
+      || ellipseValue(centerX, centerY) > 0.55
+    ) {
+      setProgress("alignment", "Fail — outside guide", "fail");
+      resetFaceStability("The face bounding box is outside the existing oval guide.");
+      setVerificationState("ALIGNING_FACE", "Center your full face inside the circle.");
+      return { state: "", message: "Center your full face inside the circle." };
+    }
+    setProgress("alignment", "PASS — centered inside guide", "pass");
+    if (manualValidation) {
+      return { state: "ready", message: "Face checks passed. Checking your face...", usable: true };
+    }
+
+    const position = {
+      x: centerX / frameRect.width,
+      y: centerY / frameRect.height,
+      height: height / frameRect.height,
+    };
+    let stabilityReason = "Waiting for a stable face.";
+    if (previousFacePosition) {
+      const movement = Math.hypot(position.x - previousFacePosition.x, position.y - previousFacePosition.y);
+      const sizeChange = Math.abs(position.height - previousFacePosition.height);
+      if (movement <= maximumStableFaceMovement && sizeChange <= maximumStableFaceSizeChange) {
+        stableFaceFrames += 1;
+        stabilityReason = `Movement ${(movement * 100).toFixed(1)}% / ${(maximumStableFaceMovement * 100).toFixed(0)}% limit; face-size change ${(sizeChange * 100).toFixed(1)}% / ${(maximumStableFaceSizeChange * 100).toFixed(0)}% limit.`;
+      } else {
+        stableFaceFrames = 1;
+        stabilityReason = `Stability restarted at 1/${requiredStableFaceFrames}: movement ${(movement * 100).toFixed(1)}% (limit ${(maximumStableFaceMovement * 100).toFixed(0)}%) and face-size change ${(sizeChange * 100).toFixed(1)}% (limit ${(maximumStableFaceSizeChange * 100).toFixed(0)}%).`;
+      }
+    } else {
+      stableFaceFrames = 1;
+      stabilityReason = `First valid frame; need ${requiredStableFaceFrames - 1} more consecutive stable frame.`;
+    }
+    previousFacePosition = position;
+    setProgress("stability", `${stableFaceFrames}/${requiredStableFaceFrames}`, stableFaceFrames >= requiredStableFaceFrames ? "pass" : "active");
+
+    if (stableFaceFrames >= requiredStableFaceFrames) {
+      faceVerificationStarted = true;
+      manualCaptureButton.disabled = true;
+      setProgress("capture", "Ready — capturing now", "active");
+      setVerificationState("CAPTURING", "Face quality, guide position, and two consecutive stable frames passed.");
+      captureStatus.textContent = "Capturing image...";
+      beginFaceVerification();
+      return { state: "processing", message: "Capturing image..." };
+    }
+    setProgress("capture", "Waiting for stable face", "active");
+    setVerificationState("FACE_STABILIZING", `${stabilityReason} Stable ${stableFaceFrames}/${requiredStableFaceFrames}.`);
+    return { state: "detected", message: "Keep your face steady inside the circle." };
+  };
+
+  const startLiveFaceDetection = () => {
+    if (
+      !cameraStream
+      || !cameraStream.getVideoTracks().some((track) => track.readyState === "live")
+      || !video.srcObject
+      || video.readyState < 2
+    ) {
+      return false;
+    }
+    if (stopFaceDetection?.isActive?.()) {
+      manualCaptureButton.disabled = false;
+      return true;
+    }
+    if (typeof window.startFaceDetectionGuide !== "function") {
+      throw new Error("Face detection code did not load.");
+    }
     stopFaceDetection = window.startFaceDetectionGuide({
       video,
       frame: document.getElementById("attendance-camera-frame"),
       status: document.getElementById("attendance-detection-status"),
-      endpoint: "{% url 'portal:face_detection_preview' %}",
+      endpoint: cameraPanel.dataset.detectionUrl,
+      diagnosticsEnabled,
+      onDetection: (result) => evaluateLiveFace(result),
+      onDiagnostic: handleDetectionDiagnostic,
+    });
+    manualCaptureButton.disabled = false;
+    return true;
+  };
+
+  const waitForVideoFrame = () => {
+    if (video.readyState >= 2 && video.videoWidth && video.videoHeight) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        window.clearTimeout(timeout);
+        video.removeEventListener("loadeddata", handleVideoReady);
+        video.removeEventListener("canplay", handleVideoReady);
+      };
+      const handleVideoReady = () => {
+        if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
+        cleanup();
+        resolve();
+      };
+      const timeout = window.setTimeout(() => {
+        cleanup();
+        reject(new Error("Camera preview did not become ready."));
+      }, 5000);
+      video.addEventListener("loadeddata", handleVideoReady);
+      video.addEventListener("canplay", handleVideoReady);
+      handleVideoReady();
     });
   };
 
+  const startCamera = async () => {
+    if (cameraStream && video.srcObject) {
+      if (video.paused) await video.play();
+      await waitForVideoFrame();
+      if (!startLiveFaceDetection()) throw new Error("The camera preview has no current frame.");
+      return;
+    }
+    if (cameraStartPromise) return cameraStartPromise;
+    setProgress("camera", "Initializing camera", "active");
+    setVerificationState("CAMERA_INITIALIZING", "Requesting camera permission and waiting for video dimensions.");
+    cameraStartPromise = (async () => {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error("Camera access is unavailable. Use HTTPS or localhost and a supported browser.");
+      }
+      const generation = ++cameraGeneration;
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: "user" },
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          aspectRatio: { ideal: 4 / 3 },
+        },
+        audio: false,
+      });
+      if (generation !== cameraGeneration || !currentForm) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      cameraStream = stream;
+      stream.getVideoTracks().forEach((track) => track.addEventListener("ended", () => {
+        if (cameraStream !== stream) return;
+        cameraGeneration += 1;
+        stopFaceDetection?.("camera-stream-ended");
+        stopFaceDetection = null;
+        cameraStream = null;
+        video.pause();
+        video.srcObject = null;
+        video.hidden = true;
+        resetFaceStability("Camera stream ended; waiting for a new camera connection.");
+        updateVideoDiagnostics();
+        setProgress("camera", "Camera stream ended", "fail");
+        setVerificationState("ERROR", "The camera stream stopped. Retry the camera to continue.", "fail");
+        captureStatus.textContent = "The camera stream stopped. Retry the camera to continue.";
+        manualCaptureButton.disabled = true;
+        retryCameraButton.textContent = "Retry camera";
+        retryCameraButton.hidden = false;
+        captureActions.hidden = false;
+      }, { once: true }));
+      video.hidden = false;
+      video.srcObject = cameraStream;
+      await video.play();
+      if (generation !== cameraGeneration || !currentForm) return;
+      await waitForVideoFrame();
+      if (generation !== cameraGeneration || !currentForm) return;
+      updateVideoDiagnostics();
+      setProgress("camera", "Connected — live video available", "pass");
+      resetFaceStability("Camera ready; waiting for stability samples from this stream.");
+      setProgress("alignment", "Waiting for face", "waiting");
+      setProgress("quality", "Waiting for face", "waiting");
+      setProgress("detection", "Searching for face", "active");
+      setVerificationState("DETECTING_FACE", "Waiting for the first live face-detection result.");
+      if (!startLiveFaceDetection()) throw new Error("The camera preview has no current frame.");
+    })();
+    try {
+      await cameraStartPromise;
+    } finally {
+      cameraStartPromise = null;
+    }
+  };
+
   const stopCamera = () => {
-    stopFaceDetection?.();
+    cameraGeneration += 1;
+    stopFaceDetection?.("camera-stopped");
     stopFaceDetection = null;
-    cameraStream?.getTracks().forEach((track) => track.stop());
+    manualCaptureButton.disabled = true;
+    const stream = cameraStream;
     cameraStream = null;
+    stream?.getTracks().forEach((track) => track.stop());
+    cameraStartPromise = null;
     video.srcObject = null;
+    video.hidden = true;
+    updateVideoDiagnostics();
+    setProgress("camera", "Stopped", "waiting");
   };
 
   const captureCurrentFrame = () => {
-    const scale = Math.min(1, 1280 / video.videoWidth);
+    const cameraIsLive = cameraStream?.getVideoTracks().some((track) => track.readyState === "live") === true;
+    if (!cameraIsLive || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+      throw new Error("The camera has no current video frame to capture.");
+    }
+    const scale = Math.min(1, 960 / video.videoWidth);
     const canvas = document.createElement("canvas");
     canvas.width = Math.round(video.videoWidth * scale);
     canvas.height = Math.round(video.videoHeight * scale);
@@ -230,18 +644,44 @@
       throw new Error("Could not prepare the camera frame.");
     }
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/jpeg", 0.82);
+    return canvas.toDataURL("image/jpeg", 0.85);
   };
 
   const showCaptureStage = () => {
     pendingFaceImage = "";
+    pendingFaceVerificationToken = "";
+    stableFaceFrames = 0;
+    previousFacePosition = null;
+    faceVerificationStarted = false;
+    manualCaptureButton.disabled = true;
+    manualCaptureButton.textContent = "Capture Manually";
+    detectionCallbackCount = 0;
+    captureAttemptCount = 0;
+    lastFaceMessage = "";
+    setProgress("state", "CAMERA_INITIALIZING");
+    setProgress("camera", "Initializing camera");
+    setProgress("videoReady", "—");
+    setProgress("videoDimensions", "—");
+    setProgress("callback", "Stopped");
+    setProgress("detection", "Waiting for camera");
+    setProgress("confidence", "—");
+    setProgress("bbox", "—");
+    setProgress("alignment", "Waiting for face");
+    setProgress("quality", "Waiting for face");
+    setProgress("stability", `0/${requiredStableFaceFrames}`);
+    setProgress("capture", "Waiting for stable face");
+    setProgress("captureFunction", "Not called");
+    setProgress("canvas", "Not attempted");
+    setProgress("backend", "Not sent");
+    setProgress("matching", "Waiting for captured image");
+    setProgress("final", "Waiting for backend result");
+    setBlockedReason("Waiting for camera initialization.");
     checkResult.hidden = true;
     captureActions.hidden = false;
-    captureButton.disabled = false;
+    retryCameraButton.hidden = true;
     video.hidden = false;
-    proceedButton.textContent = "Face verification required";
     cameraPanel.hidden = false;
-    captureStatus.textContent = "Center your face inside the oval, then capture.";
+    captureStatus.textContent = "Position your face inside the circle. Verification starts automatically.";
   };
 
   const showCheckResult = (result) => {
@@ -249,8 +689,9 @@
     checkLabel.textContent = result.label;
     checkMessage.textContent = result.message;
     const faceVerified = result.quality === "good";
-    proceedButton.disabled = !faceVerified;
-    checkScore.textContent = result.similarity === null || result.similarity === undefined
+    const showSimilarity = cameraPanel.dataset.diagnosticsEnabled === "true";
+    checkScore.hidden = !showSimilarity;
+    checkScore.textContent = !showSimilarity || result.similarity === null || result.similarity === undefined
       ? ""
       : `Face similarity: ${Number(result.similarity).toFixed(3)}.`;
     pendingLocationStatus = result.location_status || "unavailable";
@@ -287,11 +728,6 @@
     }
     captureActions.hidden = true;
     checkResult.hidden = false;
-    proceedButton.textContent = !faceVerified
-      ? "Face verification required"
-      : pendingLocationRequiresReason
-      ? "Provide reason and submit"
-      : "Record attendance";
   };
 
   const captureLocationForPreview = () => new Promise((resolve) => {
@@ -337,12 +773,16 @@
   });
 
   const checkCapturedFrame = async (faceImage) => {
-    const body = new FormData(currentForm);
-    body.set("face_image", faceImage);
-    locationStatus.textContent = "Checking your location…";
-    captureStatus.textContent = "Checking the face. Please wait…";
-    captureButton.disabled = true;
     try {
+      const body = new FormData(currentForm);
+      body.set("face_image", faceImage);
+      locationStatus.textContent = "Checking your location…";
+      captureStatus.textContent = "Captured image ready. Preparing verification request…";
+      setProgress("capture", "Image captured successfully", "pass");
+      setProgress("matching", "Waiting for captured image", "waiting");
+      setProgress("backend", "Preparing request", "active");
+      setVerificationState("IMAGE_CAPTURED", "Waiting for location check before sending the captured image.");
+      captureActions.hidden = true;
       const locationAvailable = await captureLocationForPreview();
       body.set(`${currentForm.dataset.action}_latitude`, currentForm.elements[`${currentForm.dataset.action}_latitude`].value);
       body.set(`${currentForm.dataset.action}_longitude`, currentForm.elements[`${currentForm.dataset.action}_longitude`].value);
@@ -350,19 +790,77 @@
       locationStatus.textContent = locationAvailable
         ? locationStatus.textContent
         : "GPS unavailable. You can submit an explanation for supervisor review.";
-      const response = await fetch("{% url 'portal:attendance_face_preview' %}", {
+      captureStatus.textContent = "Sending captured image for backend verification…";
+      const request = fetchJsonWithTimeout("{% url 'portal:attendance_face_preview' %}", {
         method: "POST",
         body,
         credentials: "same-origin",
         headers: { "X-Requested-With": "XMLHttpRequest" },
       });
-      const result = await window.readFaceApiResponse(response);
+      setProgress("backend", "Pending — captured image sent", "active");
+      setProgress("matching", "Backend verification in progress", "active");
+      setVerificationState("MATCHING_FACE", "The captured image has been sent to the backend for identity verification.");
+      captureStatus.textContent = "Backend is verifying the captured image…";
+      const { response, result } = await request;
+      setProgress("backend", response.ok ? "Response received" : `Rejected — HTTP ${response.status}`, response.ok ? "pass" : "fail");
+      if (!response.ok) {
+        const message = result.face_status === "not_matched"
+          ? "Face does not match your enrollment. Please try again."
+          : result.error || `Face verification failed (HTTP ${response.status}).`;
+        setProgress("matching", result.face_status === "not_matched" ? "Face does not match enrollment" : "Verification failed", "fail");
+        setProgress("final", "Verification failed", "fail");
+        setVerificationState("NOT_MATCHED", message, "fail");
+        showCheckResult({
+          quality: "poor",
+          label: result.face_status === "not_matched" ? "Face not recognized" : "Face check unavailable",
+          message,
+          similarity: null,
+        });
+        captureStatus.textContent = message;
+        window.setTimeout(() => document.getElementById("retake-face").click(), 1800);
+        return;
+      }
+      if (result.quality !== "good" || typeof result.verification_token !== "string" || !result.verification_token) {
+        const message = "The server did not return a valid identity verification result. Retake the frame and try again.";
+        setProgress("matching", "No valid backend match result", "fail");
+        setProgress("final", "Verification failed", "fail");
+        setVerificationState("ERROR", message, "fail");
+        showCheckResult({
+          quality: "poor",
+          label: "Face check unavailable",
+          message,
+          similarity: null,
+        });
+        window.setTimeout(() => document.getElementById("retake-face").click(), 1800);
+        return;
+      }
       pendingFaceImage = faceImage;
+      pendingFaceVerificationToken = result.verification_token || "";
+      setProgress("matching", "Face matches enrollment", "pass");
+      setProgress("final", "Identity verified by backend", "pass");
+      setVerificationState("VERIFIED", "Backend identity match succeeded.", "pass");
+      setBlockedReason("No capture or identity-verification blockers.", "pass");
+      captureStatus.textContent = "Face matches enrollment. The backend identity check succeeded.";
       if (result.distance_meters !== null && result.distance_meters !== undefined) {
         result.distance_meters = Number(result.distance_meters);
       }
       showCheckResult(result);
+      if (result.quality === "good" && pendingLocationRequiresReason) {
+        locationReasonInput.value = "";
+        locationReasonDialog.showModal();
+        locationReasonInput.focus();
+      } else if (result.quality === "good") {
+        submitAttendance(pendingFaceImage, pendingFaceVerificationToken);
+      } else {
+        setProgress("final", "Verification failed", "fail");
+        setVerificationState("NOT_MATCHED", result.message || "Face verification did not match.", "fail");
+        window.setTimeout(() => document.getElementById("retake-face").click(), 1800);
+      }
     } catch (error) {
+      setProgress("backend", "Failed or timed out", "fail");
+      setProgress("matching", "Backend verification unavailable", "fail");
+      setProgress("final", "Verification failed", "fail");
+      setVerificationState("ERROR", error instanceof Error ? error.message : "The backend request failed.", "fail");
       pendingFaceImage = faceImage;
       showCheckResult({
         quality: "poor",
@@ -372,24 +870,78 @@
           : "The system could not check this frame right now. Retake it before recording attendance.",
         similarity: null,
       });
+      window.setTimeout(() => document.getElementById("retake-face").click(), 2500);
     }
   };
 
-  const submitAttendance = (faceImage) => {
+  const submitAttendance = async (faceImage, verificationToken) => {
+    if (attendanceSubmitting) return;
     attendanceSubmitting = true;
     currentForm.querySelector("[name='face_image']").value = faceImage;
+    currentForm.querySelector("[name='face_verification_token']").value = verificationToken || "";
     currentForm.elements.notes.value = noteInput.value;
-    const finishSubmission = () => {
-      stopCamera();
-      localStorage.removeItem(noteKey);
-      currentForm.submit();
-    };
     const reasonField = currentForm.elements[`${currentForm.dataset.action}_location_reason`];
     reasonField.value = pendingLocationRequiresReason ? locationReasonInput.value.trim() : "";
     locationStatus.textContent = pendingLocationRequiresReason
       ? "Location exception submitted for supervisor review."
-      : "Location verified. Recording attendance…";
-    finishSubmission();
+      : "Location verified. Recording attendance...";
+    setProgress("final", "Face match passed — submitting attendance", "active");
+    try {
+      const { response, result } = await fetchJsonWithTimeout(currentForm.action, {
+        method: "POST",
+        body: new FormData(currentForm),
+        credentials: "same-origin",
+        headers: { "X-Requested-With": "XMLHttpRequest" },
+      });
+      if (!response.ok) {
+        attendanceSubmitting = false;
+        if (result.code === "location_reason_required") {
+          setProgress("final", "Location explanation required", "active");
+          pendingLocationRequiresReason = true;
+          locationReasonInput.value = "";
+          locationReasonDialog.showModal();
+          locationReasonInput.focus();
+          return;
+        }
+        checkLabel.textContent = "Attendance could not be recorded";
+        checkMessage.textContent = result.error || "Refresh the page and try again.";
+        checkResult.className = "face-check-result face-check-poor";
+        checkResult.hidden = false;
+        captureActions.hidden = false;
+        setProgress("final", "Attendance submission failed", "fail");
+        setVerificationState("ERROR", result.error || "Attendance could not be recorded.", "fail");
+        stopCamera();
+        return;
+      }
+
+      stopCamera();
+      localStorage.removeItem(noteKey);
+      checkLabel.textContent = result.attendance_status === "approved"
+        ? "Face verified successfully!"
+        : "Face verified; attendance submitted for review";
+      checkMessage.textContent = result.message;
+      locationCheckResult.textContent = "";
+      checkResult.className = result.attendance_status === "approved"
+        ? "face-check-result face-check-good"
+        : "face-check-result face-check-needs_review";
+      checkResult.hidden = false;
+      captureActions.hidden = true;
+      setProgress("final", result.attendance_status === "approved" ? "Attendance approved" : "Attendance submitted for review", "pass");
+      setVerificationState("VERIFIED", "Backend face match passed and attendance response was received.", "pass");
+      cameraStatus.textContent = result.message;
+      window.setTimeout(() => window.location.reload(), 3500);
+    } catch (error) {
+      attendanceSubmitting = false;
+      setProgress("final", "Attendance submission failed", "fail");
+      setVerificationState("ERROR", error instanceof Error ? error.message : "Attendance could not be submitted.", "fail");
+      checkLabel.textContent = "Attendance submission unavailable";
+      checkMessage.textContent = error instanceof Error
+        ? error.message
+        : "Your verified face could not be submitted. Try again shortly.";
+      checkResult.className = "face-check-result face-check-poor";
+      checkResult.hidden = false;
+      stopCamera();
+    }
   };
 
   document.querySelectorAll(".clock-form").forEach((form) => form.addEventListener("submit", (event) => {
@@ -399,76 +951,228 @@
     cameraStatus.textContent = `Starting camera for ${form.dataset.action.replace("_", " ")}…`;
     showCaptureStage();
     startCamera().then(() => {
-      captureStatus.textContent = "Camera ready. Center your face inside the oval, then capture.";
-    }).catch(() => {
+      captureStatus.textContent = "Camera ready. Position your face inside the circle for automatic verification.";
+    }).catch((error) => {
       stopCamera();
       video.hidden = true;
-      captureStatus.textContent = "Camera unavailable or permission denied. Allow camera access and try again.";
-      captureActions.hidden = true;
+      captureStatus.textContent = cameraFailureMessage(error);
+      setProgress("camera", "Camera error", "fail");
+      setVerificationState("ERROR", cameraFailureMessage(error), "fail");
       showCheckResult({
         quality: "poor",
-        label: "Poor capture — no camera frame",
-        message: "Allow camera access and retake before recording attendance.",
+        label: "Camera unavailable",
+        message: cameraFailureMessage(error),
         similarity: null,
       });
+      retryCameraButton.textContent = "Retry camera";
+      retryCameraButton.hidden = false;
+      captureActions.hidden = false;
     });
   }));
 
-  captureButton.addEventListener("click", () => {
-    if (!video.videoWidth || !video.videoHeight) {
-      captureStatus.textContent = "Wait for the camera preview, then try again.";
+  retryCameraButton.addEventListener("click", () => {
+    retryCameraButton.hidden = true;
+    retryCameraButton.textContent = "Retry camera";
+    checkResult.hidden = true;
+    faceVerificationStarted = false;
+    resetFaceStability("Retrying face verification.");
+    captureStatus.textContent = "Initializing camera...";
+    startCamera().then(() => {
+      captureStatus.textContent = "Camera ready. Position your face inside the circle for automatic verification.";
+    }).catch((error) => {
+      stopCamera();
+      captureStatus.textContent = cameraFailureMessage(error);
+      setProgress("camera", "Camera error", "fail");
+      setVerificationState("ERROR", cameraFailureMessage(error), "fail");
+      retryCameraButton.textContent = "Retry camera";
+      retryCameraButton.hidden = false;
+      captureActions.hidden = false;
+    });
+  });
+
+  const captureManually = async () => {
+    if (
+      manualCaptureButton.disabled
+      || manualCaptureInProgress
+      || faceVerificationStarted
+      || attendanceSubmitting
+      || !currentForm
+    ) {
+      return;
+    }
+
+    manualCaptureInProgress = true;
+    manualCaptureButton.disabled = true;
+    manualCaptureButton.textContent = "Checking face...";
+    captureStatus.textContent = "Checking the current frame...";
+    const generation = cameraGeneration;
+    const detectionStop = stopFaceDetection;
+    stopFaceDetection = null;
+    detectionStop?.("manual-frame-validation", { abortRequest: false });
+
+    try {
+      await detectionStop?.whenIdle?.();
+      if (generation !== cameraGeneration || !currentForm) return;
+
+      const faceImage = captureCurrentFrame();
+      if (!faceImage.startsWith("data:image/jpeg;base64,") || faceImage.length < 1000) {
+        throw new Error("The camera frame is unavailable. Please try again.");
+      }
+      const body = new FormData(currentForm);
+      body.set("face_image", faceImage);
+      const { response, result } = await fetchJsonWithTimeout(
+        cameraPanel.dataset.detectionUrl,
+        {
+          method: "POST",
+          body,
+          credentials: "same-origin",
+          headers: { "X-Requested-With": "XMLHttpRequest" },
+        },
+        15000,
+      );
+      if (generation !== cameraGeneration || !currentForm) return;
+      if (!response.ok) {
+        throw new Error(
+          response.status >= 500
+            ? "Face detection is temporarily unavailable. Please try again."
+            : "The camera frame could not be checked. Please try again.",
+        );
+      }
+
+      const validation = evaluateLiveFace(result, { manualValidation: true });
+      document.getElementById("attendance-detection-status").textContent = validation.message;
+      if (!validation.usable) {
+        captureStatus.textContent = validation.message || "Position your face inside the circle.";
+        return;
+      }
+
+      faceVerificationStarted = true;
+      setProgress("capture", "Manual frame passed detection, alignment, and quality checks", "pass");
+      setVerificationState("CAPTURING", "The manually selected frame passed the same live face checks.");
+      captureStatus.textContent = "Face checks passed. Sending image for verification...";
+      beginFaceVerification(faceImage);
+    } catch (error) {
+      if (generation !== cameraGeneration || !currentForm) return;
+      const message = error instanceof Error
+        ? error.message
+        : "The camera frame could not be checked. Please try again.";
+      captureStatus.textContent = message;
+      document.getElementById("attendance-detection-status").textContent = message;
+    } finally {
+      manualCaptureInProgress = false;
+      if (!faceVerificationStarted) manualCaptureButton.textContent = "Capture Manually";
+      if (generation === cameraGeneration && currentForm && cameraStream && !faceVerificationStarted) {
+        try {
+          if (!startLiveFaceDetection()) throw new Error("Face detection is unavailable.");
+        } catch {
+          manualCaptureButton.disabled = true;
+          captureStatus.textContent = "Face detection is unavailable. Please retry verification.";
+          retryCameraButton.textContent = "Retry verification";
+          retryCameraButton.hidden = false;
+          captureActions.hidden = false;
+        }
+      }
+    }
+  };
+
+  manualCaptureButton.addEventListener("click", () => {
+    void captureManually();
+  });
+
+  const beginFaceVerification = (capturedImage = null) => {
+    captureAttemptCount += 1;
+    setProgress("captureFunction", `Called — attempt ${captureAttemptCount}`, "active");
+    manualCaptureButton.disabled = true;
+    if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+      faceVerificationStarted = false;
+      setProgress("capture", "Capture blocked — no current video frame", "fail");
+      setProgress("canvas", "Not attempted — video frame unavailable", "fail");
+      resetFaceStability("The video has no current frame or valid dimensions.");
+      setVerificationState("ERROR", "The video has no current frame or valid dimensions.", "fail");
+      captureStatus.textContent = "Waiting for a usable camera frame...";
       return;
     }
     try {
-      const faceImage = captureCurrentFrame();
+      const faceImage = capturedImage || captureCurrentFrame();
+      if (!faceImage.startsWith("data:image/jpeg;base64,") || faceImage.length < 1000) {
+        throw new Error("The camera canvas returned an empty or invalid image.");
+      }
+      setProgress("canvas", `Success — ${video.videoWidth} × ${video.videoHeight} frame encoded`, "pass");
+      setProgress("capture", "Captured successfully — sending to verification", "pass");
       video.pause();
-      stopFaceDetection?.();
+      stopFaceDetection?.("capture-started");
       checkCapturedFrame(faceImage);
-    } catch {
-      captureStatus.textContent = "Could not capture this frame. Retake it before recording attendance.";
+    } catch (error) {
+      faceVerificationStarted = false;
+      stopFaceDetection?.("capture-failed");
+      stopFaceDetection = null;
+      video.pause();
+      setProgress("capture", "Capture failed", "fail");
+      setProgress("canvas", "Failed", "fail");
+      setProgress("backend", "Not sent — image extraction failed", "fail");
+      setVerificationState("ERROR", error instanceof Error ? error.message : "The camera frame could not be extracted.", "fail");
+      captureStatus.textContent = error instanceof Error
+        ? error.message
+        : "The camera frame was unavailable. Retake and try again.";
       showCheckResult({
         quality: "poor",
         label: "Poor capture — frame unavailable",
-        message: "Try capturing again before recording attendance.",
+        message: error instanceof Error
+          ? error.message
+          : "The camera frame could not be captured. Keep the preview open and try again.",
         similarity: null,
       });
+      window.setTimeout(() => document.getElementById("retake-face").click(), 1800);
     }
-  });
+  };
 
   document.getElementById("retake-face").addEventListener("click", async () => {
     checkResult.hidden = true;
     pendingFaceImage = "";
+    pendingFaceVerificationToken = "";
+    stableFaceFrames = 0;
+    previousFacePosition = null;
+    faceVerificationStarted = false;
+    manualCaptureButton.textContent = "Capture Manually";
+    setProgress("detection", "Searching for face", "active");
+    setProgress("alignment", "Waiting for face", "waiting");
+    setProgress("quality", "Waiting for face", "waiting");
+    setProgress("stability", `0/${requiredStableFaceFrames}`);
+    setProgress("capture", "Waiting for stable face", "waiting");
+    setProgress("captureFunction", "Not called");
+    setProgress("canvas", "Not attempted");
+    setProgress("backend", "Not sent");
+    setProgress("matching", "Waiting for captured image");
+    setProgress("final", "Waiting for backend result");
+    setBlockedReason("Searching for a valid face.");
+    setVerificationState("DETECTING_FACE", "Searching for a valid face.");
+    retryCameraButton.hidden = true;
     try {
       if (!cameraStream) {
         await startCamera();
       } else {
         await video.play();
+        stopFaceDetection?.("retake");
+        stopFaceDetection = null;
+        if (!startLiveFaceDetection()) throw new Error("The camera preview has no current frame.");
       }
-    } catch {
+    } catch (error) {
       stopCamera();
-      captureStatus.textContent = "Camera unavailable. Allow camera access in your browser and try again.";
+      captureStatus.textContent = cameraFailureMessage(error);
+      setProgress("camera", "Camera error", "fail");
+      setVerificationState("ERROR", cameraFailureMessage(error), "fail");
       showCheckResult({
         quality: "poor",
         label: "Poor capture — camera unavailable",
-        message: "Allow camera access to retake before recording attendance.",
+        message: cameraFailureMessage(error),
         similarity: null,
       });
+      retryCameraButton.hidden = false;
+      captureActions.hidden = false;
       return;
     }
     captureActions.hidden = false;
-    captureButton.disabled = false;
-    captureStatus.textContent = "Center your face inside the oval and capture again.";
-  });
-
-  proceedButton.addEventListener("click", () => {
-    if (!currentForm || attendanceSubmitting) return;
-    if (pendingLocationRequiresReason) {
-      locationReasonInput.value = "";
-      locationReasonDialog.showModal();
-      locationReasonInput.focus();
-      return;
-    }
-    submitAttendance(pendingFaceImage);
+    captureStatus.textContent = "Position your face inside the circle. Verification starts automatically.";
   });
 
   locationReasonForm.addEventListener("submit", (event) => {
@@ -482,16 +1186,20 @@
     locationReasonInput.setCustomValidity("");
     locationReasonDialog.close();
     cameraStatus.textContent = "Submitting your location exception for supervisor review…";
-    submitAttendance(pendingFaceImage);
+    submitAttendance(pendingFaceImage, pendingFaceVerificationToken);
   });
 
   locationReasonInput.addEventListener("input", () => locationReasonInput.setCustomValidity(""));
-  document.getElementById("cancel-location-reason").addEventListener("click", () => locationReasonDialog.close());
+  document.getElementById("cancel-location-reason").addEventListener("click", () => {
+    locationReasonDialog.close();
+    document.getElementById("retake-face").click();
+  });
 
   document.getElementById("cancel-face-capture").addEventListener("click", () => {
     stopCamera();
     currentForm = null;
     pendingFaceImage = "";
+    pendingFaceVerificationToken = "";
     cameraPanel.hidden = true;
     cameraStatus.textContent = "Capture cancelled. Click Time in or Time out to try again.";
   });

@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import AcademicPeriod, Application, AttendanceLog, AuditLog, CompanyProfile, InternProfile, Posting, RiskAssessment, Scorecard, WeeklyReport
+from .models import AcademicPeriod, Application, AttendanceLog, AuditLog, CompanyProfile, INSTITUTION_NAME, InternProfile, Posting, RiskAssessment, Scorecard, WeeklyReport
 
 
 @admin.register(AcademicPeriod)
@@ -12,8 +12,13 @@ class AcademicPeriodAdmin(admin.ModelAdmin):
 
 @admin.register(InternProfile)
 class InternProfileAdmin(admin.ModelAdmin):
-    list_display = ("user", "student_id", "university", "course")
-    search_fields = ("user__username", "user__email", "student_id", "university")
+    list_display = ("user", "student_id", "institution", "course")
+    search_fields = ("user__username", "user__email", "student_id")
+    exclude = ("university",)
+
+    @admin.display(description="University")
+    def institution(self, _profile):
+        return INSTITUTION_NAME
 
 
 @admin.register(CompanyProfile)

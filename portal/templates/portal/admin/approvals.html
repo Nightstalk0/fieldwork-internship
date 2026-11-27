@@ -6,11 +6,33 @@
   <div>
     <p class="eyebrow">ADMIN WORKSPACE</p>
     <h1>Approval requests</h1>
-    <p class="muted">Approve face re-registration and official worksite location requests.</p>
+    <p class="muted">Review Intern worksite and face submissions. Pending face enrollments are not used for attendance.</p>
   </div>
 </div>
 <section class="panel">
-  <div class="section-heading"><h2>Face re-registration</h2><span class="muted">{{ face_requests|length }} pending</span></div>
+  <div class="section-heading"><h2>Pending face enrollment submissions</h2><span class="muted">{{ face_submissions|length }} pending</span></div>
+  {% for item in face_submissions %}
+  <article class="weekly-report-entry">
+    <h3>{{ item.intern.user.get_full_name|default:item.intern.user.username }}{% if item.intern.student_id %} · {{ item.intern.student_id }}{% endif %}</h3>
+    <p>Submitted {{ item.submitted_at|date:"M j, Y H:i" }}</p>
+    <div class="clock-actions">
+      <form method="post">{% csrf_token %}<input type="hidden" name="request_id" value="{{ item.pk }}"><button class="button button-primary" type="submit" name="action" value="approve_face_submission">Approve enrollment</button></form>
+      <form method="post" class="stack-form">{% csrf_token %}<input type="hidden" name="request_id" value="{{ item.pk }}">
+        <label for="face-reject-reason-{{ item.pk }}">Reason for rejection</label>
+        <textarea id="face-reject-reason-{{ item.pk }}" name="review_reason" rows="2" maxlength="1000" required></textarea>
+        <button class="button button-small button-secondary" type="submit" name="action" value="reject_face_submission">Reject</button>
+      </form>
+      <form method="post" class="stack-form">{% csrf_token %}<input type="hidden" name="request_id" value="{{ item.pk }}">
+        <label for="face-retake-reason-{{ item.pk }}">Retake instructions</label>
+        <textarea id="face-retake-reason-{{ item.pk }}" name="review_reason" rows="2" maxlength="1000" required></textarea>
+        <button class="button button-small button-secondary" type="submit" name="action" value="request_face_submission_retake">Request retake</button>
+      </form>
+    </div>
+  </article>
+  {% empty %}<p class="muted">No face enrollment submissions are waiting for review.</p>{% endfor %}
+</section>
+<section class="panel">
+  <div class="section-heading"><h2>Face re-registration requests</h2><span class="muted">{{ face_requests|length }} pending</span></div>
   {% for item in face_requests %}
   <article class="weekly-report-entry">
     <h3>{{ item.intern.user.get_full_name|default:item.intern.user.username }}{% if item.intern.student_id %} · {{ item.intern.student_id }}{% endif %}</h3>
@@ -18,20 +40,75 @@
     <p class="muted">Requested {{ item.created_at|date:"M j, Y H:i" }}</p>
     <div class="clock-actions">
       <form method="post">{% csrf_token %}<input type="hidden" name="request_id" value="{{ item.pk }}"><button class="button button-primary" type="submit" name="action" value="approve_face_reset">Approve Reset</button></form>
-      <form method="post">{% csrf_token %}<input type="hidden" name="request_id" value="{{ item.pk }}"><button class="button button-secondary" type="submit" name="action" value="reject_face_reset">Reject</button></form>
+      <form method="post" class="stack-form">{% csrf_token %}<input type="hidden" name="request_id" value="{{ item.pk }}">
+        <label for="face-request-reason-{{ item.pk }}">Reason for rejection</label>
+        <textarea id="face-request-reason-{{ item.pk }}" name="review_reason" rows="2" maxlength="1000" required></textarea>
+        <button class="button button-secondary" type="submit" name="action" value="reject_face_reset">Reject</button>
+      </form>
     </div>
   </article>
   {% empty %}<p class="muted">No face re-registration requests are waiting for approval.</p>{% endfor %}
 </section>
 <section class="panel">
+  <div class="section-heading"><h2>Current face enrollments</h2><span class="muted">{{ face_enrollment_records|length }} enrolled</span></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Intern</th><th>Student ID</th><th>Last updated</th><th>Admin action</th></tr></thead>
+      <tbody>
+        {% for enrollment in face_enrollment_records %}
+        <tr>
+          <td>{{ enrollment.intern.user.get_full_name|default:enrollment.intern.user.username }}</td>
+          <td>{{ enrollment.intern.student_id|default:"—" }}</td>
+          <td>{{ enrollment.updated_at|date:"M j, Y H:i" }}</td>
+          <td>
+            {% if enrollment.has_pending_submission %}
+            <span class="muted">Pending submission is awaiting review</span>
+            {% else %}
+            <form method="post" class="stack-form">{% csrf_token %}
+              <input type="hidden" name="intern_id" value="{{ enrollment.intern_id }}">
+              <label for="face-current-retake-{{ enrollment.pk }}">Retake instructions</label>
+              <textarea id="face-current-retake-{{ enrollment.pk }}" name="review_reason" rows="2" maxlength="1000" required></textarea>
+              <button class="button button-small button-secondary" type="submit" name="action" value="request_face_retake">Request retake</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% empty %}<tr><td colspan="4" class="muted">No current face enrollments are on file.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+<section class="panel">
+  <div class="section-heading"><h2>Face re-registration request history</h2><span class="muted">Most recent requests and decisions</span></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Intern</th><th>Student ID</th><th>Request / status</th><th>Submitted</th><th>Reviewed by</th><th>Admin feedback</th></tr></thead>
+      <tbody>
+        {% for item in face_request_history %}
+        <tr>
+          <td>{{ item.intern.user.get_full_name|default:item.intern.user.username }}</td>
+          <td>{{ item.intern.student_id|default:"—" }}</td>
+          <td>{{ item.reason }}<br><span class="muted">{{ item.get_status_display }}</span></td>
+          <td>{{ item.created_at|date:"M j, Y H:i" }}</td>
+          <td>{% if item.reviewed_by %}{{ item.reviewed_by.get_full_name|default:item.reviewed_by.username }}{% else %}—{% endif %}</td>
+          <td>{{ item.review_reason|default:"—" }}</td>
+        </tr>
+        {% empty %}<tr><td colspan="6" class="muted">No face re-registration requests have been recorded.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+<section class="panel">
   <div class="section-heading"><h2>Worksite location requests</h2><span class="muted">{{ worksite_requests|length }} pending</span></div>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Requester and assignment</th><th>Worksite</th><th>Address</th><th>Coordinates</th><th>Radius</th><th>GPS accuracy</th><th>Submitted</th><th>Status</th><th>Map</th><th>Decision</th></tr></thead>
+      <thead><tr><th>Intern</th><th>Student ID</th><th>Placement type</th><th>Worksite</th><th>Complete address</th><th>Coordinates</th><th>Radius</th><th>GPS accuracy</th><th>Submitted</th><th>Status</th><th>Map</th><th>Decision</th></tr></thead>
       <tbody>
         {% for site in worksite_requests %}
         <tr>
-          <td>{% if site.company_id %}{{ site.company.company_name }} · Company{% else %}{{ site.intern.user.get_full_name|default:site.intern.user.username }} · Intern{% if site.application_id %}<br><span class="muted">{{ site.application.posting.company.company_name }} · {{ site.application.posting.title }}</span>{% endif %}{% endif %}</td>
+          <td>{% if site.intern_id %}{{ site.intern.user.get_full_name|default:site.intern.user.username }}{% if site.application_id %}<br><span class="muted">{{ site.application.posting.company.company_name }} · {{ site.application.posting.title }}</span>{% endif %}{% else %}Company submission{% endif %}</td>
+          <td>{% if site.intern_id %}{{ site.intern.student_id|default:"—" }}{% else %}—{% endif %}</td>
+          <td>{% if site.intern_id %}{% if site.intern.placement_type == 'external' %}External Company{% else %}Fieldwork{% endif %}{% else %}Company{% endif %}</td>
           <td>{{ site.name }}</td>
           <td>{{ site.address }}</td>
           <td>{{ site.latitude }}, {{ site.longitude }}</td>
@@ -64,7 +141,59 @@
             </form>
           </div></td>
         </tr>
-        {% empty %}<tr><td colspan="10" class="muted">No worksite requests are waiting for approval.</td></tr>{% endfor %}
+        {% empty %}<tr><td colspan="12" class="muted">No worksite requests are waiting for approval.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+<section class="panel">
+  <div class="section-heading"><h2>Worksite submission history</h2><span class="muted">Most recent decisions</span></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Intern</th><th>Student ID</th><th>Placement type</th><th>Worksite / address</th><th>Status</th><th>Submitted</th><th>Reviewed by</th><th>Admin feedback / action</th></tr></thead>
+      <tbody>
+        {% for site in worksite_history %}
+        <tr>
+          <td>{{ site.intern.user.get_full_name|default:site.intern.user.username }}</td>
+          <td>{{ site.intern.student_id|default:"—" }}</td>
+          <td>{% if site.intern.placement_type == 'external' %}External Company{% else %}Fieldwork{% endif %}</td>
+          <td>{{ site.name }}<br>{{ site.address }}<br><span class="muted">{{ site.latitude }}, {{ site.longitude }}</span></td>
+          <td>{{ site.get_approval_status_display }}</td>
+          <td>{{ site.created_at|date:"M j, Y H:i" }}</td>
+          <td>{% if site.reviewed_by %}{{ site.reviewed_by.get_full_name|default:site.reviewed_by.username }}{% else %}—{% endif %}</td>
+          <td>
+            {% if site.rejection_reason %}<p>{{ site.rejection_reason }}</p>{% endif %}
+            {% if site.intern_id and site.approval_status == 'approved' and site.is_active %}
+            <form method="post" class="stack-form">{% csrf_token %}
+              <input type="hidden" name="request_id" value="{{ site.pk }}">
+              <label for="worksite-update-reason-{{ site.pk }}">Request correction or replacement</label>
+              <textarea id="worksite-update-reason-{{ site.pk }}" name="review_reason" rows="2" maxlength="1000" required></textarea>
+              <button class="button button-small button-secondary" type="submit" name="action" value="request_worksite_corrections">Request correction</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% empty %}<tr><td colspan="8" class="muted">No reviewed Intern worksite submissions yet.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+<section class="panel">
+  <div class="section-heading"><h2>Face submission history</h2><span class="muted">Most recent submissions</span></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Intern</th><th>Student ID</th><th>Status</th><th>Submitted</th><th>Reviewed by</th><th>Admin feedback</th></tr></thead>
+      <tbody>
+        {% for item in face_submission_history %}
+        <tr>
+          <td>{{ item.intern.user.get_full_name|default:item.intern.user.username }}</td>
+          <td>{{ item.intern.student_id|default:"—" }}</td>
+          <td>{{ item.get_status_display }}</td>
+          <td>{{ item.submitted_at|date:"M j, Y H:i" }}</td>
+          <td>{% if item.reviewed_by %}{{ item.reviewed_by.get_full_name|default:item.reviewed_by.username }}{% else %}—{% endif %}</td>
+          <td>{{ item.review_reason|default:"—" }}</td>
+        </tr>
+        {% empty %}<tr><td colspan="6" class="muted">No face submissions have been recorded.</td></tr>{% endfor %}
       </tbody>
     </table>
   </div>

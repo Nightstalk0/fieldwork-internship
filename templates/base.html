@@ -13,7 +13,7 @@
   <header class="topbar{% if request.user.is_authenticated %} sidebar{% endif %}">
     <div class="sidebar-brand-row">
       <a class="brand" href="{% url 'portal:dashboard' %}">
-        <img class="brand-logo" src="{% static 'richwell-emblem.png' %}" alt="Richwell Colleges" width="42" height="42">
+        <img class="brand-logo" src="{% static 'richwell-emblem.png' %}" alt="Richwell Colleges, Incorporated" width="42" height="42">
         <span class="brand-copy"><strong>FIELDWORK</strong><small>Internship Management</small></span>
       </a>
       {% if request.user.is_authenticated %}
@@ -67,7 +67,7 @@
     {% if request.user.is_authenticated %}
     <header class="portal-header">
       <div>
-        <span class="portal-header-kicker">Richwell Colleges</span>
+        <span class="portal-header-kicker">Richwell Colleges, Incorporated</span>
         <strong>Fieldwork Internship Management</strong>
       </div>
       <time datetime="{% now 'Y-m-d' %}">{% now "M j, Y" %}</time>
@@ -77,7 +77,7 @@
       {% if messages %}<div class="messages" aria-live="polite">{% for message in messages %}<div class="message message-{{ message.tags }}">{{ message }}</div>{% endfor %}</div>{% endif %}
       {% block content %}{% endblock %}
     </main>
-    <footer class="site-footer"><span>Fieldwork Internship Management</span><span>Richwell Colleges <b>|</b> Student Portal</span></footer>
+    <footer class="site-footer"><span>Fieldwork Internship Management</span><span>Richwell Colleges, Incorporated <b>|</b> Student Portal</span></footer>
   </div>
   <script>
     const menuToggle = document.querySelector(".menu-toggle");
@@ -210,6 +210,7 @@
     });
     document.querySelectorAll("form").forEach((form) => {
       form.addEventListener("submit", (event) => {
+        if (event.defaultPrevented) return;
         const submitButton = event.submitter;
         if (!(submitButton instanceof HTMLButtonElement) || submitButton.disabled) return;
         submitButton.classList.add("is-loading");

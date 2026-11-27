@@ -1,4 +1,5 @@
 import os
+from math import isfinite
 from pathlib import Path
 
 import dj_database_url
@@ -16,6 +17,12 @@ except ValueError as exc:
     raise ImproperlyConfigured("GPS_MAX_ACCURACY_METERS must be a positive integer.") from exc
 if GPS_MAX_ACCURACY_METERS < 1:
     raise ImproperlyConfigured("GPS_MAX_ACCURACY_METERS must be a positive integer.")
+try:
+    FACE_COSINE_MATCH_THRESHOLD = float(os.getenv("FACE_COSINE_MATCH_THRESHOLD", "0.65"))
+except ValueError as exc:
+    raise ImproperlyConfigured("FACE_COSINE_MATCH_THRESHOLD must be between 0.65 and 1.0.") from exc
+if not isfinite(FACE_COSINE_MATCH_THRESHOLD) or not 0.65 <= FACE_COSINE_MATCH_THRESHOLD <= 1.0:
+    raise ImproperlyConfigured("FACE_COSINE_MATCH_THRESHOLD must be between 0.65 and 1.0.")
 SECRET_KEY = os.getenv("SECRET_KEY")
 FACE_EMBEDDING_ENCRYPTION_KEY = os.getenv("FACE_EMBEDDING_ENCRYPTION_KEY", "")
 if not SECRET_KEY:

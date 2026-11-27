@@ -28,9 +28,13 @@ from .forms import (
     ScorecardSelectionForm,
     WorksiteLocationForm,
 )
-from .models import AcademicPeriod, Application, AttendanceFaceCapture, AttendanceLog, CompanyProfile, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, FaceReenrollmentRequest, InternProfile, Posting, RiskAssessment, Scorecard, WeeklyReport, WorksiteLocation
+from .models import AcademicPeriod, Application, AttendanceFaceCapture, AttendanceLog, CompanyProfile, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, FaceEnrollmentSubmission, FaceReenrollmentRequest, InternProfile, Posting, RiskAssessment, Scorecard, WeeklyReport, WorksiteLocation
 from .utils import haversine_distance_km
-from .views import _attendance_location_status
+from .views import (
+    _attendance_face_verification_token,
+    _attendance_location_status,
+    _worksites_for_attendance,
+)
 from .validators import FileSizeAndTypeValidator
 
 
@@ -101,7 +105,8 @@ class PortalWorkflowTests(TestCase):
             application.status = Application.Status.ACCEPTED
             application.save(update_fields=("status",))
         return WorksiteLocation.objects.create(
-            company=self.company,
+            intern=intern,
+            application=application,
             name="Main office",
             address="1 Main Road",
             latitude="14.600000",
@@ -211,11 +216,25 @@ class PortalWorkflowTests(TestCase):
         self.assertContains(response, "an Admin must approve it")
         self.assertNotContains(response, 'id="worksite-form"')
 
-    def test_intern_worksite_page_displays_approved_company_worksite_read_only(self):
+    def test_intern_worksite_page_displays_approved_intern_worksite_read_only(self):
         self._complete_intern_details()
         self.company.company_name = "Assigned Host Company"
         self.company.save()
-        worksite = self._enroll_attendance_location()
+        application = Application.objects.create(
+            intern=self.intern,
+            posting=self.posting,
+            status=Application.Status.ACCEPTED,
+        )
+        worksite = WorksiteLocation.objects.create(
+            intern=self.intern,
+            application=application,
+            name="Assigned Host Company worksite",
+            address="1 Main Road",
+            latitude="14.600000",
+            longitude="121.000000",
+            approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+            is_active=True,
+        )
         self.client.force_login(self.intern_user)
 
         profile = self.client.get(reverse("portal:profile"))
@@ -224,7 +243,8 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(profile.status_code, 200)
         self.assertContains(profile, 'name="placement_type"')
         self.assertContains(profile, 'name="student_id"')
-        self.assertContains(profile, 'name="university"')
+        self.assertNotContains(profile, 'name="university"')
+        self.assertContains(profile, "Richwell Colleges, Incorporated")
         self.assertContains(profile, 'name="course"')
         self.assertContains(profile, 'name="resume"')
         self.assertNotContains(profile, "OJT worksite location")
@@ -234,7 +254,7 @@ class PortalWorkflowTests(TestCase):
         self.assertContains(response, "Assigned Host Company")
         self.assertContains(response, worksite.name)
         self.assertContains(response, worksite.address)
-        self.assertContains(response, "Approved · Active")
+        self.assertContains(response, "Approved · Official attendance geofence")
         self.assertContains(response, "Official geofence radius: 100 m")
         self.assertContains(response, 'class="worksite-map intern-approved-worksite-map"')
         self.assertContains(response, 'data-latitude="14.600000"')
@@ -242,9 +262,9 @@ class PortalWorkflowTests(TestCase):
         self.assertContains(response, "tile.openstreetmap.fr/hot")
         self.assertContains(response, "OpenStreetMap France")
         self.assertNotContains(response, "No approved OJT worksite has been assigned")
-        self.assertContains(response, 'id="intern-worksite-request-form"')
-        self.assertContains(response, "Request a worksite change")
-        self.assertContains(response, "Get current location")
+        self.assertNotContains(response, "Request a worksite change")
+        self.assertNotContains(response, "Get current location")
+        self.assertNotContains(response, 'id="intern-worksite-request-form"')
 
     def test_intern_worksite_page_shows_pending_and_unassigned_states(self):
         self.client.force_login(self.intern_user)
@@ -335,6 +355,19 @@ class PortalWorkflowTests(TestCase):
             WorksiteLocation.objects.filter(intern=self.intern).count(),
             1,
         )
+        blocked_resubmission = self.client.post(reverse("portal:intern_worksite_registration"), {
+            "name": "Forged second location",
+            "address": "999 Modified Road",
+            "latitude": "15.000000",
+            "longitude": "122.000000",
+            "reported_accuracy_meters": "18",
+            "confirm_location": "on",
+        }, follow=True)
+        self.assertContains(blocked_resubmission, "submission is locked")
+        worksite.refresh_from_db()
+        self.assertEqual(worksite.name, "New Intern Worksite")
+        self.assertEqual(worksite.address, address)
+        self.assertEqual(WorksiteLocation.objects.filter(intern=self.intern).count(), 1)
         pending_page = self.client.get(reverse("portal:intern_worksite_registration"))
         self.assertContains(pending_page, "Pending Admin Approval")
         self.assertContains(pending_page, address)
@@ -601,7 +634,7 @@ class PortalWorkflowTests(TestCase):
         self.assertGreater(outside_distance, outside_radius)
         self.assertEqual(poor_accuracy_status, AttendanceFaceCapture.LocationStatus.UNAVAILABLE)
 
-    def test_coordinator_can_assign_external_intern_worksite(self):
+    def test_external_intern_worksite_cannot_be_submitted_by_admin(self):
         self._complete_intern_details(external=True)
         coordinator = User.objects.create_user(username="worksite-coordinator", role=User.Role.COORDINATOR)
         self.client.force_login(coordinator)
@@ -618,12 +651,9 @@ class PortalWorkflowTests(TestCase):
             "confirm_location": "on",
         })
 
-        self.assertRedirects(response, url)
-        worksite = WorksiteLocation.objects.get(intern=self.intern)
-        self.assertIsNone(worksite.company_id)
-        self.assertEqual(worksite.created_by, coordinator)
-        self.assertEqual(worksite.approval_status, WorksiteLocation.ApprovalStatus.PENDING)
-        self.assertFalse(worksite.is_active)
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(WorksiteLocation.objects.filter(intern=self.intern).exists())
+        self.assertEqual(self.client.get(url).status_code, 200)
 
     def test_external_intern_can_submit_worksite_location_for_admin_approval(self):
         self._complete_intern_details(external=True)
@@ -779,13 +809,19 @@ class PortalWorkflowTests(TestCase):
         self.client.force_login(coordinator)
         self.assertEqual(self.client.get(approve_url).status_code, 200)
         reset_url = reverse("portal:coordinator_reset_user_worksite", args=(self.intern.pk,))
-        self.assertRedirects(self.client.post(reset_url), reverse("portal:coordinator_users"))
+        self.assertRedirects(self.client.post(
+            reset_url,
+            {"review_reason": "Please submit an updated worksite address."},
+        ), reverse("portal:coordinator_users"))
         worksite.refresh_from_db()
         self.assertFalse(worksite.is_active)
 
         self.client.force_login(admin)
         self.assertEqual(self.client.get(approve_url).status_code, 200)
-        self.assertRedirects(self.client.post(reset_url), reverse("portal:coordinator_users"))
+        self.assertRedirects(self.client.post(
+            reset_url,
+            {"review_reason": "Please submit an updated worksite address."},
+        ), reverse("portal:coordinator_users"))
 
         self.client.force_login(self.intern_user)
         response = self.client.post(reverse("portal:intern_worksite_registration"), {
@@ -803,14 +839,13 @@ class PortalWorkflowTests(TestCase):
             approval_status=WorksiteLocation.ApprovalStatus.PENDING,
         ).exists())
 
-    def test_admin_can_assign_and_approve_external_intern_worksite(self):
+    def test_external_worksite_requires_intern_submission_before_admin_approval(self):
         self._complete_intern_details(external=True)
         coordinator = User.objects.create_user(username="external-site-reviewer", role=User.Role.COORDINATOR)
         self.client.force_login(coordinator)
         external_sites_url = reverse("portal:coordinator_external_worksites")
-        submitted = self.client.post(external_sites_url, {
+        admin_created = self.client.post(external_sites_url, {
             "action": "create",
-            "intern": self.intern.pk,
             "name": "External OJT site",
             "address": "50 Placement Road",
             "latitude": "14.700000",
@@ -819,9 +854,23 @@ class PortalWorkflowTests(TestCase):
             "reported_accuracy_meters": "24",
             "confirm_location": "on",
         })
-        self.assertRedirects(submitted, external_sites_url)
-        worksite = WorksiteLocation.objects.get(intern=self.intern)
+        self.assertEqual(admin_created.status_code, 403)
+        self.assertFalse(WorksiteLocation.objects.filter(intern=self.intern).exists())
 
+        self.client.force_login(self.intern_user)
+        submitted = self.client.post(reverse("portal:intern_worksite_registration"), {
+            "name": "External OJT site",
+            "address": "50 Placement Road",
+            "latitude": "14.700000",
+            "longitude": "121.100000",
+            "reported_accuracy_meters": "24",
+            "confirm_location": "on",
+        })
+        self.assertRedirects(submitted, reverse("portal:intern_worksite_registration"))
+        worksite = WorksiteLocation.objects.get(intern=self.intern)
+        self.assertEqual(worksite.approval_status, WorksiteLocation.ApprovalStatus.PENDING)
+
+        self.client.force_login(coordinator)
         approve_url = reverse("portal:admin_approvals")
         self.assertContains(self.client.get(approve_url), "External OJT site")
         approved = self.client.post(reverse("portal:admin_approvals"), {
@@ -833,6 +882,24 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(worksite.approval_status, WorksiteLocation.ApprovalStatus.APPROVED)
         self.assertTrue(worksite.is_active)
         self.assertEqual(worksite.reviewed_by, coordinator)
+        self.client.force_login(self.company_user)
+        self.assertEqual(self.client.get(approve_url).status_code, 403)
+        self.assertEqual(self.client.post(approve_url, {
+            "action": "reject_worksite",
+            "request_id": worksite.pk,
+            "review_reason": "Company must not review.",
+        }).status_code, 403)
+        elevated_company = User.objects.create_user(
+            username="company-staff-no-admin",
+            role=User.Role.COMPANY,
+            is_staff=True,
+        )
+        self.client.force_login(elevated_company)
+        self.assertEqual(self.client.get(approve_url).status_code, 403)
+        self.assertEqual(self.client.get(external_sites_url).status_code, 403)
+        company_page = self.client.get(reverse("portal:company_worksites"))
+        self.assertEqual(company_page.status_code, 200)
+        self.assertNotContains(company_page, "Admin approvals")
 
     def test_admin_worksite_review_displays_map_and_requires_reason_for_corrections(self):
         self._complete_intern_details()
@@ -886,7 +953,7 @@ class PortalWorkflowTests(TestCase):
 
         self.assertRedirects(requested, approval_url)
         worksite.refresh_from_db()
-        self.assertEqual(worksite.approval_status, WorksiteLocation.ApprovalStatus.REJECTED)
+        self.assertEqual(worksite.approval_status, WorksiteLocation.ApprovalStatus.RESUBMISSION_REQUESTED)
         self.assertFalse(worksite.is_active)
         self.assertEqual(worksite.rejection_reason, "Please confirm the entrance address.")
         self.assertEqual(worksite.reviewed_by, admin)
@@ -914,6 +981,36 @@ class PortalWorkflowTests(TestCase):
         profile_with_correction = self.client.get(reverse("portal:intern_worksite_registration"))
         self.assertContains(profile_with_correction, "Pending Admin Approval")
         self.assertContains(profile_with_correction, corrected_address)
+        self.client.force_login(admin)
+        rejected = self.client.post(approval_url, {
+            "action": "reject_worksite",
+            "request_id": corrected_worksite.pk,
+            "review_reason": "The map pin does not match the listed entrance.",
+        })
+        self.assertRedirects(rejected, approval_url)
+        corrected_worksite.refresh_from_db()
+        self.assertEqual(corrected_worksite.approval_status, WorksiteLocation.ApprovalStatus.REJECTED)
+        self.client.force_login(self.intern_user)
+        rejected_page = self.client.get(reverse("portal:intern_worksite_registration"))
+        self.assertContains(rejected_page, "The map pin does not match the listed entrance.")
+        self.assertContains(rejected_page, 'id="intern-worksite-request-form"')
+        replacement = self.client.post(reverse("portal:intern_worksite_registration"), {
+            "application": application.pk,
+            "name": "Second corrected OJT site",
+            "address": "Richwell Colleges, Plaridel, Bulacan, 3004, Philippines",
+            "latitude": "14.720000",
+            "longitude": "121.120000",
+            "reported_accuracy_meters": "18",
+            "confirm_location": "on",
+        })
+        self.assertRedirects(replacement, reverse("portal:intern_worksite_registration"))
+        self.assertEqual(
+            WorksiteLocation.objects.filter(
+                intern=self.intern,
+                approval_status=WorksiteLocation.ApprovalStatus.PENDING,
+            ).count(),
+            1,
+        )
 
     def test_admin_approval_replaces_previous_intern_site_without_deleting_it(self):
         self._complete_intern_details()
@@ -965,6 +1062,41 @@ class PortalWorkflowTests(TestCase):
         intern_profile = self.client.get(reverse("portal:intern_worksite_registration"))
         self.assertContains(intern_profile, "2 New Road")
         self.assertContains(intern_profile, "Official geofence radius: 150 m")
+        self.assertNotContains(intern_profile, 'id="intern-worksite-request-form"')
+
+        self.client.force_login(admin)
+        correction = self.client.post(reverse("portal:admin_approvals"), {
+            "action": "request_worksite_corrections",
+            "request_id": request.pk,
+            "review_reason": "Please verify the building entrance before resubmitting.",
+        })
+        self.assertRedirects(correction, reverse("portal:admin_approvals"))
+        request.refresh_from_db()
+        self.assertEqual(request.approval_status, WorksiteLocation.ApprovalStatus.RESUBMISSION_REQUESTED)
+        self.assertFalse(request.is_active)
+        self.assertTrue(WorksiteLocation.objects.filter(pk=request.pk).exists())
+        self.client.force_login(self.intern_user)
+        correction_page = self.client.get(reverse("portal:intern_worksite_registration"))
+        self.assertContains(correction_page, "Please verify the building entrance before resubmitting.")
+        self.assertContains(correction_page, 'id="intern-worksite-request-form"')
+        resubmitted = self.client.post(reverse("portal:intern_worksite_registration"), {
+            "application": application.pk,
+            "name": "Corrected location",
+            "address": "3 New Road",
+            "latitude": "14.710000",
+            "longitude": "121.110000",
+            "reported_accuracy_meters": "18",
+            "confirm_location": "on",
+        })
+        self.assertRedirects(resubmitted, reverse("portal:intern_worksite_registration"))
+        self.assertEqual(
+            WorksiteLocation.objects.filter(
+                intern=self.intern,
+                approval_status=WorksiteLocation.ApprovalStatus.PENDING,
+            ).count(),
+            1,
+        )
+        self.assertTrue(WorksiteLocation.objects.filter(pk=request.pk).exists())
 
     def test_unapproved_company_worksite_cannot_be_used_for_attendance(self):
         Application.objects.create(
@@ -997,32 +1129,36 @@ class PortalWorkflowTests(TestCase):
         self.assertRedirects(attendance, reverse("portal:attendance"))
         self.assertFalse(AttendanceLog.objects.filter(intern=self.intern).exists())
 
-    def test_platform_attendance_uses_only_approved_assigned_company_worksites(self):
+    def test_platform_attendance_uses_only_approved_intern_submissions(self):
         self._complete_intern_profile()
-        self._enroll_attendance_location()
-        personal_site = WorksiteLocation.objects.create(
-            intern=self.intern,
-            name="Assigned intern site",
-            address="2 Personal Site Road",
+        personal_site = self._enroll_attendance_location()
+        company_site = WorksiteLocation.objects.create(
+            company=self.company,
+            name="Registered company site",
+            address="2 Registered Road",
             latitude="14.700000",
             longitude="121.100000",
             approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
             is_active=True,
         )
+        self.assertEqual(list(_worksites_for_attendance(self.intern)), [personal_site])
+        personal_site.is_active = False
+        personal_site.save(update_fields=("is_active",))
+        self.assertFalse(_worksites_for_attendance(self.intern).exists())
+        self.assertTrue(WorksiteLocation.objects.filter(
+            pk=company_site.pk,
+            approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+            is_active=True,
+        ).exists())
         self.client.force_login(self.intern_user)
 
         response = self.client.post(
-            reverse("portal:attendance"),
-            self._attendance_payload(
-                "clock_in",
-                clock_in_latitude="14.700000",
-                clock_in_longitude="121.100000",
-            ),
+            reverse("portal:attendance_face_preview"),
+            self._attendance_payload("clock_in", face_image=self._camera_data_url()),
         )
 
-        self.assertRedirects(response, reverse("portal:attendance"))
+        self.assertEqual(response.status_code, 409)
         self.assertFalse(AttendanceLog.objects.filter(intern=self.intern).exists())
-        self.assertTrue(personal_site.is_active)
 
     def test_attendance_ignores_intern_supplied_company_coordinates_and_flags(self):
         self._complete_intern_profile()
@@ -1271,7 +1407,7 @@ class PortalWorkflowTests(TestCase):
         self.assertContains(response, "Enrolled")
         self.assertContains(response, "View DTR")
         self.assertContains(response, "Reset Face")
-        self.assertContains(response, "Reset Worksite")
+        self.assertContains(response, "Request Worksite Correction")
 
         search = self.client.get(url, {"q": "DIRECTORY-100"})
         self.assertEqual(search.context["users_page"].paginator.count, 1)
@@ -1347,13 +1483,17 @@ class PortalWorkflowTests(TestCase):
         )
         self.assertRedirects(reset_face, reverse("portal:coordinator_users"))
         self.assertFalse(FaceEnrollment.objects.filter(pk=enrollment.pk).exists())
-        self.assertFalse(AttendanceFaceCapture.objects.filter(pk=capture.pk).exists())
+        self.assertTrue(AttendanceFaceCapture.objects.filter(pk=capture.pk).exists())
         log.refresh_from_db()
-        self.assertEqual(log.clock_in_face_status, AttendanceLog.FaceCheckStatus.NOT_ATTEMPTED)
-        self.assertIsNone(log.clock_in_face_score)
+        self.assertEqual(log.clock_in_face_status, AttendanceLog.FaceCheckStatus.MATCHED)
+        self.assertEqual(log.clock_in_face_score, 0.8)
+        archived_enrollment = FaceEnrollmentSubmission.objects.get(intern=self.intern)
+        self.assertEqual(archived_enrollment.status, FaceEnrollmentSubmission.Status.REJECTED)
+        self.assertEqual(archived_enrollment.encrypted_embedding, b"encrypted")
 
         reset_worksite = self.client.post(
             reverse("portal:coordinator_reset_user_worksite", args=(self.intern.pk,)),
+            {"review_reason": "Please submit your current worksite."},
         )
 
         self.assertRedirects(reset_worksite, reverse("portal:coordinator_users"))
@@ -1361,7 +1501,7 @@ class PortalWorkflowTests(TestCase):
         pending_site.refresh_from_db()
         self.assertFalse(active_site.is_active)
         self.assertFalse(pending_site.is_active)
-        self.assertEqual(pending_site.approval_status, WorksiteLocation.ApprovalStatus.REJECTED)
+        self.assertEqual(pending_site.approval_status, WorksiteLocation.ApprovalStatus.RESUBMISSION_REQUESTED)
 
         superuser = User.objects.create_superuser(
             username="directory-reset-superuser",
@@ -1507,17 +1647,19 @@ class PortalWorkflowTests(TestCase):
         self.assertRedirects(response, reverse("portal:profile"))
         self.intern.refresh_from_db()
         self.assertFalse(self.intern.student_id)
-        self.assertFalse(self.intern.university)
+        self.assertEqual(self.intern.university, "Richwell Colleges, Incorporated")
         self.assertFalse(self.intern.course)
         self.assertIsNone(self.intern.year_level)
         self.assertEqual(self.client.get(reverse("portal:attendance")).status_code, 200)
 
     def test_intern_can_save_complete_profile_from_profile_page(self):
+        self.intern.university = "Legacy University"
+        self.intern.save(update_fields=("university",))
         self.client.force_login(self.intern_user)
 
         response = self.client.post(reverse("portal:profile"), {
             "student_id": "TEST-STUDENT-SAVE",
-            "university": "Example University",
+            "university": "Different University",
             "course": "Information Technology",
             "year_level": 3,
             "placement_type": InternProfile.PlacementType.PLATFORM,
@@ -1525,9 +1667,12 @@ class PortalWorkflowTests(TestCase):
         })
 
         self.assertRedirects(response, reverse("portal:profile"))
+        profile_page = self.client.get(reverse("portal:profile"))
+        self.assertContains(profile_page, "Richwell Colleges, Incorporated")
+        self.assertNotContains(profile_page, 'name="university"')
         self.intern.refresh_from_db()
         self.assertEqual(self.intern.student_id, "TEST-STUDENT-SAVE")
-        self.assertEqual(self.intern.university, "Example University")
+        self.assertEqual(self.intern.university, "Legacy University")
         self.assertEqual(self.intern.course, "Information Technology")
         self.assertEqual(self.intern.year_level, 3)
 
@@ -2009,6 +2154,7 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(capture.review_status, AttendanceFaceCapture.ReviewStatus.PENDING)
         self.assertFalse(log.time_in_approved)
 
+    @override_settings(FACE_CAPTURE_DIAGNOSTICS=False)
     def test_attendance_face_preview_classifies_capture_without_recording_attendance(self):
         self._complete_intern_profile()
         self._enroll_attendance_location()
@@ -2032,12 +2178,85 @@ class PortalWorkflowTests(TestCase):
                 self.assertEqual(response.status_code, expected_status)
                 if face_status == AttendanceLog.FaceCheckStatus.MATCHED:
                     self.assertEqual(response.json()["quality"], "good")
-                    self.assertEqual(response.json()["similarity"], 0.81)
+                    self.assertNotIn("similarity", response.json())
+                    self.assertTrue(response.json()["verification_token"])
                 else:
                     self.assertIn("error", response.json())
                 face_check.assert_called_once()
                 self.assertFalse(face_check.call_args.kwargs["retain_image"])
 
+        self.assertFalse(AttendanceLog.objects.filter(intern=self.intern).exists())
+
+    @override_settings(FACE_CAPTURE_DIAGNOSTICS=True)
+    def test_attendance_face_preview_exposes_similarity_only_in_diagnostic_mode(self):
+        self._complete_intern_profile()
+        self._enroll_attendance_location()
+        self.client.force_login(self.intern_user)
+        with patch(
+            "portal.views._attendance_face_check",
+            return_value=(AttendanceLog.FaceCheckStatus.MATCHED, 0.81, None),
+        ):
+            response = self.client.post(
+                reverse("portal:attendance_face_preview"),
+                {"action": "clock_in", "face_image": self._camera_data_url()},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["similarity"], 0.81)
+
+    @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
+    def test_signed_face_verification_token_records_attendance_without_rechecking_the_frame(self):
+        self._complete_intern_profile()
+        self._enroll_attendance_location()
+        self.client.force_login(self.intern_user)
+        face_image = self._camera_data_url()
+        token = _attendance_face_verification_token(self.intern, "clock_in", face_image, 0.82)
+
+        with patch("portal.views._attendance_face_check", side_effect=AssertionError("duplicate face check")):
+            response = self.client.post(
+                reverse("portal:attendance"),
+                self._attendance_payload(
+                    "clock_in",
+                    face_image=face_image,
+                    face_verification_token=token,
+                ),
+                HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+            )
+            duplicate = self.client.post(
+                reverse("portal:attendance"),
+                self._attendance_payload(
+                    "clock_in",
+                    face_image=face_image,
+                    face_verification_token=token,
+                ),
+                HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+            )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["attendance_status"], "approved")
+        self.assertEqual(duplicate.status_code, 409)
+        self.assertEqual(AttendanceLog.objects.get(intern=self.intern).face_captures.count(), 1)
+
+    def test_signed_face_verification_token_cannot_be_reused_with_a_changed_frame(self):
+        self._complete_intern_profile()
+        self._enroll_attendance_location()
+        self.client.force_login(self.intern_user)
+        original_image = self._camera_data_url()
+        token = _attendance_face_verification_token(self.intern, "clock_in", original_image, 0.82)
+
+        with patch("portal.views._attendance_face_check", side_effect=AssertionError("invalid token bypassed")):
+            response = self.client.post(
+                reverse("portal:attendance"),
+                self._attendance_payload(
+                    "clock_in",
+                    face_image=original_image + "changed",
+                    face_verification_token=token,
+                ),
+                HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+            )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["code"], "face_verification_expired")
         self.assertFalse(AttendanceLog.objects.filter(intern=self.intern).exists())
 
     def test_attendance_face_preview_rejects_missing_face_enrollment(self):
@@ -2080,13 +2299,41 @@ class PortalWorkflowTests(TestCase):
         self.client.force_login(self.intern_user)
         profile_url = reverse("portal:profile")
         enrollment_url = reverse("portal:intern_face_enrollment")
-        profile = self.client.get(profile_url)
+        pending_worksite = WorksiteLocation.objects.create(
+            intern=self.intern,
+            name="Independent pending location",
+            address="100 Pending Road",
+            latitude="14.600000",
+            longitude="121.000000",
+            approval_status=WorksiteLocation.ApprovalStatus.PENDING,
+            is_active=False,
+        )
+        with self.settings(FACE_CAPTURE_DIAGNOSTICS=False):
+            profile = self.client.get(profile_url)
         self.assertContains(profile, "Face enrollment for attendance")
         self.assertContains(profile, "Bright, even lighting")
         self.assertContains(profile, "Remove glasses or masks")
         self.assertContains(profile, "Center your face in the oval")
         self.assertContains(profile, "processed in memory")
+        self.assertContains(profile, "Capture begins automatically")
+        self.assertContains(profile, "two acceptable frames")
+        self.assertContains(profile, 'id="manual-capture-enrollment" type="button" disabled hidden')
+        self.assertContains(profile, 'id="capture-runtime-diagnostics"')
+        self.assertContains(profile, 'id="runtime-stability-counter"')
+        self.assertContains(profile, 'id="runtime-backend-request"')
+        self.assertContains(profile, 'id="runtime-blocked-reason"')
+        self.assertContains(profile, 'faceDetected: "No"')
+        self.assertContains(profile, "readyState < 2")
+        self.assertContains(profile, "last usable face detection is stale")
+        self.assertContains(profile, "Face Detected — Hold still")
+        self.assertContains(profile, 'id="enrollment-capture-progress-bar"')
+        self.assertNotContains(profile, 'id="capture-face-enrollment"')
         self.assertContains(profile, 'id="submit-face-enrollment" type="submit" disabled')
+        self.assertNotContains(profile, "Development capture diagnostics")
+        with self.settings(FACE_CAPTURE_DIAGNOSTICS=True):
+            diagnostic_profile = self.client.get(profile_url)
+        self.assertContains(diagnostic_profile, "Development capture diagnostics")
+        self.assertContains(diagnostic_profile, "Blocked because")
         payload = {"face_image": self._camera_data_url()}
 
         missing_consent = self.client.post(enrollment_url, payload)
@@ -2098,14 +2345,146 @@ class PortalWorkflowTests(TestCase):
             enrolled = self.client.post(enrollment_url, payload)
 
         self.assertRedirects(enrolled, profile_url)
+        submission = FaceEnrollmentSubmission.objects.get(intern=self.intern)
+        self.assertEqual(submission.status, FaceEnrollmentSubmission.Status.PENDING)
+        self.assertLessEqual(submission.submitted_at, timezone.now())
+        self.assertFalse(FaceEnrollment.objects.filter(intern=self.intern).exists())
+        duplicate_submission = self.client.post(enrollment_url, payload, follow=True)
+        self.assertContains(duplicate_submission, "locked pending Admin review")
+        self.assertEqual(FaceEnrollmentSubmission.objects.filter(intern=self.intern).count(), 1)
+        enrolled_profile = self.client.get(profile_url)
+        self.assertContains(enrolled_profile, "Pending Admin Review")
+        self.assertNotContains(enrolled_profile, 'id="intern-face-enrollment-form"')
+
+        coordinator = User.objects.create_user(username="initial-face-approver", role=User.Role.COORDINATOR)
+        self.client.force_login(coordinator)
+        approvals_url = reverse("portal:admin_approvals")
+        approved = self.client.post(approvals_url, {
+            "action": "approve_face_submission",
+            "request_id": submission.pk,
+        })
+        self.assertRedirects(approved, approvals_url)
         record = FaceEnrollment.objects.get(intern=self.intern)
         self.assertEqual(record.enrolled_by, self.intern_user)
         self.assertEqual(record.consent_text_version, FACE_CONSENT_VERSION)
         self.assertEqual(decrypt_embedding(record.encrypted_embedding), b"intern embedding")
-        enrolled_profile = self.client.get(profile_url)
-        self.assertContains(enrolled_profile, "Face Enrolled")
-        self.assertContains(enrolled_profile, "Request Face Re-Registration", count=1)
-        self.assertNotContains(enrolled_profile, 'id="intern-face-enrollment-form"')
+        submission.refresh_from_db()
+        self.assertEqual(submission.status, FaceEnrollmentSubmission.Status.APPROVED)
+        pending_worksite.refresh_from_db()
+        self.assertEqual(pending_worksite.approval_status, WorksiteLocation.ApprovalStatus.PENDING)
+        self.client.force_login(self.intern_user)
+        self.assertContains(self.client.get(profile_url), "Enrolled / Approved")
+
+    @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
+    def test_admin_can_request_face_retake_without_replacing_current_enrollment(self):
+        original_embedding = encrypt_embedding(b"original approved embedding")
+        FaceEnrollment.objects.create(
+            intern=self.intern,
+            encrypted_embedding=original_embedding,
+            enrolled_by=self.intern_user,
+            consent_confirmed_at=timezone.now(),
+        )
+        self.client.force_login(User.objects.create_user(
+            username="face-retake-admin",
+            role=User.Role.COORDINATOR,
+        ))
+        approvals_url = reverse("portal:admin_approvals")
+        retake = self.client.post(approvals_url, {
+            "action": "request_face_retake",
+            "intern_id": self.intern.pk,
+            "review_reason": "Please recapture in brighter lighting.",
+        })
+        self.assertRedirects(retake, approvals_url)
+        request_record = FaceReenrollmentRequest.objects.get(intern=self.intern)
+        self.assertEqual(request_record.status, FaceReenrollmentRequest.Status.ADMIN_REQUESTED)
+        self.assertEqual(request_record.review_reason, "Please recapture in brighter lighting.")
+
+        self.client.force_login(self.intern_user)
+        profile = self.client.get(reverse("portal:profile"))
+        self.assertContains(profile, "Retake Requested")
+        self.assertContains(profile, "Please recapture in brighter lighting.")
+        self.assertContains(profile, 'id="intern-face-enrollment-form"')
+        with patch(
+            "portal.views.create_face_embedding",
+            return_value=b"replacement embedding",
+        ), patch("portal.views._face_embedding_is_duplicate", return_value=False), patch(
+            "portal.views.cosine_similarity",
+            return_value=0.9,
+        ):
+            submitted = self.client.post(reverse("portal:intern_face_enrollment"), {
+                "consent_confirmed": "on",
+                "face_image": self._camera_data_url(),
+            })
+        self.assertRedirects(submitted, reverse("portal:profile"))
+        current = FaceEnrollment.objects.get(intern=self.intern)
+        self.assertEqual(current.encrypted_embedding, original_embedding)
+
+        submission = FaceEnrollmentSubmission.objects.get(intern=self.intern)
+        self.client.force_login(User.objects.get(username="face-retake-admin"))
+        approved = self.client.post(approvals_url, {
+            "action": "approve_face_submission",
+            "request_id": submission.pk,
+        })
+        self.assertRedirects(approved, approvals_url)
+        self.assertEqual(
+            decrypt_embedding(FaceEnrollment.objects.get(intern=self.intern).encrypted_embedding),
+            b"replacement embedding",
+        )
+        request_record.refresh_from_db()
+        self.assertEqual(request_record.status, FaceReenrollmentRequest.Status.COMPLETED)
+
+    @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
+    def test_face_rejection_requires_admin_feedback_and_unlocks_resubmission(self):
+        self.client.force_login(self.intern_user)
+        with patch("portal.views.create_face_embedding", return_value=b"first face"):
+            self.client.post(reverse("portal:intern_face_enrollment"), {
+                "consent_confirmed": "on",
+                "face_image": self._camera_data_url(),
+            })
+        submission = FaceEnrollmentSubmission.objects.get(intern=self.intern)
+        admin = User.objects.create_user(username="face-rejection-admin", role=User.Role.COORDINATOR)
+        self.client.force_login(admin)
+        approvals_url = reverse("portal:admin_approvals")
+
+        missing_reason = self.client.post(approvals_url, {
+            "action": "reject_face_submission",
+            "request_id": submission.pk,
+        })
+        self.assertEqual(missing_reason.status_code, 400)
+        submission.refresh_from_db()
+        self.assertEqual(submission.status, FaceEnrollmentSubmission.Status.PENDING)
+
+        rejected = self.client.post(approvals_url, {
+            "action": "reject_face_submission",
+            "request_id": submission.pk,
+            "review_reason": "Please recapture with your full face visible.",
+        })
+        self.assertRedirects(rejected, approvals_url)
+        submission.refresh_from_db()
+        self.assertEqual(submission.status, FaceEnrollmentSubmission.Status.REJECTED)
+        self.assertEqual(submission.review_reason, "Please recapture with your full face visible.")
+
+        self.client.force_login(self.intern_user)
+        profile = self.client.get(reverse("portal:profile"))
+        self.assertContains(profile, "Rejected")
+        self.assertContains(profile, "Please recapture with your full face visible.")
+        self.assertContains(profile, 'id="intern-face-enrollment-form"')
+        with (
+            patch("portal.views.create_face_embedding", return_value=b"corrected face"),
+            patch("portal.views._face_embedding_is_duplicate", return_value=False),
+        ):
+            resubmitted = self.client.post(reverse("portal:intern_face_enrollment"), {
+                "consent_confirmed": "on",
+                "face_image": self._camera_data_url(),
+            })
+        self.assertRedirects(resubmitted, reverse("portal:profile"))
+        self.assertEqual(
+            FaceEnrollmentSubmission.objects.filter(
+                intern=self.intern,
+                status=FaceEnrollmentSubmission.Status.PENDING,
+            ).count(),
+            1,
+        )
 
     @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
     def test_face_reenrollment_is_locked_until_one_admin_approval(self):
@@ -2124,7 +2503,7 @@ class PortalWorkflowTests(TestCase):
         }
 
         locked_profile = self.client.get(profile_url)
-        self.assertContains(locked_profile, "Face Enrolled")
+        self.assertContains(locked_profile, "Enrolled / Approved")
         self.assertNotContains(locked_profile, 'id="intern-face-enrollment-form"')
         denied_enrollment = self.client.post(enroll_url, payload)
         self.assertRedirects(denied_enrollment, profile_url)
@@ -2162,14 +2541,36 @@ class PortalWorkflowTests(TestCase):
 
         self.client.force_login(self.intern_user)
         approved_profile = self.client.get(profile_url)
-        self.assertContains(approved_profile, "Re-registration approved")
+        self.assertContains(approved_profile, "Retake Requested")
         self.assertContains(approved_profile, 'id="intern-face-enrollment-form"')
         with (
             patch("portal.views.create_face_embedding", return_value=b"replacement embedding"),
             patch("portal.views._face_embedding_is_duplicate", return_value=False),
+            patch("portal.views.cosine_similarity", return_value=0.9),
         ):
             enrolled = self.client.post(enroll_url, payload)
         self.assertRedirects(enrolled, profile_url)
+        submission = FaceEnrollmentSubmission.objects.get(
+            intern=self.intern,
+            status=FaceEnrollmentSubmission.Status.PENDING,
+        )
+        self.assertEqual(
+            decrypt_embedding(FaceEnrollment.objects.get(intern=self.intern).encrypted_embedding),
+            b"original embedding",
+        )
+        request_record.refresh_from_db()
+        self.assertEqual(request_record.status, FaceReenrollmentRequest.Status.APPROVED)
+
+        duplicate = self.client.post(enroll_url, payload, follow=True)
+        self.assertContains(duplicate, "locked pending Admin review")
+        self.assertEqual(FaceEnrollmentSubmission.objects.filter(intern=self.intern).count(), 1)
+
+        self.client.force_login(coordinator)
+        approved_submission = self.client.post(approval_url, {
+            "action": "approve_face_submission",
+            "request_id": submission.pk,
+        })
+        self.assertRedirects(approved_submission, approval_url)
         request_record.refresh_from_db()
         self.assertEqual(request_record.status, FaceReenrollmentRequest.Status.COMPLETED)
         self.assertEqual(
@@ -2177,6 +2578,7 @@ class PortalWorkflowTests(TestCase):
             b"replacement embedding",
         )
 
+        self.client.force_login(self.intern_user)
         with patch("portal.views.create_face_embedding", return_value=b"second replacement"):
             second_enrollment = self.client.post(enroll_url, payload)
         self.assertRedirects(second_enrollment, profile_url)
@@ -2238,7 +2640,7 @@ class PortalWorkflowTests(TestCase):
 
         self.assertContains(
             response,
-            "An administrator must approve your face re-registration request before you can enroll again.",
+            "locked pending Admin review or authorization",
         )
         create_embedding.assert_not_called()
         record = FaceEnrollment.objects.get(intern=self.intern)
@@ -2255,6 +2657,7 @@ class PortalWorkflowTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["quality"], "good")
+        self.assertEqual(response.json()["identity_status"], "not_required")
         self.assertTrue(response.json()["label"])
         create_embedding.assert_called_once()
         self.assertFalse(FaceEnrollment.objects.filter(intern=self.intern).exists())
@@ -2269,12 +2672,94 @@ class PortalWorkflowTests(TestCase):
             )
         self.assertEqual(poor_capture.status_code, 200)
         self.assertEqual(poor_capture.json()["quality"], "poor")
+        self.assertEqual(poor_capture.json()["identity_status"], "not_checked")
+
+    @override_settings(
+        FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"),
+        FACE_CAPTURE_DIAGNOSTICS=True,
+    )
+    def test_face_enrollment_preview_matches_existing_reference_and_rejects_another_face(self):
+        FaceEnrollment.objects.create(
+            intern=self.intern,
+            encrypted_embedding=encrypt_embedding(b"existing enrolled face"),
+            enrolled_by=self.intern_user,
+            consent_confirmed_at=timezone.now(),
+        )
+        self.client.force_login(self.intern_user)
+        preview_url = reverse("portal:face_enrollment_preview")
+        payload = {"face_image": self._camera_data_url()}
+
+        with (
+            patch("portal.views.create_face_embedding", return_value=b"same face"),
+            patch("portal.views.cosine_similarity", return_value=0.82) as match,
+        ):
+            matched = self.client.post(preview_url, payload)
+
+        self.assertEqual(matched.json()["quality"], "good")
+        self.assertEqual(matched.json()["identity_status"], "matched")
+        self.assertEqual(matched.json()["label"], "Face Matched")
+        self.assertEqual(matched.json()["similarity"], 0.82)
+        match.assert_called_once()
+
+        with (
+            patch("portal.views.create_face_embedding", return_value=b"different face"),
+            patch("portal.views.cosine_similarity", return_value=0.21),
+        ):
+            rejected = self.client.post(preview_url, payload)
+
+        self.assertEqual(rejected.json()["quality"], "poor")
+        self.assertEqual(rejected.json()["identity_status"], "not_matched")
+        self.assertEqual(rejected.json()["label"], "Face Not Matched")
+        self.assertEqual(rejected.json()["similarity"], 0.21)
+        self.assertFalse(FaceEnrollmentSubmission.objects.filter(intern=self.intern).exists())
+
+    @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
+    def test_face_reenrollment_submission_rejects_a_face_that_does_not_match_current_reference(self):
+        original_embedding = encrypt_embedding(b"existing enrolled face")
+        FaceEnrollment.objects.create(
+            intern=self.intern,
+            encrypted_embedding=original_embedding,
+            enrolled_by=self.intern_user,
+            consent_confirmed_at=timezone.now(),
+        )
+        FaceEnrollmentSubmission.objects.create(
+            intern=self.intern,
+            encrypted_embedding=encrypt_embedding(b"previous rejected submission"),
+            status=FaceEnrollmentSubmission.Status.REJECTED,
+            review_reason="Please verify your identity with the existing enrollment.",
+        )
+        self.client.force_login(self.intern_user)
+
+        with (
+            patch("portal.views.create_face_embedding", return_value=b"different person"),
+            patch("portal.views._face_embedding_is_duplicate", return_value=False),
+            patch("portal.views.cosine_similarity", return_value=0.2),
+        ):
+            response = self.client.post(
+                reverse("portal:intern_face_enrollment"),
+                {
+                    "consent_confirmed": "on",
+                    "face_image": self._camera_data_url(),
+                },
+                follow=True,
+            )
+
+        self.assertContains(response, "does not match your current enrollment")
+        self.assertEqual(FaceEnrollmentSubmission.objects.filter(intern=self.intern).count(), 1)
+        self.assertEqual(FaceEnrollment.objects.get(intern=self.intern).encrypted_embedding, original_embedding)
 
     def test_live_face_detection_preview_returns_face_count_without_profile_or_enrollment(self):
         self.client.force_login(self.intern_user)
+        candidate = {
+            "confidence": 0.95,
+            "bbox": [10, 10, 80, 90],
+            "roll_degrees": 1.0,
+            "alignment_ready": True,
+            "quality_issue": None,
+        }
         with patch(
-            "portal.views.detect_faces",
-            return_value={"face_detected": True, "face_count": 1, "detections": []},
+            "portal.views.inspect_face_candidates",
+            return_value=[candidate],
         ) as detector:
             response = self.client.post(
                 reverse("portal:face_detection_preview"),
@@ -2282,7 +2767,13 @@ class PortalWorkflowTests(TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"face_count": 1, "face_detected": True})
+        self.assertEqual(response.json(), {
+            "face_count": 1,
+            "face_detected": True,
+            "detections": [candidate],
+            "image_width": 100,
+            "image_height": 100,
+        })
         detector.assert_called_once()
 
     @override_settings(FACE_CAPTURE_DIAGNOSTICS=True)
@@ -2290,8 +2781,8 @@ class PortalWorkflowTests(TestCase):
         self.client.force_login(self.intern_user)
         with (
             patch(
-                "portal.views.detect_faces",
-                return_value={"face_detected": False, "face_count": 0, "detections": []},
+                "portal.views.inspect_face_candidates",
+                return_value=[],
             ),
             self.assertLogs("portal.views", level="WARNING") as captured_logs,
         ):
@@ -2301,7 +2792,13 @@ class PortalWorkflowTests(TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"face_count": 0, "face_detected": False})
+        self.assertEqual(response.json(), {
+            "face_count": 0,
+            "face_detected": False,
+            "detections": [],
+            "image_width": 100,
+            "image_height": 100,
+        })
         self.assertIn("image_type=Image", captured_logs.output[0])
         self.assertIn("mode=RGB", captured_logs.output[0])
         self.assertIn("array_shape=(100, 100, 3)", captured_logs.output[0])
@@ -2338,15 +2835,30 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "face-guide")
         self.assertContains(response, "face-detection-guide.js")
-        self.assertContains(response, "Capture and check")
-        self.assertContains(response, "Retake face")
-        self.assertContains(response, "Record attendance")
+        self.assertContains(response, "Position your face inside the circle")
+        self.assertNotContains(response, "face-verification-progress")
+        self.assertNotContains(response, "Automatic face verification")
+        self.assertNotContains(response, "progress-blocked-reason")
+        self.assertNotContains(response, "Face bounding box")
+        self.assertNotContains(response, "Face detection callback")
+        self.assertContains(response, "Capture Manually")
+        self.assertContains(response, 'id="manual-face-capture" type="button" disabled')
+        self.assertContains(response, 'data-diagnostics-enabled="false"')
+        self.assertContains(response, "if (event.defaultPrevented) return;")
+        self.assertContains(response, "Try again now")
+        self.assertNotContains(response, "Capture and check")
+        self.assertNotContains(response, "Record attendance")
         self.assertContains(response, "A successful single-face match is required")
         self.assertContains(response, "Face Ready")
         self.assertContains(response, "100m zone")
         self.assertContains(response, "Look straight at the camera in good light")
         self.assertNotContains(response, "Face verification required</h2>")
         self.assertNotContains(response, "retained for up to 30 days")
+
+        with self.settings(FACE_CAPTURE_DIAGNOSTICS=True):
+            diagnostic_response = self.client.get(reverse("portal:attendance"))
+        self.assertContains(diagnostic_response, 'data-diagnostics-enabled="true"')
+        self.assertNotContains(diagnostic_response, "face-verification-progress")
 
     def test_face_mismatch_is_rejected_without_creating_attendance(self):
         self._complete_intern_profile()
@@ -2422,7 +2934,8 @@ class PortalWorkflowTests(TestCase):
         self.assertContains(response, "Choose Time in or Time out to open the camera.")
         self.assertNotContains(response, "Start camera")
         self.assertNotContains(response, "Capture face for attendance")
-        self.assertContains(response, "Capture and check")
+        self.assertContains(response, "Verification starts automatically.")
+        self.assertNotContains(response, "Capture and check")
         self.assertContains(response, 'name="face_image"')
         self.assertContains(response, 'id="location-reason-dialog"')
         self.assertContains(response, 'minlength="10"')
@@ -2616,8 +3129,9 @@ class PortalWorkflowTests(TestCase):
         self.assertFalse(FaceEnrollment.objects.filter(intern=self.intern).exists())
         self.assertEqual(
             AttendanceLog.objects.get(intern=self.intern).clock_in_face_status,
-            AttendanceLog.FaceCheckStatus.NOT_ATTEMPTED,
+            AttendanceLog.FaceCheckStatus.MATCHED,
         )
+        self.assertEqual(AttendanceLog.objects.get(intern=self.intern).clock_in_face_score, 0.8)
 
 
 

@@ -199,6 +199,8 @@ textarea { resize: vertical; line-height: 1.45; }
 .attendance-action-card > .clock-actions { justify-content: space-between; }
 .attendance-action-card .note-label { margin-bottom: .75rem; }
 .attendance-action-card .face-camera-frame { width: min(100%, 42rem); margin: 0 auto; }
+.attendance-action-card #face-capture-actions { justify-content: center; flex-wrap: wrap; }
+.attendance-action-card #face-capture-actions .button { min-height: 2.75rem; }
 .attendance-action-card #face-capture-status { text-align: center; }
 .report-view-toggle { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: .875rem; padding-bottom: .875rem; border-bottom: .0625rem solid var(--line); }
 .report-view-toggle .button { min-height: 2.75rem; }
@@ -236,16 +238,34 @@ textarea { resize: vertical; line-height: 1.45; }
 .address-search-result { width: 100%; padding: .625rem .75rem; border: 0; border-radius: var(--radius-sm); color: var(--ink); background: transparent; font: inherit; line-height: 1.4; text-align: left; cursor: pointer; }
 .address-search-result:hover, .address-search-result:focus-visible { background: var(--surface-soft); }
 .address-search-result:focus-visible { outline: .125rem solid var(--primary); outline-offset: -0.125rem; }
-.face-camera-frame video { width: 100%; height: 100%; display: block; object-fit: cover; }
+.face-camera-frame video { width: 100%; height: 100%; display: block; object-fit: cover; object-position: center; }
 .face-camera-frame video[hidden] { display: none; }
 .face-guide { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
 .face-guide::before { width: 58%; height: 78%; border: .1875rem dashed rgba(255, 255, 255, .92); border-radius: 50%; box-shadow: 0 0 0 62.4375rem rgba(11, 24, 18, .28); content: ""; }
 .face-guide span { position: absolute; top: 8%; padding: .375rem .625rem; border-radius: 1rem; color: #fff; background: rgba(11, 24, 18, .68); font-size: 0.86rem; font-weight: 700; }
 .face-guide-detected .face-guide::before { border-color: #69e59a; border-style: solid; box-shadow: 0 0 0 62.4375rem rgba(11, 24, 18, .2), 0 0 1.125rem rgba(105, 229, 154, .65); }
+.face-guide-ready .face-guide::before { border-color: #69e59a; border-style: solid; box-shadow: 0 0 0 62.4375rem rgba(11, 24, 18, .16), 0 0 1.5rem rgba(105, 229, 154, .8); }
+.face-guide-processing .face-guide::before { border-color: #ffc857; border-style: solid; }
 .face-guide-multiple .face-guide::before, .face-guide-error .face-guide::before { border-color: #ff7a70; border-style: solid; }
+.face-guide-mismatch .face-guide::before { border-color: #ff7a70; border-style: solid; box-shadow: 0 0 0 62.4375rem rgba(11, 24, 18, .2), 0 0 1rem rgba(255, 122, 112, .55); }
 .face-detection-status { position: absolute; right: .75rem; bottom: .75rem; left: .75rem; width: fit-content; max-width: calc(100% - 1.5rem); margin: 0 auto; padding: .375rem .625rem; border-radius: 1rem; color: #fff; background: rgba(11, 24, 18, .78); font-size: 0.86rem; font-weight: 700; text-align: center; }
+.face-detection-box { position: absolute; z-index: 1; border: .125rem solid rgba(105, 229, 154, .95); border-radius: .4rem; pointer-events: none; }
 .face-guide-detected .face-detection-status { background: rgba(20, 92, 53, .88); }
+.face-guide-ready .face-detection-status { background: rgba(20, 92, 53, .94); }
+.face-guide-processing .face-detection-status { color: #17221d; background: rgba(255, 200, 87, .96); }
 .face-guide-multiple .face-detection-status, .face-guide-error .face-detection-status { background: rgba(142, 61, 53, .92); }
+.face-guide-mismatch .face-detection-status { background: rgba(142, 61, 53, .96); }
+.face-capture-progress { display: flex; align-items: center; gap: .625rem; margin-top: .5rem; color: var(--muted); font-size: var(--font-sm); }
+.face-capture-progress progress { width: min(100%, 14rem); height: .75rem; accent-color: var(--forest); }
+.face-enrollment-captured-preview { width: min(100%, 32.5rem); margin-top: .75rem; overflow: hidden; border: .0625rem solid var(--line); border-radius: var(--radius-md); background: #17221d; }
+.face-enrollment-captured-preview img { width: 100%; max-height: 24rem; display: block; object-fit: contain; }
+.face-capture-diagnostics { margin-top: .75rem; padding: .75rem; border: .0625rem dashed var(--line); border-radius: var(--radius-md); background: var(--surface-soft); font-size: var(--font-sm); }
+.face-capture-diagnostics h3 { margin: 0 0 .5rem; font-size: var(--font-base); }
+.face-capture-diagnostics dl { display: grid; grid-template-columns: minmax(8rem, .8fr) minmax(0, 1fr); gap: .25rem .75rem; margin: 0; }
+.face-capture-diagnostics dt { color: var(--muted); }
+.face-capture-diagnostics dd { min-width: 0; margin: 0; overflow-wrap: anywhere; font-weight: 650; }
+.camera-permission-note { max-width: 42rem; margin: .5rem auto; font-size: var(--font-sm); text-align: center; }
+.attendance-action-card .face-camera-frame { aspect-ratio: 4 / 3; }
 .face-check-result { max-width: 32.5rem; margin-top: 1rem; padding: 1rem; border: .0625rem solid var(--line); border-left: .25rem solid var(--coral); border-radius: .3125rem; background: #fff; }
 .face-check-result h3 { margin-bottom: .5rem; font-size: 1.15rem; }
 .face-check-result p { margin-bottom: .5rem; font-size: 0.95rem; line-height: 1.5; }
@@ -254,6 +274,11 @@ textarea { resize: vertical; line-height: 1.45; }
 .face-check-needs_review { border-left-color: var(--amber); }
 .face-check-poor { border-left-color: var(--coral); }
 .face-check-location-warning { border-left-color: var(--amber); }
+@media (max-width: 40rem) {
+  .attendance-action-card .face-camera-frame { width: 100%; max-height: 60svh; aspect-ratio: 3 / 4; }
+  .attendance-action-card > .clock-actions { align-items: flex-start; flex-wrap: wrap; }
+  .attendance-action-card #face-capture-actions .button { flex: 1 1 10rem; }
+}
 .location-reason-dialog { width: min(calc(100% - 2rem), 32rem); margin: auto; padding: 1.5rem; border: .0625rem solid var(--line); border-radius: .5rem; color: var(--ink); background: #fff; }
 .location-reason-dialog::backdrop { background: rgba(41, 37, 44, .58); }
 .location-reason-dialog form { display: grid; gap: .75rem; }

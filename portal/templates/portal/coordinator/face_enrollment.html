@@ -47,7 +47,7 @@
               {% csrf_token %}
               <input type="hidden" name="action" value="delete">
               <input type="hidden" name="intern_id" value="{{ intern.pk }}">
-              <button class="button button-small" type="submit">Delete enrollment and attendance captures</button>
+              <button class="button button-small" type="submit">Reset active enrollment (keep history)</button>
             </form>
             {% else %}—{% endif %}
           </td>

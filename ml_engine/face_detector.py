@@ -12,8 +12,12 @@ from PIL import Image
 
 MODEL_PATH = Path(__file__).resolve().parent / "models" / "best.onnx"
 IMAGE_SIZE = 416
-CONFIDENCE_THRESHOLD = 0.25
+CONFIDENCE_THRESHOLD = 0.35
 FACE_CLASS_ID = 0
+MIN_FACE_SIZE_PIXELS = 48
+MIN_FACE_SIZE_RATIO = 0.08
+MIN_VISIBLE_FRACTION = 0.9
+NMS_IOU_THRESHOLD = 0.45
 ImageSource = str | Path | Image.Image
 _PREDICTION_LOCK = Lock()
 LOGGER = logging.getLogger(__name__)
@@ -126,21 +130,64 @@ def _decode_detections(
 
     detections: list[FaceDetection] = []
     for x1, y1, x2, y2, confidence, class_id, *_ in detections_output:
+        values = np.asarray([x1, y1, x2, y2, confidence, class_id], dtype=np.float64)
+        if not np.isfinite(values).all():
+            continue
         if int(round(float(class_id))) != FACE_CLASS_ID or confidence < CONFIDENCE_THRESHOLD:
             continue
 
-        left = max(0, min(original_width, round((float(x1) - pad_x) / scale)))
-        top = max(0, min(original_height, round((float(y1) - pad_y) / scale)))
-        right = max(0, min(original_width, round((float(x2) - pad_x) / scale)))
-        bottom = max(0, min(original_height, round((float(y2) - pad_y) / scale)))
+        raw_left = (float(x1) - pad_x) / scale
+        raw_top = (float(y1) - pad_y) / scale
+        raw_right = (float(x2) - pad_x) / scale
+        raw_bottom = (float(y2) - pad_y) / scale
+        raw_width = raw_right - raw_left
+        raw_height = raw_bottom - raw_top
+        if raw_width <= 0 or raw_height <= 0:
+            continue
+
+        left = max(0, min(original_width, round(raw_left)))
+        top = max(0, min(original_height, round(raw_top)))
+        right = max(0, min(original_width, round(raw_right)))
+        bottom = max(0, min(original_height, round(raw_bottom)))
         if right <= left or bottom <= top:
+            continue
+        visible_fraction = ((right - left) * (bottom - top)) / (raw_width * raw_height)
+        minimum_size = max(
+            MIN_FACE_SIZE_PIXELS,
+            round(min(original_width, original_height) * MIN_FACE_SIZE_RATIO),
+        )
+        aspect_ratio = (right - left) / (bottom - top)
+        if (
+            visible_fraction < MIN_VISIBLE_FRACTION
+            or min(right - left, bottom - top) < minimum_size
+            or not 0.55 <= aspect_ratio <= 1.65
+        ):
             continue
 
         detections.append({
             "confidence": round(float(confidence), 4),
             "bbox": [left, top, right, bottom],
         })
-    return detections
+
+    ordered = sorted(detections, key=lambda detection: detection["confidence"], reverse=True)
+    filtered: list[FaceDetection] = []
+    for candidate in ordered:
+        x1, y1, x2, y2 = candidate["bbox"]
+        candidate_area = (x2 - x1) * (y2 - y1)
+        overlaps_existing = False
+        for existing in filtered:
+            ex1, ey1, ex2, ey2 = existing["bbox"]
+            intersection_width = max(0, min(x2, ex2) - max(x1, ex1))
+            intersection_height = max(0, min(y2, ey2) - max(y1, ey1))
+            intersection = intersection_width * intersection_height
+            existing_area = (ex2 - ex1) * (ey2 - ey1)
+            union = candidate_area + existing_area - intersection
+            if union and intersection / union >= NMS_IOU_THRESHOLD:
+                overlaps_existing = True
+                break
+        if not overlaps_existing:
+            filtered.append(candidate)
+    return filtered
 
 
 def detect_faces(image: ImageSource) -> FaceDetectionResponse:

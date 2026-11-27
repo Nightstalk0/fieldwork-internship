@@ -286,6 +286,7 @@ class InternRegistrationForm(RegistrationForm):
                 kwargs["data"] = bound_data
         super().__init__(*args, **kwargs)
         self.fields["role"].choices = ((User.Role.INTERN, "Intern"),)
+        self.fields.pop("university")
         for field_name in self.company_fields:
             self.fields.pop(field_name)
 

@@ -1,14 +1,14 @@
 {% extends "base.html" %}{% block title %}Worksite Location | Fieldwork{% endblock %}
 {% block head %}<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">{% endblock %}
 {% block content %}
-<div class="page-heading"><div><p class="eyebrow">INTERN WORKSPACE</p><h1>Worksite Location</h1><p class="muted">Submit and manage the OJT worksite location used for approval and attendance.</p></div></div>
+<div class="page-heading"><div><p class="eyebrow">INTERN WORKSPACE</p><h1>Worksite Location</h1><p class="muted">Submit your OJT worksite for Admin review. The approved location is used for attendance.</p></div></div>
 <section class="panel form-panel" id="worksite-location">
-  <h2>OJT worksite location</h2>
+  <h2>Worksite Location Status</h2>
   {% if intern_worksites %}
     {% for worksite in intern_worksites %}
     <article class="weekly-report-entry">
-      <p class="status status-good">Approved · Active</p>
-      <p><strong>{% if worksite.company_id %}{{ worksite.company.company_name }} · {% endif %}{{ worksite.name }}</strong></p>
+      <p class="status status-good">Approved · Official attendance geofence</p>
+      <p><strong>{% if worksite.application_id %}{{ worksite.application.posting.company.company_name }} · {% endif %}{{ worksite.name }}</strong></p>
       <p>{{ worksite.address }}</p>
       <p class="muted">Approved location status: {{ worksite.get_approval_status_display }} · Official geofence radius: {{ worksite.radius_meters }} m</p>
       <p class="muted">Coordinates: {{ worksite.latitude }}, {{ worksite.longitude }}{% if worksite.reported_accuracy_meters %} · Reported setup accuracy: ±{{ worksite.reported_accuracy_meters }} m{% endif %}</p>
@@ -22,7 +22,7 @@
       ></div>
     </article>
     {% endfor %}
-    <p class="muted">This official location is read-only. Submit a new request below if the worksite needs to change; the current location remains active until Admin approval.</p>
+    <p class="muted">This approved location is locked. Contact Admin if it needs correction or replacement.</p>
   {% else %}
     <p class="status status-neutral">No approved OJT worksite is on file yet. Submit your worksite details below for Admin review.</p>
   {% endif %}
@@ -32,18 +32,28 @@
     <p><strong>{{ pending_intern_worksite.name }}</strong></p>
     <p>{{ pending_intern_worksite.address }}</p>
     <p class="muted">Submitted {{ pending_intern_worksite.created_at|date:"M j, Y H:i" }}{% if pending_intern_worksite.reported_accuracy_meters %} · GPS accuracy ±{{ pending_intern_worksite.reported_accuracy_meters }} m{% endif %}</p>
+    <p class="muted">Awaiting Admin review. You cannot edit or submit another location while this request is pending.</p>
   </article>
   {% endif %}
-  {% if rejected_intern_worksite %}
+  {% if latest_worksite_submission and latest_worksite_submission.approval_status == 'rejected' %}
   <article class="weekly-report-entry">
-    <p class="status status-risk">Worksite request needs corrections</p>
-    <p><strong>{{ rejected_intern_worksite.name }}</strong> · {{ rejected_intern_worksite.address }}</p>
-    <p><strong>Admin's reason:</strong> {{ rejected_intern_worksite.rejection_reason }}</p>
+    <p class="status status-risk">Rejected</p>
+    <p><strong>{{ latest_worksite_submission.name }}</strong> · {{ latest_worksite_submission.address }}</p>
+    <p class="muted">Submitted {{ latest_worksite_submission.created_at|date:"M j, Y H:i" }}</p>
+    <p><strong>Admin's reason:</strong> {{ latest_worksite_submission.rejection_reason }}</p>
   </article>
   {% endif %}
-  <details class="worksite-request-details" {% if not intern_worksites or worksite_form.errors %}open{% endif %}>
-    <summary>{% if intern_worksites %}Request a worksite change{% else %}Submit OJT worksite for approval{% endif %}</summary>
-    <p class="muted">Your submission is reviewed by Admin and will not replace an approved location unless approved. The default geofence is 100 meters.</p>
+  {% if latest_worksite_submission and latest_worksite_submission.approval_status == 'resubmission_requested' %}
+  <article class="weekly-report-entry">
+    <p class="status status-risk">Resubmission Requested</p>
+    <p><strong>{{ latest_worksite_submission.name }}</strong> · {{ latest_worksite_submission.address }}</p>
+    <p><strong>Admin's instructions:</strong> {{ latest_worksite_submission.rejection_reason }}</p>
+  </article>
+  {% endif %}
+  {% if can_submit_worksite %}
+  <details class="worksite-request-details" {% if worksite_form.errors or not intern_worksites %}open{% endif %}>
+    <summary>{% if latest_worksite_submission %}Submit corrected OJT worksite{% else %}Submit OJT worksite for approval{% endif %}</summary>
+    <p class="muted">Admin must approve each worksite before it can be used for attendance. The default geofence is 100 meters.</p>
     <form method="post" action="{% url 'portal:intern_worksite_registration' %}" class="stack-form" id="intern-worksite-request-form">
       {% csrf_token %}
       {% if worksite_form.application %}
@@ -71,6 +81,9 @@
       <button class="button button-primary" type="submit" id="submit-intern-worksite-request" disabled>Submit for Admin approval</button>
     </form>
   </details>
+  {% else %}
+  <p class="status status-neutral">Submission locked. {% if pending_intern_worksite %}Your location is awaiting Admin review.{% else %}Only Admin can request a new submission or correction.{% endif %}</p>
+  {% endif %}
 </section>
 {% endblock %}
 {% block scripts %}

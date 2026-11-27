@@ -90,7 +90,9 @@
               {% if is_admin and user.directory_resettable_worksite %}
               <form method="post" action="{% url 'portal:coordinator_reset_user_worksite' user.directory_intern.pk %}" onsubmit="return confirm('Reset this intern’s active or pending worksite location?');">
                 {% csrf_token %}
-                <button class="button button-small button-secondary" type="submit">Reset Worksite</button>
+                <label for="worksite-reset-reason-{{ user.directory_intern.pk }}">Instructions for the new worksite submission</label>
+                <textarea id="worksite-reset-reason-{{ user.directory_intern.pk }}" name="review_reason" rows="2" maxlength="1000" required></textarea>
+                <button class="button button-small button-secondary" type="submit">Request Worksite Correction</button>
               </form>
               {% endif %}
             </div>

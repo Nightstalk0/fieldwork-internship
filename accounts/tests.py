@@ -2,6 +2,8 @@ from django.http import HttpResponse
 from django.test import RequestFactory, TestCase
 from django.urls import reverse
 
+from portal.models import INSTITUTION_NAME
+
 from .middleware import RoleBasedRouteGuardMiddleware
 from .models import User
 
@@ -179,7 +181,9 @@ class AccountFlowTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'name="student_id"')
-        self.assertContains(response, 'name="university"')
+        self.assertNotContains(response, 'name="university"')
+        self.assertNotIn("university", response.context["form"].fields)
+        self.assertContains(response, INSTITUTION_NAME)
         self.assertContains(response, 'name="course"')
         self.assertContains(response, 'name="year_level"')
         self.assertContains(response, 'name="placement_type"')
@@ -208,7 +212,6 @@ class AccountFlowTests(TestCase):
                 "last_name": "Intern",
                 "email": "invalid-year@example.test",
                 "student_id": "STU-REG-004",
-                "university": "Example University",
                 "course": "Computer Science",
                 "year_level": "5",
                 "placement_type": "platform",
@@ -238,20 +241,22 @@ class AccountFlowTests(TestCase):
                 "last_name": "Intern",
                 "email": "new@example.test",
                 "student_id": "STU-REG-001",
-                "university": "Example University",
+                "university": "Different University",
                 "course": "Computer Science",
                 "year_level": "3",
                 "placement_type": "platform",
                 "password1": "Safe-example-Password-927!",
                 "password2": "Safe-example-Password-927!",
             },
+            follow=True,
         )
 
-        self.assertRedirects(response, reverse("accounts:login"))
+        self.assertEqual(response.redirect_chain, [(reverse("accounts:login"), 302)])
+        self.assertContains(response, f"Account created for {INSTITUTION_NAME}.")
         user = User.objects.get(username="new-intern")
         self.assertEqual(user.role, User.Role.INTERN)
         self.assertEqual(user.intern_profile.student_id, "STU-REG-001")
-        self.assertEqual(user.intern_profile.university, "Example University")
+        self.assertEqual(user.intern_profile.university, INSTITUTION_NAME)
         self.assertEqual(user.intern_profile.course, "Computer Science")
         self.assertEqual(user.intern_profile.year_level, 3)
         self.assertEqual(user.intern_profile.placement_type, "platform")
@@ -271,6 +276,25 @@ class AccountFlowTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertFalse(User.objects.filter(username="incomplete-intern").exists())
+
+    def test_existing_university_data_is_preserved_and_admin_displays_canonical_name(self):
+        user = User.objects.create_user(username="legacy-university-intern")
+        profile = user.intern_profile
+        profile.university = "Legacy University"
+        profile.save(update_fields=("university",))
+        admin = User.objects.create_superuser(
+            username="institution-admin",
+            password="Safe-example-Password-927!",
+        )
+        self.client.force_login(admin)
+
+        response = self.client.get(reverse("admin:portal_internprofile_changelist"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, INSTITUTION_NAME)
+        self.assertNotContains(response, "Legacy University")
+        profile.refresh_from_db()
+        self.assertEqual(profile.university, "Legacy University")
 
     def test_main_registration_cannot_create_a_company_account(self):
         response = self.client.post(

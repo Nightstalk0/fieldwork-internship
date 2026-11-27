@@ -2,6 +2,8 @@ from django.apps import apps
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
+from portal.models import INSTITUTION_NAME
+
 from .models import User
 
 
@@ -10,7 +12,10 @@ def ensure_role_profile(sender, instance, created, **kwargs):
     if not created:
         return
     if instance.role == User.Role.INTERN:
-        apps.get_model("portal", "InternProfile").objects.get_or_create(user=instance)
+        apps.get_model("portal", "InternProfile").objects.get_or_create(
+            user=instance,
+            defaults={"university": INSTITUTION_NAME},
+        )
     elif instance.role == User.Role.COMPANY:
         apps.get_model("portal", "CompanyProfile").objects.get_or_create(
             user=instance,

@@ -7,7 +7,7 @@ def portal_context(request):
         }
     from .models import AttendanceLog, DailyReport, pending_attendance_approval_count
 
-    if request.user.is_admin:
+    if request.user.is_admin and request.user.role != "company":
         return {
             "pending_dtr_count": pending_attendance_approval_count(AttendanceLog.objects.all()),
             "pending_daily_report_count": DailyReport.objects.filter(status=DailyReport.Status.SUBMITTED).count(),

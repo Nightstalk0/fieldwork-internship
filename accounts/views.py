@@ -5,7 +5,7 @@ from django.db import transaction
 from django.shortcuts import redirect, render
 from django.views.decorators.http import require_POST
 
-from portal.models import CompanyProfile, InternProfile
+from portal.models import CompanyProfile, INSTITUTION_NAME, InternProfile
 
 from .forms import CompanyRegistrationForm, InternRegistrationForm, LoginForm
 from .models import User
@@ -26,12 +26,12 @@ def _save_registration(form):
         profile, _ = InternProfile.objects.get_or_create(user=user)
         for field_name in (
             "student_id",
-            "university",
             "course",
             "year_level",
             "placement_type",
         ):
             setattr(profile, field_name, form.cleaned_data[field_name])
+        profile.university = INSTITUTION_NAME
         profile.save()
     elif user.role == User.Role.COMPANY:
         profile, _ = CompanyProfile.objects.get_or_create(user=user)
@@ -62,7 +62,10 @@ def register(request):
     form = InternRegistrationForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
         _save_registration(form)
-        messages.success(request, "Account created. Sign in to continue.")
+        messages.success(
+            request,
+            f"Account created for {INSTITUTION_NAME}. Sign in to continue.",
+        )
         return redirect("accounts:login")
     return render(request, "accounts/register.html", {"form": form})
 

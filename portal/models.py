@@ -19,6 +19,7 @@ def face_capture_image_expiry():
 
 FACE_CONSENT_VERSION = "v2"
 OJT_RENDERED_HOURS_CAP = 486
+INSTITUTION_NAME = "Richwell Colleges, Incorporated"
 
 
 class AttendanceLogQuerySet(models.QuerySet):
@@ -117,12 +118,57 @@ class FaceEnrollment(models.Model):
         return f"Face enrollment: {self.intern}"
 
 
+class FaceEnrollmentSubmission(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending review"
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
+        RETAKE_REQUESTED = "retake_requested", "Retake requested"
+
+    intern = models.ForeignKey(
+        InternProfile,
+        on_delete=models.CASCADE,
+        related_name="face_enrollment_submissions",
+    )
+    encrypted_embedding = models.BinaryField()
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    submitted_at = models.DateTimeField(default=timezone.now)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="face_enrollment_submissions_reviewed",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_reason = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ("-submitted_at", "-pk")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("intern",),
+                condition=Q(status="pending"),
+                name="one_pending_face_submission_per_intern",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Face enrollment submission: {self.intern} ({self.status})"
+
+
 class FaceReenrollmentRequest(models.Model):
     class Status(models.TextChoices):
         PENDING = "pending", "Pending admin approval"
         APPROVED = "approved", "Approved"
         REJECTED = "rejected", "Rejected"
         COMPLETED = "completed", "Completed"
+        ADMIN_REQUESTED = "admin_requested", "Retake requested by Admin"
 
     intern = models.ForeignKey(
         InternProfile,
@@ -131,11 +177,12 @@ class FaceReenrollmentRequest(models.Model):
     )
     reason = models.CharField(max_length=500)
     status = models.CharField(
-        max_length=12,
+        max_length=20,
         choices=Status.choices,
         default=Status.PENDING,
         db_index=True,
     )
+    review_reason = models.TextField(blank=True, default="")
     reviewed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -271,6 +318,7 @@ class WorksiteLocation(models.Model):
         PENDING = "pending", "Pending admin review"
         APPROVED = "approved", "Approved"
         REJECTED = "rejected", "Rejected"
+        RESUBMISSION_REQUESTED = "resubmission_requested", "Resubmission requested"
 
     company = models.ForeignKey(
         CompanyProfile,
@@ -315,7 +363,7 @@ class WorksiteLocation(models.Model):
         validators=[MinValueValidator(1)],
     )
     approval_status = models.CharField(
-        max_length=12,
+        max_length=24,
         choices=ApprovalStatus.choices,
         default=ApprovalStatus.APPROVED,
         db_index=True,
@@ -347,6 +395,11 @@ class WorksiteLocation(models.Model):
                     | Q(company__isnull=True, intern__isnull=False)
                 ),
                 name="worksite_has_one_owner",
+            ),
+            models.UniqueConstraint(
+                fields=("intern",),
+                condition=Q(intern__isnull=False, approval_status="pending"),
+                name="one_pending_intern_worksite",
             ),
         ]
 

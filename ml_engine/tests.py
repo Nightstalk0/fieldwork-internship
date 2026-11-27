@@ -18,6 +18,7 @@ from .face_recognition import (
     create_face_embedding,
     decrypt_embedding,
     encrypt_embedding,
+    inspect_face_candidates,
 )
 from .predictors import Model1CompletionPredictor, Model2RiskPredictor, Model3MatchPredictor, Model4PerformancePredictor
 
@@ -29,7 +30,10 @@ class FaceDetectorTests(SimpleTestCase):
         session.get_inputs.return_value = [SimpleNamespace(name="images")]
         session.run.return_value = [np.array([[
             [78, 104, 273, 299, 0.91, 0],
+            [80, 105, 271, 296, 0.88, 0],
             [8, 68, 65, 137, 0.84, 0],
+            [30, 30, 45, 45, 0.96, 0],
+            [-80, 100, 100, 300, 0.97, 0],
             [0, 0, 416, 416, 0.99, 1],
             [0, 0, 100, 100, 0.10, 0],
             [0, 0, 0, 0, 0, 0],
@@ -84,6 +88,37 @@ class FaceRecognitionTests(SimpleTestCase):
         Image.new("RGB", (32, 32), "white").save(image, format="JPEG")
         return "data:image/jpeg;base64," + base64.b64encode(image.getvalue()).decode("ascii")
 
+    def _yunet_detection(self, x=10, y=10, width=90, height=100, score=0.99):
+        return [
+            x,
+            y,
+            width,
+            height,
+            x + width * 0.32,
+            y + height * 0.38,
+            x + width * 0.68,
+            y + height * 0.38,
+            x + width * 0.5,
+            y + height * 0.56,
+            x + width * 0.36,
+            y + height * 0.76,
+            x + width * 0.64,
+            y + height * 0.76,
+            score,
+        ]
+
+    def _face_models(self, yunet_faces):
+        quality_crop = np.random.default_rng(42).integers(50, 200, (112, 112, 3), dtype=np.uint8)
+        yunet = SimpleNamespace(
+            setInputSize=lambda _size: None,
+            detect=lambda _image: (None, yunet_faces),
+        )
+        sface = SimpleNamespace(
+            alignCrop=lambda _image, _face: quality_crop,
+            feature=lambda _image: [[1.0] + [0.0] * 127],
+        )
+        return yunet, sface
+
     def test_camera_image_is_decoded_without_saving_it(self):
         image = decode_camera_image(self._camera_data_url())
 
@@ -115,20 +150,15 @@ class FaceRecognitionTests(SimpleTestCase):
             "face_count": 1,
             "detections": [{"confidence": 0.95, "bbox": [10, 10, 100, 100]}],
         }
-        yunet = SimpleNamespace(
-            setInputSize=lambda _size: None,
-            detect=lambda _image: (None, [[10, 10, 90, 90, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.99]]),
+        load_models_mock.return_value = self._face_models([self._yunet_detection()])
+        image_to_bgr_mock.return_value = np.random.default_rng(43).integers(
+            50, 200, (120, 120, 3), dtype=np.uint8
         )
-        sface = SimpleNamespace(
-            alignCrop=lambda _image, _face: np.zeros((112, 112, 3), dtype=np.uint8),
-            feature=lambda _image: [[0.0] * 128],
-        )
-        load_models_mock.return_value = (yunet, sface)
-        image_to_bgr_mock.return_value = np.zeros((120, 120, 3), dtype=np.uint8)
 
         embedding = create_face_embedding(Image.new("RGB", (120, 120)))
 
         self.assertEqual(len(embedding), 128 * 4)
+        self.assertAlmostEqual(float(np.linalg.norm(np.frombuffer(embedding, dtype=np.float32))), 1.0)
 
     @patch("ml_engine.face_recognition._image_to_bgr")
     @patch("ml_engine.face_recognition._load_models")
@@ -144,21 +174,115 @@ class FaceRecognitionTests(SimpleTestCase):
             "face_count": 1,
             "detections": [{"confidence": 0.95, "bbox": [10, 10, 100, 100]}],
         }
-        yunet = SimpleNamespace(
-            setInputSize=lambda _size: None,
-            detect=lambda _image: (
-                None,
-                [
-                    [10, 10, 90, 90, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.99],
-                    [20, 20, 90, 90, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.98],
-                ],
-            ),
+        load_models_mock.return_value = self._face_models([
+            self._yunet_detection(x=5, y=20, width=50, height=75),
+            self._yunet_detection(x=65, y=20, width=50, height=75, score=0.98),
+        ])
+        image_to_bgr_mock.return_value = np.random.default_rng(44).integers(
+            50, 200, (120, 120, 3), dtype=np.uint8
         )
-        load_models_mock.return_value = (yunet, None)
-        image_to_bgr_mock.return_value = np.zeros((120, 120, 3), dtype=np.uint8)
 
         with self.assertRaises(FaceImageError):
             create_face_embedding(Image.new("RGB", (120, 120)))
+
+    @patch("ml_engine.face_recognition._image_to_bgr")
+    @patch("ml_engine.face_recognition._load_models")
+    @patch("ml_engine.face_recognition.detect_faces")
+    def test_candidate_inspection_ignores_weak_yunet_and_yolo_background_boxes(
+        self,
+        detect_faces_mock,
+        load_models_mock,
+        image_to_bgr_mock,
+    ):
+        detect_faces_mock.return_value = {
+            "face_detected": True,
+            "face_count": 2,
+            "detections": [
+                {"confidence": 0.95, "bbox": [10, 10, 100, 100]},
+                {"confidence": 0.52, "bbox": [5, 15, 70, 90]},
+            ],
+        }
+        invalid_landmarks = [20, 10, 80, 90] + [0] * 10 + [0.99]
+        load_models_mock.return_value = self._face_models([
+            self._yunet_detection(),
+            invalid_landmarks,
+            self._yunet_detection(x=10, y=10, width=90, height=100, score=0.4),
+        ])
+        image_to_bgr_mock.return_value = np.random.default_rng(45).integers(
+            50, 200, (120, 120, 3), dtype=np.uint8
+        )
+
+        candidates = inspect_face_candidates(Image.new("RGB", (120, 120)))
+
+        self.assertEqual(len(candidates), 1)
+        self.assertTrue(candidates[0]["alignment_ready"])
+        self.assertIsNone(candidates[0]["quality_issue"])
+
+    @patch("ml_engine.face_recognition._image_to_bgr")
+    @patch("ml_engine.face_recognition._load_models")
+    @patch("ml_engine.face_recognition.detect_faces")
+    def test_candidate_inspection_flags_poor_face_lighting(
+        self,
+        detect_faces_mock,
+        load_models_mock,
+        image_to_bgr_mock,
+    ):
+        detect_faces_mock.return_value = {
+            "face_detected": True,
+            "face_count": 1,
+            "detections": [{"confidence": 0.95, "bbox": [10, 10, 100, 100]}],
+        }
+        load_models_mock.return_value = self._face_models([self._yunet_detection()])
+        image_to_bgr_mock.return_value = np.full((120, 120, 3), 5, dtype=np.uint8)
+
+        candidates = inspect_face_candidates(Image.new("RGB", (120, 120)))
+
+        self.assertEqual(candidates[0]["quality_issue"], "lighting")
+
+    @patch("ml_engine.face_recognition._image_to_bgr")
+    @patch("ml_engine.face_recognition._load_models")
+    @patch("ml_engine.face_recognition.detect_faces")
+    def test_candidate_inspection_rejects_blurry_face_crops(
+        self,
+        detect_faces_mock,
+        load_models_mock,
+        image_to_bgr_mock,
+    ):
+        detect_faces_mock.return_value = {
+            "face_detected": True,
+            "face_count": 1,
+            "detections": [{"confidence": 0.95, "bbox": [10, 10, 100, 100]}],
+        }
+        load_models_mock.return_value = self._face_models([self._yunet_detection()])
+        gradient = np.tile(np.linspace(80, 160, 120, dtype=np.uint8)[None, :, None], (120, 1, 3))
+        image_to_bgr_mock.return_value = gradient
+
+        candidates = inspect_face_candidates(Image.new("RGB", (120, 120)))
+
+        self.assertEqual(candidates[0]["quality_issue"], "blur")
+
+    @patch("ml_engine.face_recognition._image_to_bgr")
+    @patch("ml_engine.face_recognition._load_models")
+    @patch("ml_engine.face_recognition.detect_faces")
+    def test_candidate_inspection_identifies_a_face_that_needs_to_move_closer(
+        self,
+        detect_faces_mock,
+        load_models_mock,
+        image_to_bgr_mock,
+    ):
+        detect_faces_mock.return_value = {"face_detected": False, "face_count": 0, "detections": []}
+        load_models_mock.return_value = self._face_models([
+            self._yunet_detection(x=40, y=40, width=24, height=35),
+        ])
+        image_to_bgr_mock.return_value = np.random.default_rng(46).integers(
+            50, 200, (120, 120, 3), dtype=np.uint8
+        )
+
+        candidates = inspect_face_candidates(Image.new("RGB", (120, 120)))
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["quality_issue"], "too_far")
+        self.assertFalse(candidates[0]["alignment_ready"])
 
     @patch("ml_engine.face_recognition._load_models")
     @patch("ml_engine.face_recognition.decrypt_embedding", return_value=b"\x00" * (128 * 4))

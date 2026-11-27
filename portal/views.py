@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import logging
 import mimetypes
 from datetime import timedelta
@@ -11,6 +12,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
+from django.core.signing import BadSignature, SignatureExpired, dumps, loads
 from django.db import IntegrityError, transaction
 from django.db.models import Avg, Count, DurationField, ExpressionWrapper, F, Q, Sum
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequest, HttpResponseForbidden, JsonResponse
@@ -29,11 +31,10 @@ from zipfile import BadZipFile, LargeZipFile, ZipFile
 
 from accounts.models import User
 
-from .forms import ApplicationSubmissionForm, CompanyProfileForm, DailyReportForm, DailyReportReviewForm, ExternalWorksiteLocationForm, InternProfileForm, InternWorksiteRequestForm, PostingForm, ScorecardForm, ScorecardSelectionForm, WorksiteLocationForm
-from .models import AcademicPeriod, Application, AttendanceFaceCapture, AttendanceLog, AuditLog, CompanyProfile, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, FaceReenrollmentRequest, InternProfile, OJT_RENDERED_HOURS_CAP, Posting, RiskAssessment, Scorecard, WorksiteLocation, pending_attendance_approval_count
+from .forms import ApplicationSubmissionForm, CompanyProfileForm, DailyReportForm, DailyReportReviewForm, InternProfileForm, InternWorksiteRequestForm, PostingForm, ScorecardForm, ScorecardSelectionForm, WorksiteLocationForm
+from .models import AcademicPeriod, Application, AttendanceFaceCapture, AttendanceLog, AuditLog, CompanyProfile, DailyReport, FACE_CONSENT_VERSION, FaceEnrollment, FaceEnrollmentSubmission, FaceReenrollmentRequest, INSTITUTION_NAME, InternProfile, OJT_RENDERED_HOURS_CAP, Posting, RiskAssessment, Scorecard, WorksiteLocation, pending_attendance_approval_count
 from .utils import attendance_pdf, audit, certificate_pdf, haversine_distance_km
 from ml_engine.face_capture import FaceCaptureError, decode_camera_image, encode_camera_image
-from ml_engine.face_detector import detect_faces
 from ml_engine.face_recognition import (
     COSINE_MATCH_THRESHOLD,
     FaceImageError,
@@ -45,6 +46,7 @@ from ml_engine.face_recognition import (
     decrypt_embedding,
     encrypt_face_capture,
     encrypt_embedding,
+    inspect_face_candidates,
 )
 
 OJT_TARGET_HOURS = 120
@@ -172,7 +174,16 @@ def role_required(*roles):
         @wraps(view)
         @login_required
         def wrapped(request, *args, **kwargs):
-            if not (request.user.is_staff or request.user.is_superuser or request.user.role in roles):
+            is_company_admin_route = (
+                User.Role.COORDINATOR in roles
+                and User.Role.COMPANY not in roles
+                and request.user.role == User.Role.COMPANY
+            )
+            if is_company_admin_route or not (
+                request.user.is_staff
+                or request.user.is_superuser
+                or request.user.role in roles
+            ):
                 return render(request, "errors/403.html", status=403)
             return view(request, *args, **kwargs)
 
@@ -185,7 +196,7 @@ def admin_required(view):
     @wraps(view)
     @login_required
     def wrapped(request, *args, **kwargs):
-        if not request.user.is_admin:
+        if request.user.role == User.Role.COMPANY or not request.user.is_admin:
             return render(request, "errors/403.html", status=403)
         return view(request, *args, **kwargs)
 
@@ -214,10 +225,10 @@ def intern_api_required():
 def dashboard(request):
     if not request.user.is_authenticated:
         return redirect("accounts:login")
-    if request.user.is_admin:
-        return redirect("portal:coordinator_dashboard")
     if request.user.role == User.Role.COMPANY:
         return redirect("portal:company_dashboard")
+    if request.user.is_admin:
+        return redirect("portal:coordinator_dashboard")
     return redirect("portal:intern_dashboard")
 
 
@@ -259,54 +270,120 @@ def profile(request):
 
 def _intern_profile_context(intern, *, form=None):
     enrollment = FaceEnrollment.objects.filter(intern=intern).first()
+    latest_face_submission = intern.face_enrollment_submissions.first()
     face_reenrollment_request = intern.face_reenrollment_requests.filter(
         status__in=(
             FaceReenrollmentRequest.Status.PENDING,
             FaceReenrollmentRequest.Status.APPROVED,
+            FaceReenrollmentRequest.Status.ADMIN_REQUESTED,
         ),
     ).first()
+    latest_face_reenrollment_request = intern.face_reenrollment_requests.first()
+    face_submission_pending = (
+        latest_face_submission is not None
+        and latest_face_submission.status == FaceEnrollmentSubmission.Status.PENDING
+    )
+    face_reenrollment_authorized = face_reenrollment_request is not None and (
+        face_reenrollment_request.status
+        in (
+            FaceReenrollmentRequest.Status.APPROVED,
+            FaceReenrollmentRequest.Status.ADMIN_REQUESTED,
+        )
+    )
+    face_submission_rejected = latest_face_submission is not None and (
+        latest_face_submission.status
+        in (
+            FaceEnrollmentSubmission.Status.REJECTED,
+            FaceEnrollmentSubmission.Status.RETAKE_REQUESTED,
+        )
+    )
+    if face_submission_pending:
+        face_status = "Pending Admin Review"
+    elif face_reenrollment_request and face_reenrollment_request.status == FaceReenrollmentRequest.Status.PENDING:
+        face_status = "Retake request pending Admin review"
+    elif face_reenrollment_authorized:
+        face_status = "Retake Requested"
+    elif face_submission_rejected:
+        face_status = (
+            "Retake Requested"
+            if latest_face_submission.status == FaceEnrollmentSubmission.Status.RETAKE_REQUESTED
+            else "Rejected"
+        )
+    elif enrollment:
+        face_status = "Enrolled / Approved"
+    else:
+        face_status = "Not Enrolled"
+    can_submit_face = not face_submission_pending and not (
+        face_reenrollment_request
+        and face_reenrollment_request.status == FaceReenrollmentRequest.Status.PENDING
+    ) and (
+        enrollment is None
+        or face_reenrollment_authorized
+        or face_submission_rejected
+    )
+    can_request_face_reenrollment = enrollment is not None and not (
+        face_submission_pending
+        or face_submission_rejected
+        or face_reenrollment_request is not None
+    )
     return {
         "form": form or InternProfileForm(instance=intern),
         "intern": intern,
+        "institution_name": INSTITUTION_NAME,
         "face_enrollment": enrollment,
         "face_enrollment_current": enrollment is not None and enrollment.consent_text_version == FACE_CONSENT_VERSION,
         "face_reenrollment_request": face_reenrollment_request,
+        "latest_face_reenrollment_request": latest_face_reenrollment_request,
+        "latest_face_submission": latest_face_submission,
+        "face_status": face_status,
+        "can_submit_face": can_submit_face,
+        "can_request_face_reenrollment": can_request_face_reenrollment,
+        "face_capture_diagnostics": settings.FACE_CAPTURE_DIAGNOSTICS,
     }
 
 
 def _intern_worksite_context(intern, *, worksite_form=None):
-    accepted_assignment_exists = Application.objects.filter(
-        intern=intern,
-        status=Application.Status.ACCEPTED,
-    ).exists()
     accepted_applications = Application.objects.filter(
         intern=intern,
         status=Application.Status.ACCEPTED,
     )
-    approved_intern_worksites = intern.attendance_worksites.filter(
+    approved_worksites = list(intern.attendance_worksites.filter(
         is_active=True,
         approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
     ).filter(
-        Q(application__in=accepted_applications) if accepted_assignment_exists
+        Q(application__in=accepted_applications)
+        if accepted_applications.exists()
         else Q(application__isnull=True)
-    )
-    approved_worksites = list(
-        (approved_intern_worksites if approved_intern_worksites.exists() else _worksites_for_attendance(intern))
-        .select_related("company")
+    ).select_related("company", "application__posting__company")
         .order_by("name", "pk")
     )
     pending_intern_worksite = intern.attendance_worksites.filter(
         approval_status=WorksiteLocation.ApprovalStatus.PENDING,
     ).select_related("application__posting__company").order_by("-created_at").first()
-    rejected_intern_worksite = intern.attendance_worksites.filter(
-        approval_status=WorksiteLocation.ApprovalStatus.REJECTED,
-    ).exclude(rejection_reason="").order_by("-reviewed_at", "-created_at").first()
+    latest_worksite_submission = intern.attendance_worksites.exclude(
+        approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+        is_active=False,
+    ).order_by("-created_at", "-pk").first()
+    has_active_approved_worksite = any(worksite.is_active for worksite in approved_worksites)
+    latest_submission_needs_action = latest_worksite_submission is not None and (
+        latest_worksite_submission.approval_status
+        in (
+            WorksiteLocation.ApprovalStatus.REJECTED,
+            WorksiteLocation.ApprovalStatus.RESUBMISSION_REQUESTED,
+        )
+    )
+    submission_locked = pending_intern_worksite is not None or (
+        has_active_approved_worksite and not latest_submission_needs_action
+    )
+    can_submit_worksite = not submission_locked
     return {
         "worksite_form": worksite_form or InternWorksiteRequestForm(intern=intern),
         "intern": intern,
         "intern_worksites": approved_worksites,
         "pending_intern_worksite": pending_intern_worksite,
-        "rejected_intern_worksite": rejected_intern_worksite,
+        "latest_worksite_submission": latest_worksite_submission,
+        "submission_locked": submission_locked,
+        "can_submit_worksite": can_submit_worksite,
         "gps_max_accuracy_meters": settings.GPS_MAX_ACCURACY_METERS,
     }
 
@@ -320,16 +397,45 @@ def intern_worksite_registration(request):
         intern=intern,
     )
     if request.method == "POST" and form.is_valid():
-        worksite = form.save(commit=False)
-        worksite.company = None
-        worksite.intern = intern
-        worksite.application = form.cleaned_data.get("application")
-        worksite.created_by = request.user
-        worksite.radius_meters = 100
-        worksite.approval_status = WorksiteLocation.ApprovalStatus.PENDING
-        worksite.rejection_reason = ""
-        worksite.is_active = False
-        worksite.save()
+        with transaction.atomic():
+            locked_intern = InternProfile.objects.select_for_update().get(pk=intern.pk)
+            pending_submission_exists = WorksiteLocation.objects.filter(
+                intern=locked_intern,
+                approval_status=WorksiteLocation.ApprovalStatus.PENDING,
+            ).exists()
+            latest_submission = WorksiteLocation.objects.filter(
+                intern=locked_intern,
+            ).order_by("-created_at", "-pk").first()
+            active_approved_exists = WorksiteLocation.objects.filter(
+                intern=locked_intern,
+                approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+                is_active=True,
+            ).exists()
+            latest_needs_action = latest_submission is not None and latest_submission.approval_status in (
+                WorksiteLocation.ApprovalStatus.REJECTED,
+                WorksiteLocation.ApprovalStatus.RESUBMISSION_REQUESTED,
+            )
+            if pending_submission_exists or active_approved_exists and not latest_needs_action:
+                messages.error(
+                    request,
+                    "Your worksite submission is locked while it is pending or approved. Contact Admin for a correction or new submission.",
+                )
+                return redirect("portal:intern_worksite_registration")
+            worksite = form.save(commit=False)
+            worksite.company = None
+            worksite.intern = locked_intern
+            worksite.application = form.cleaned_data.get("application")
+            worksite.created_by = request.user
+            worksite.radius_meters = 100
+            worksite.approval_status = WorksiteLocation.ApprovalStatus.PENDING
+            worksite.rejection_reason = ""
+            worksite.is_active = False
+            try:
+                with transaction.atomic():
+                    worksite.save()
+            except IntegrityError:
+                messages.error(request, "A worksite submission is already pending Admin review.")
+                return redirect("portal:intern_worksite_registration")
         audit(request.user, "worksite.registration_requested", worksite)
         messages.success(request, "Your OJT worksite location was submitted for Admin approval.")
         return redirect("portal:intern_worksite_registration")
@@ -341,8 +447,8 @@ def intern_worksite_registration(request):
 
 @login_required
 def company_worksites(request):
-    is_admin = request.user.is_admin
-    is_company = request.user.role == User.Role.COMPANY and not is_admin
+    is_company = request.user.role == User.Role.COMPANY
+    is_admin = request.user.is_admin and not is_company
     if not (is_admin or is_company):
         return render(request, "errors/403.html", status=403)
 
@@ -433,11 +539,8 @@ def company_worksites(request):
     })
 
 
-@role_required(User.Role.COORDINATOR)
+@admin_required
 def coordinator_external_worksites(request):
-    external_interns = InternProfile.objects.filter(
-        placement_type=InternProfile.PlacementType.EXTERNAL,
-    )
     if request.method == "POST" and request.POST.get("action") == "deactivate":
         worksite = get_object_or_404(
             WorksiteLocation.objects.filter(
@@ -451,38 +554,22 @@ def coordinator_external_worksites(request):
         audit(request.user, "worksite.deactivated", worksite)
         messages.success(request, f"{worksite.name} was deactivated.")
         return redirect("portal:coordinator_external_worksites")
-
-    form = ExternalWorksiteLocationForm(request.POST or None)
-    if request.method == "POST" and request.POST.get("action") == "create":
-        if form.is_valid():
-            worksite = form.save(commit=False)
-            worksite.created_by = request.user
-            worksite.approval_status = WorksiteLocation.ApprovalStatus.PENDING
-            worksite.is_active = False
-            worksite.save()
-            audit(request.user, "worksite.registration_requested", worksite)
-            messages.success(
-                request,
-                f"{worksite.name} was submitted for administrator approval.",
-            )
-            return redirect("portal:coordinator_external_worksites")
-    elif request.method == "POST":
-        messages.error(request, "Choose a valid worksite action.")
+    if request.method == "POST":
+        return HttpResponseForbidden("Interns must submit their own OJT worksite for Admin review.")
 
     worksites = WorksiteLocation.objects.filter(
         company__isnull=True,
         intern__placement_type=InternProfile.PlacementType.EXTERNAL,
-    ).select_related("intern__user", "created_by")
+    ).select_related("intern__user", "created_by", "reviewed_by")
     return render(request, "portal/worksite_locations.html", {
-        "form": form,
-        "gps_max_accuracy_meters": settings.GPS_MAX_ACCURACY_METERS,
         "worksites": worksites,
         "pending_worksite_count": worksites.filter(
             approval_status=WorksiteLocation.ApprovalStatus.PENDING,
         ).count(),
+        "gps_max_accuracy_meters": settings.GPS_MAX_ACCURACY_METERS,
         "is_coordinator": True,
         "page_title": "External intern worksites",
-        "page_description": "Submit a location for an external intern. An administrator must approve it before attendance can use it.",
+        "page_description": "Interns submit their own external-placement worksite locations for Admin review. Review pending requests in Admin approvals.",
     })
 
 
@@ -494,17 +581,44 @@ def intern_face_enrollment(request):
         messages.error(request, "Confirm your informed consent before enrolling your face.")
         return redirect("portal:profile")
 
-    has_enrollment = FaceEnrollment.objects.filter(intern=intern).exists()
-    if has_enrollment and not FaceReenrollmentRequest.objects.filter(
-        intern=intern,
-        status=FaceReenrollmentRequest.Status.APPROVED,
-    ).exists():
-        messages.error(request, "An administrator must approve your face re-registration request before you can enroll again.")
-        return redirect("portal:profile")
+    def submission_is_locked(locked_intern):
+        if FaceEnrollmentSubmission.objects.filter(
+            intern=locked_intern,
+            status=FaceEnrollmentSubmission.Status.PENDING,
+        ).exists():
+            return True
+        if FaceReenrollmentRequest.objects.filter(
+            intern=locked_intern,
+            status=FaceReenrollmentRequest.Status.PENDING,
+        ).exists():
+            return True
+        has_enrollment = FaceEnrollment.objects.filter(intern=locked_intern).exists()
+        has_permission = FaceReenrollmentRequest.objects.filter(
+            intern=locked_intern,
+            status__in=(
+                FaceReenrollmentRequest.Status.APPROVED,
+                FaceReenrollmentRequest.Status.ADMIN_REQUESTED,
+            ),
+        ).exists()
+        latest_submission = FaceEnrollmentSubmission.objects.filter(
+            intern=locked_intern,
+        ).first()
+        was_rejected = latest_submission is not None and latest_submission.status in (
+            FaceEnrollmentSubmission.Status.REJECTED,
+            FaceEnrollmentSubmission.Status.RETAKE_REQUESTED,
+        )
+        return has_enrollment and not (has_permission or was_rejected)
+
+    with transaction.atomic():
+        locked_intern = InternProfile.objects.select_for_update().get(pk=intern.pk)
+        if submission_is_locked(locked_intern):
+            messages.error(request, "Your face enrollment is locked pending Admin review or authorization.")
+            return redirect("portal:profile")
 
     try:
         image = decode_camera_image(request.POST.get("face_image", ""))
-        embedding = encrypt_embedding(create_face_embedding(image))
+        face_embedding = create_face_embedding(image)
+        encrypted_embedding = encrypt_embedding(face_embedding)
     except (FaceCaptureError, FaceImageError) as exc:
         messages.error(request, str(exc))
         return redirect("portal:profile")
@@ -514,7 +628,7 @@ def intern_face_enrollment(request):
         return redirect("portal:profile")
 
     try:
-        if _face_embedding_is_duplicate(intern, decrypt_embedding(embedding)):
+        if _face_embedding_is_duplicate(intern, face_embedding):
             messages.error(request, "This face is already registered under another account.")
             return redirect("portal:profile")
     except FaceModelError:
@@ -524,34 +638,39 @@ def intern_face_enrollment(request):
 
     with transaction.atomic():
         locked_intern = InternProfile.objects.select_for_update().get(pk=intern.pk)
-        existing_enrollment = FaceEnrollment.objects.filter(intern=locked_intern).first()
-        approved_request = FaceReenrollmentRequest.objects.select_for_update().filter(
+        if submission_is_locked(locked_intern):
+            messages.error(request, "Your face enrollment is locked pending Admin review or authorization.")
+            return redirect("portal:profile")
+        existing_enrollment = FaceEnrollment.objects.select_for_update().filter(
             intern=locked_intern,
-            status=FaceReenrollmentRequest.Status.APPROVED,
         ).first()
         if existing_enrollment:
-            if approved_request is None:
-                messages.error(request, "An administrator must approve your face re-registration request before you can enroll again.")
+            try:
+                similarity = cosine_similarity(
+                    face_embedding,
+                    decrypt_embedding(existing_enrollment.encrypted_embedding),
+                )
+            except FaceModelError:
+                LOGGER.exception("Could not compare face re-enrollment for intern %s.", intern.pk)
+                messages.error(request, "Your face could not be compared with the current enrollment. Please try again.")
                 return redirect("portal:profile")
-
-        _, created = FaceEnrollment.objects.update_or_create(
-            intern=locked_intern,
-            defaults={
-                "encrypted_embedding": embedding,
-                "enrolled_by": request.user,
-                "consent_confirmed_at": timezone.now(),
-                "consent_text_version": FACE_CONSENT_VERSION,
-            },
-        )
-        if approved_request:
-            approved_request.status = FaceReenrollmentRequest.Status.COMPLETED
-            approved_request.save(update_fields=("status",))
-
-    audit(request.user, "face_enrollment.created" if created else "face_enrollment.updated", intern)
-    if approved_request:
-        messages.success(request, "Your face enrollment is saved. The approved re-registration has been used.")
-    else:
-        messages.success(request, "Your encrypted face enrollment is saved. You can now use face recognition for attendance.")
+            if similarity < COSINE_MATCH_THRESHOLD:
+                messages.error(
+                    request,
+                    "This face does not match your current enrollment. Retake the image and try again.",
+                )
+                return redirect("portal:profile")
+        try:
+            with transaction.atomic():
+                submission = FaceEnrollmentSubmission.objects.create(
+                    intern=locked_intern,
+                    encrypted_embedding=encrypted_embedding,
+                )
+        except IntegrityError:
+            messages.error(request, "A face enrollment is already pending Admin review.")
+            return redirect("portal:profile")
+    audit(request.user, "face_enrollment.submitted", submission)
+    messages.success(request, "Your encrypted face enrollment was submitted for Admin review.")
     return redirect("portal:profile")
 
 
@@ -568,19 +687,24 @@ def intern_face_reenrollment_request(request):
         return redirect("portal:profile")
 
     with transaction.atomic():
-        InternProfile.objects.select_for_update().get(pk=intern.pk)
+        locked_intern = InternProfile.objects.select_for_update().get(pk=intern.pk)
         active_request = FaceReenrollmentRequest.objects.filter(
-            intern=intern,
+            intern=locked_intern,
             status__in=(
                 FaceReenrollmentRequest.Status.PENDING,
                 FaceReenrollmentRequest.Status.APPROVED,
+                FaceReenrollmentRequest.Status.ADMIN_REQUESTED,
             ),
         ).exists()
-        if active_request:
+        pending_submission = FaceEnrollmentSubmission.objects.filter(
+            intern=locked_intern,
+            status=FaceEnrollmentSubmission.Status.PENDING,
+        ).exists()
+        if active_request or pending_submission:
             messages.info(request, "A face re-registration request is already awaiting completion.")
             return redirect("portal:profile")
         reenrollment_request = FaceReenrollmentRequest.objects.create(
-            intern=intern,
+            intern=locked_intern,
             reason=reason,
         )
         audit(request.user, "face_reenrollment.requested", reenrollment_request)
@@ -593,39 +717,135 @@ def intern_face_reenrollment_request(request):
 def admin_approvals(request):
     if request.method == "POST":
         action = request.POST.get("action")
-        decision = {
-            "approve_face_reset": (
-                FaceReenrollmentRequest,
-                FaceReenrollmentRequest.Status.APPROVED,
-            ),
-            "reject_face_reset": (
-                FaceReenrollmentRequest,
-                FaceReenrollmentRequest.Status.REJECTED,
-            ),
-            "approve_worksite": (
-                WorksiteLocation,
-                WorksiteLocation.ApprovalStatus.APPROVED,
-            ),
-            "reject_worksite": (
-                WorksiteLocation,
-                WorksiteLocation.ApprovalStatus.REJECTED,
-            ),
-            "request_worksite_corrections": (
-                WorksiteLocation,
-                WorksiteLocation.ApprovalStatus.REJECTED,
-            ),
-        }.get(action)
-        if decision is None:
+        review_reason = request.POST.get("review_reason", "").strip()
+        if action in {
+            "reject_face_reset",
+            "reject_face_submission",
+            "request_face_retake",
+            "request_face_submission_retake",
+            "reject_worksite",
+            "request_worksite_corrections",
+        } and not 1 <= len(review_reason) <= 1000:
+            return HttpResponseBadRequest("Provide a reason or instructions of no more than 1000 characters.")
+
+        if action == "request_face_retake":
+            with transaction.atomic():
+                intern = get_object_or_404(
+                    InternProfile.objects.select_for_update().select_related("user"),
+                    pk=request.POST.get("intern_id"),
+                )
+                if not FaceEnrollment.objects.filter(intern=intern).exists():
+                    return HttpResponseBadRequest("This intern has no approved enrollment to retake.")
+                if FaceEnrollmentSubmission.objects.filter(
+                    intern=intern,
+                    status=FaceEnrollmentSubmission.Status.PENDING,
+                ).exists():
+                    return HttpResponseBadRequest("Review the pending face submission before requesting a retake.")
+                if FaceReenrollmentRequest.objects.filter(
+                    intern=intern,
+                    status__in=(
+                        FaceReenrollmentRequest.Status.PENDING,
+                        FaceReenrollmentRequest.Status.APPROVED,
+                        FaceReenrollmentRequest.Status.ADMIN_REQUESTED,
+                    ),
+                ).exists():
+                    return HttpResponseBadRequest("A face re-registration request is already active.")
+                reenrollment_request = FaceReenrollmentRequest.objects.create(
+                    intern=intern,
+                    reason="Admin requested a face retake.",
+                    status=FaceReenrollmentRequest.Status.ADMIN_REQUESTED,
+                    reviewed_by=request.user,
+                    reviewed_at=timezone.now(),
+                    review_reason=review_reason,
+                )
+                audit(request.user, "face_reenrollment.requested_by_admin", reenrollment_request)
+            messages.success(request, f"A face retake was requested for {intern.user.get_full_name() or intern.user.username}.")
+            return redirect("portal:admin_approvals")
+
+        if action in {"approve_face_submission", "reject_face_submission", "request_face_submission_retake"}:
+            with transaction.atomic():
+                submission = get_object_or_404(
+                    FaceEnrollmentSubmission.objects.select_for_update().select_related("intern__user"),
+                    pk=request.POST.get("request_id"),
+                    status=FaceEnrollmentSubmission.Status.PENDING,
+                )
+                InternProfile.objects.select_for_update().get(pk=submission.intern_id)
+                now = timezone.now()
+                if action == "approve_face_submission":
+                    FaceEnrollment.objects.update_or_create(
+                        intern=submission.intern,
+                        defaults={
+                            "encrypted_embedding": submission.encrypted_embedding,
+                            "enrolled_by": submission.intern.user,
+                            "consent_confirmed_at": submission.submitted_at,
+                            "consent_text_version": FACE_CONSENT_VERSION,
+                        },
+                    )
+                    submission.status = FaceEnrollmentSubmission.Status.APPROVED
+                    FaceReenrollmentRequest.objects.filter(
+                        intern=submission.intern,
+                        status__in=(
+                            FaceReenrollmentRequest.Status.APPROVED,
+                            FaceReenrollmentRequest.Status.ADMIN_REQUESTED,
+                        ),
+                    ).update(
+                        status=FaceReenrollmentRequest.Status.COMPLETED,
+                        reviewed_by=request.user,
+                        reviewed_at=now,
+                    )
+                elif action == "reject_face_submission":
+                    submission.status = FaceEnrollmentSubmission.Status.REJECTED
+                else:
+                    submission.status = FaceEnrollmentSubmission.Status.RETAKE_REQUESTED
+                submission.reviewed_by = request.user
+                submission.reviewed_at = now
+                submission.review_reason = review_reason
+                submission.save(update_fields=(
+                    "status",
+                    "reviewed_by",
+                    "reviewed_at",
+                    "review_reason",
+                ))
+                audit(request.user, f"face_enrollment_submission.{submission.status}", submission)
+            messages.success(request, f"Face enrollment submission {submission.get_status_display().lower()}.")
+            return redirect("portal:admin_approvals")
+
+        if action in {"approve_face_reset", "reject_face_reset"}:
+            status = (
+                FaceReenrollmentRequest.Status.APPROVED
+                if action == "approve_face_reset"
+                else FaceReenrollmentRequest.Status.REJECTED
+            )
+            with transaction.atomic():
+                approval_request = get_object_or_404(
+                    FaceReenrollmentRequest.objects.select_for_update(),
+                    pk=request.POST.get("request_id"),
+                    status=FaceReenrollmentRequest.Status.PENDING,
+                )
+                approval_request.status = status
+                approval_request.reviewed_by = request.user
+                approval_request.reviewed_at = timezone.now()
+                approval_request.review_reason = review_reason
+                approval_request.save(update_fields=(
+                    "status",
+                    "reviewed_by",
+                    "reviewed_at",
+                    "review_reason",
+                ))
+                audit(request.user, f"face_reenrollment.{status}", approval_request)
+            messages.success(request, f"Face re-registration request {status}.")
+            return redirect("portal:admin_approvals")
+
+        if action not in {"approve_worksite", "reject_worksite", "request_worksite_corrections"}:
             return HttpResponseBadRequest("Unknown approval action.")
 
-        model, status = decision
-        object_id = request.POST.get("request_id")
-        review_reason = request.POST.get("review_reason", "").strip()
-        if model is WorksiteLocation and status == WorksiteLocation.ApprovalStatus.REJECTED and not review_reason:
-            return HttpResponseBadRequest("Provide a reason when rejecting a worksite or requesting corrections.")
-
+        status = {
+            "approve_worksite": WorksiteLocation.ApprovalStatus.APPROVED,
+            "reject_worksite": WorksiteLocation.ApprovalStatus.REJECTED,
+            "request_worksite_corrections": WorksiteLocation.ApprovalStatus.RESUBMISSION_REQUESTED,
+        }[action]
         approved_radius = None
-        if model is WorksiteLocation and status == WorksiteLocation.ApprovalStatus.APPROVED:
+        if status == WorksiteLocation.ApprovalStatus.APPROVED:
             radius_value = request.POST.get("radius_meters", "").strip()
             if radius_value:
                 try:
@@ -636,89 +856,86 @@ def admin_approvals(request):
                     return HttpResponseBadRequest("The geofence radius must be between 10 and 5000 meters.")
 
         with transaction.atomic():
-            if model is FaceReenrollmentRequest:
-                approval_request = get_object_or_404(
-                    FaceReenrollmentRequest.objects.select_for_update(),
-                    pk=object_id,
-                    status=FaceReenrollmentRequest.Status.PENDING,
+            worksite_query = WorksiteLocation.objects.select_for_update().filter(
+                Q(intern__isnull=False) | Q(company__isnull=False),
+            )
+            if action == "request_worksite_corrections":
+                worksite = get_object_or_404(
+                    worksite_query,
+                    pk=request.POST.get("request_id"),
+                    approval_status__in=(
+                        WorksiteLocation.ApprovalStatus.PENDING,
+                        WorksiteLocation.ApprovalStatus.APPROVED,
+                    ),
                 )
-                approval_request.status = status
-                approval_request.reviewed_by = request.user
-                approval_request.reviewed_at = timezone.now()
-                approval_request.save(update_fields=("status", "reviewed_by", "reviewed_at"))
-                audit(request.user, f"face_reenrollment.{status}", approval_request)
-                messages.success(request, f"Face re-registration request {status}.")
             else:
                 worksite = get_object_or_404(
-                    WorksiteLocation.objects.select_for_update().filter(
-                        Q(intern__isnull=False) | Q(company__isnull=False),
-                    ),
-                    pk=object_id,
+                    worksite_query,
+                    pk=request.POST.get("request_id"),
                     approval_status=WorksiteLocation.ApprovalStatus.PENDING,
                 )
-                if status == WorksiteLocation.ApprovalStatus.APPROVED and worksite.intern_id:
-                    previous_intern_worksites = WorksiteLocation.objects.select_for_update().filter(
-                        intern_id=worksite.intern_id,
-                        application_id=worksite.application_id,
-                        approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
-                        is_active=True,
-                    ).exclude(pk=worksite.pk)
-                    for previous_worksite in previous_intern_worksites:
-                        previous_worksite.is_active = False
-                        previous_worksite.save(update_fields=("is_active",))
-                        audit(
-                            request.user,
-                            "worksite.replaced",
-                            previous_worksite,
-                            replacement_id=worksite.pk,
-                        )
-
-                replacement_id = request.POST.get("replace_worksite_id", "").strip()
-                if replacement_id:
-                    if status != WorksiteLocation.ApprovalStatus.APPROVED:
-                        return HttpResponseBadRequest("A worksite can only be replaced when approving the new Company site.")
-                    if not worksite.company_id:
-                        return HttpResponseBadRequest("Only Company worksite requests can replace an existing site.")
-                    replaced_worksite = get_object_or_404(
-                        WorksiteLocation.objects.select_for_update(),
-                        pk=replacement_id,
-                        company_id=worksite.company_id,
-                        approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
-                        is_active=True,
-                    )
-                    replaced_worksite.is_active = False
-                    replaced_worksite.save(update_fields=("is_active",))
+            if status == WorksiteLocation.ApprovalStatus.APPROVED and worksite.intern_id:
+                previous_intern_worksites = WorksiteLocation.objects.select_for_update().filter(
+                    intern_id=worksite.intern_id,
+                    approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+                    is_active=True,
+                ).exclude(pk=worksite.pk)
+                for previous_worksite in previous_intern_worksites:
+                    previous_worksite.is_active = False
+                    previous_worksite.save(update_fields=("is_active",))
                     audit(
                         request.user,
                         "worksite.replaced",
-                        replaced_worksite,
+                        previous_worksite,
                         replacement_id=worksite.pk,
                     )
-                worksite.approval_status = status
-                worksite.is_active = status == WorksiteLocation.ApprovalStatus.APPROVED
-                worksite.reviewed_by = request.user
-                worksite.reviewed_at = timezone.now()
-                worksite.rejection_reason = review_reason if status == WorksiteLocation.ApprovalStatus.REJECTED else ""
-                if approved_radius is not None:
-                    worksite.radius_meters = approved_radius
-                worksite.save(update_fields=(
-                    "approval_status",
-                    "is_active",
-                    "reviewed_by",
-                    "reviewed_at",
-                    "rejection_reason",
-                    "radius_meters",
-                ))
-                audit_action = (
-                    "worksite.corrections_requested"
-                    if action == "request_worksite_corrections"
-                    else f"worksite.registration_{status}"
+
+            replacement_id = request.POST.get("replace_worksite_id", "").strip()
+            if replacement_id:
+                if status != WorksiteLocation.ApprovalStatus.APPROVED:
+                    return HttpResponseBadRequest("A worksite can only be replaced when approving the new Company site.")
+                if not worksite.company_id:
+                    return HttpResponseBadRequest("Only Company worksite requests can replace an existing site.")
+                replaced_worksite = get_object_or_404(
+                    WorksiteLocation.objects.select_for_update(),
+                    pk=replacement_id,
+                    company_id=worksite.company_id,
+                    approval_status=WorksiteLocation.ApprovalStatus.APPROVED,
+                    is_active=True,
                 )
-                audit(request.user, audit_action, worksite, reason=review_reason or None)
-                if action == "request_worksite_corrections":
-                    messages.success(request, f"Corrections were requested for {worksite.name}.")
-                else:
-                    messages.success(request, f"{worksite.name} was {status}.")
+                replaced_worksite.is_active = False
+                replaced_worksite.save(update_fields=("is_active",))
+                audit(
+                    request.user,
+                    "worksite.replaced",
+                    replaced_worksite,
+                    replacement_id=worksite.pk,
+                )
+            worksite.approval_status = status
+            worksite.is_active = status == WorksiteLocation.ApprovalStatus.APPROVED
+            worksite.reviewed_by = request.user
+            worksite.reviewed_at = timezone.now()
+            worksite.rejection_reason = review_reason if status != WorksiteLocation.ApprovalStatus.APPROVED else ""
+            if approved_radius is not None:
+                worksite.radius_meters = approved_radius
+            worksite.save(update_fields=(
+                "approval_status",
+                "is_active",
+                "reviewed_by",
+                "reviewed_at",
+                "rejection_reason",
+                "radius_meters",
+            ))
+            audit_action = (
+                "worksite.corrections_requested"
+                if action == "request_worksite_corrections"
+                else f"worksite.registration_{status}"
+            )
+            audit(request.user, audit_action, worksite, reason=review_reason or None)
+            if action == "request_worksite_corrections":
+                messages.success(request, f"Corrections were requested for {worksite.name}.")
+            else:
+                messages.success(request, f"{worksite.name} was {status}.")
         return redirect("portal:admin_approvals")
 
     worksite_requests = list(
@@ -742,17 +959,51 @@ def admin_approvals(request):
             else WorksiteLocation.objects.none()
         )
 
+    face_enrollment_records = list(FaceEnrollment.objects.select_related("intern__user").order_by(
+        "intern__user__last_name",
+        "intern__user__first_name",
+    ))
+    for enrollment in face_enrollment_records:
+        enrollment.has_pending_submission = FaceEnrollmentSubmission.objects.filter(
+            intern_id=enrollment.intern_id,
+            status=FaceEnrollmentSubmission.Status.PENDING,
+        ).exists()
+
     return render(request, "portal/admin/approvals.html", {
         "face_requests": FaceReenrollmentRequest.objects.filter(
             status=FaceReenrollmentRequest.Status.PENDING,
+        ).select_related("intern__user", "reviewed_by"),
+        "face_submissions": FaceEnrollmentSubmission.objects.filter(
+            status=FaceEnrollmentSubmission.Status.PENDING,
         ).select_related("intern__user"),
+        "face_enrollment_records": face_enrollment_records,
+        "face_request_history": FaceReenrollmentRequest.objects.select_related(
+            "intern__user",
+            "reviewed_by",
+        ).order_by("-created_at")[:100],
+        "face_submission_history": FaceEnrollmentSubmission.objects.select_related(
+            "intern__user",
+            "reviewed_by",
+        ).order_by("-submitted_at")[:100],
         "worksite_requests": worksite_requests,
+        "worksite_history": WorksiteLocation.objects.filter(intern__isnull=False).exclude(
+            approval_status=WorksiteLocation.ApprovalStatus.PENDING,
+        ).select_related("company", "intern__user", "reviewed_by").order_by("-created_at")[:100],
     })
 
 
 def _face_embedding_is_duplicate(intern, new_embedding):
     for enrollment in FaceEnrollment.objects.exclude(intern=intern).iterator():
         existing_embedding = decrypt_embedding(enrollment.encrypted_embedding)
+        if cosine_similarity(new_embedding, existing_embedding) >= COSINE_MATCH_THRESHOLD:
+            return True
+    for submission in FaceEnrollmentSubmission.objects.exclude(intern=intern).filter(
+        status__in=(
+            FaceEnrollmentSubmission.Status.PENDING,
+            FaceEnrollmentSubmission.Status.APPROVED,
+        ),
+    ).exclude(intern__face_enrollment__isnull=False).iterator():
+        existing_embedding = decrypt_embedding(submission.encrypted_embedding)
         if cosine_similarity(new_embedding, existing_embedding) >= COSINE_MATCH_THRESHOLD:
             return True
     return False
@@ -899,19 +1150,13 @@ def _worksites_for_attendance(intern):
         intern=intern,
         application__in=accepted_applications,
     )
-    if approved_intern_worksites.exists():
+    if accepted_applications.exists():
         return approved_intern_worksites
-
-    accepted_companies = CompanyProfile.objects.filter(
-        postings__applications__intern=intern,
-        postings__applications__status=Application.Status.ACCEPTED,
+    return locations.filter(
+        company__isnull=True,
+        intern=intern,
+        application__isnull=True,
     )
-    if accepted_companies.exists():
-        return locations.filter(
-            company__in=accepted_companies,
-            intern__isnull=True,
-        ).distinct()
-    return locations.filter(company__isnull=True, intern=intern)
 
 
 def _attendance_location_status(worksites, latitude, longitude, accuracy_meters=None):
@@ -1008,6 +1253,44 @@ def _attendance_face_check(request, intern, *, retain_image=True):
         return AttendanceLog.FaceCheckStatus.ERROR, None, encrypted_image
 
     return result["status"], result["similarity"], encrypted_image
+
+
+def _attendance_face_verification_token(intern, action, image_data, similarity):
+    return dumps(
+        {
+            "intern_id": intern.pk,
+            "action": action,
+            "image_sha256": hashlib.sha256(image_data.encode("utf-8")).hexdigest(),
+            "similarity": float(similarity),
+        },
+        salt="portal.attendance-face-verification.v1",
+    )
+
+
+def _validated_attendance_face_token(token, intern, action, image_data):
+    try:
+        payload = loads(
+            token,
+            salt="portal.attendance-face-verification.v1",
+            max_age=120,
+        )
+    except (BadSignature, SignatureExpired):
+        return None
+
+    image_hash = hashlib.sha256(image_data.encode("utf-8")).hexdigest()
+    if (
+        payload.get("intern_id") != intern.pk
+        or payload.get("action") != action
+        or payload.get("image_sha256") != image_hash
+    ):
+        return None
+    try:
+        similarity = float(payload["similarity"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not np.isfinite(similarity) or similarity < COSINE_MATCH_THRESHOLD:
+        return None
+    return similarity
 
 
 def _face_check_feedback(face_status):
@@ -1107,9 +1390,20 @@ def attendance_face_preview(request):
             {"error": _attendance_face_rejection_message(face_status), "face_status": face_status},
             status=status_code,
         )
+    verification_token = _attendance_face_verification_token(
+        intern,
+        action,
+        request.POST.get("face_image", "").strip(),
+        face_score,
+    )
     return JsonResponse({
         **_face_check_feedback(face_status),
-        "similarity": face_score,
+        **(
+            {"similarity": face_score}
+            if settings.FACE_CAPTURE_DIAGNOSTICS
+            else {}
+        ),
+        "verification_token": verification_token,
         "location_status": location_status,
         "distance_meters": distance_meters,
         "allowed_radius_meters": allowed_radius_meters,
@@ -1126,23 +1420,26 @@ def face_detection_preview(request):
     except FaceCaptureError as exc:
         return JsonResponse({"face_count": 0, "error": str(exc)}, status=400)
     try:
-        detection = detect_faces(image)
-    except (FileNotFoundError, ImportError, OSError, RuntimeError, TypeError, ValueError):
+        candidates = inspect_face_candidates(image)
+    except (FileNotFoundError, FaceModelError, ImportError, OSError, RuntimeError, TypeError, ValueError):
         _log_face_image_diagnostics(image, intern_id=request.user.pk, endpoint="face_detection")
         LOGGER.exception("Live face detection failed for intern %s.", request.user.pk)
         return JsonResponse(
-            {"face_count": 0, "error": "The face-detection model is unavailable. Try again shortly."},
+            {"face_count": 0, "error": "The face-detection models are unavailable. Try again shortly."},
             status=503,
         )
     _log_face_image_diagnostics(
         image,
         intern_id=request.user.pk,
         endpoint="face_detection",
-        face_count=detection["face_count"],
+        face_count=len(candidates),
     )
     return JsonResponse({
-        "face_count": detection["face_count"],
-        "face_detected": detection["face_detected"],
+        "face_count": len(candidates),
+        "face_detected": bool(candidates),
+        "detections": candidates,
+        "image_width": image.width,
+        "image_height": image.height,
     })
 
 
@@ -1150,24 +1447,65 @@ def face_detection_preview(request):
 def face_enrollment_preview(request):
     try:
         image = decode_camera_image(request.POST.get("face_image", ""))
-        create_face_embedding(image)
+        face_embedding = create_face_embedding(image)
     except (FaceCaptureError, FaceImageError) as exc:
         return JsonResponse({
             "quality": "poor",
-            "label": "Poor enrollment capture",
+            "identity_status": "not_checked",
+            "label": "Position Your Face",
             "message": str(exc),
         })
     except FaceModelError:
         LOGGER.exception("Face enrollment preview failed for intern %s.", request.user.pk)
         return JsonResponse({
             "quality": "poor",
+            "identity_status": "not_checked",
             "label": "Face recognition unavailable",
             "message": "The face-recognition models could not process this image. Retake it or try again later.",
         }, status=503)
+    enrollment = FaceEnrollment.objects.filter(intern__user=request.user).first()
+    if enrollment:
+        try:
+            similarity = cosine_similarity(
+                face_embedding,
+                decrypt_embedding(enrollment.encrypted_embedding),
+            )
+        except FaceModelError:
+            LOGGER.exception("Face re-enrollment preview comparison failed for intern %s.", request.user.pk)
+            return JsonResponse({
+                "quality": "poor",
+                "identity_status": "unavailable",
+                "label": "Face check unavailable",
+                "message": "Your face could not be compared with the current enrollment. Retake the image or try again later.",
+            }, status=503)
+        if similarity < COSINE_MATCH_THRESHOLD:
+            return JsonResponse({
+                "quality": "poor",
+                "identity_status": "not_matched",
+                "label": "Face Not Matched",
+                "message": "This face does not match your current enrollment. Try again with your own face.",
+                **(
+                    {"similarity": round(similarity, 4)}
+                    if settings.FACE_CAPTURE_DIAGNOSTICS
+                    else {}
+                ),
+            })
+        return JsonResponse({
+            "quality": "good",
+            "identity_status": "matched",
+            "label": "Face Matched",
+            "message": "Your face matches the current enrollment. Review the preview and submit it for Admin review.",
+            **(
+                {"similarity": round(similarity, 4)}
+                if settings.FACE_CAPTURE_DIAGNOSTICS
+                else {}
+            ),
+        })
     return JsonResponse({
         "quality": "good",
-        "label": "Face detected and ready",
-        "message": "One face was detected and can be used for enrollment. Submit to save the encrypted face template.",
+        "identity_status": "not_required",
+        "label": "Captured Successfully",
+        "message": "Image quality passed. No previous face reference exists, so identity matching was not performed. Submit this enrollment for Admin review.",
     })
 
 
@@ -1177,23 +1515,55 @@ def attendance(request):
     worksite_locations = _worksites_for_attendance(intern)
     today = timezone.localdate()
     if request.method == "POST":
+        is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
+
+        def attendance_response(
+            message,
+            *,
+            status_code=400,
+            code=None,
+            success=False,
+            attendance_status=None,
+            face_status=None,
+            level="error",
+        ):
+            if is_ajax:
+                payload = {"success": success}
+                payload["message" if success else "error"] = message
+                if code:
+                    payload["code"] = code
+                if attendance_status:
+                    payload["attendance_status"] = attendance_status
+                if face_status:
+                    payload["face_status"] = face_status
+                return JsonResponse(payload, status=status_code)
+            getattr(messages, level)(request, message)
+            return redirect("portal:attendance")
+
         action = request.POST.get("action")
         if action not in {"clock_in", "clock_out"}:
+            if is_ajax:
+                return attendance_response("Unknown attendance action.", code="invalid_action")
             return HttpResponseBadRequest("Unknown attendance action.")
         if action == "clock_out":
             existing_log = AttendanceLog.objects.filter(intern=intern, work_date=today).first()
             if not existing_log or not existing_log.clock_in:
-                messages.error(request, "Record time in before recording time out.")
-                return redirect("portal:attendance")
+                return attendance_response(
+                    "Record time in before recording time out.",
+                    code="time_in_required",
+                )
             if not existing_log.time_in_approved:
-                messages.error(request, "Your time-in must be approved by the company/admin before you can time out.")
-                return redirect("portal:attendance")
+                return attendance_response(
+                    "Your time-in must be approved by the company/admin before you can time out.",
+                    code="time_in_pending",
+                    status_code=409,
+                )
         if not worksite_locations.exists():
-            messages.error(
-                request,
+            return attendance_response(
                 "No active worksite is assigned to your placement. Ask your coordinator or host company to enroll one.",
+                code="worksite_required",
+                status_code=409,
             )
-            return redirect("portal:attendance")
         latitude, longitude = _coordinates(request, action)
         accuracy_meters = _reported_accuracy_meters(request, action)
         location_status, distance_meters, allowed_radius_meters = _attendance_location_status(
@@ -1205,26 +1575,72 @@ def attendance(request):
         location_reason = request.POST.get(f"{action}_location_reason", "").strip()[:1000]
         requires_location_reason = location_status != AttendanceFaceCapture.LocationStatus.INSIDE
         if requires_location_reason and len(location_reason) < 10:
-            messages.error(
-                request,
+            return attendance_response(
                 "Your location is outside the assigned worksite radius or GPS is unavailable. "
                 "Provide an explanation of at least 10 characters to submit this attendance for supervisor review.",
+                code="location_reason_required",
             )
-            return redirect("portal:attendance")
         event = AttendanceFaceCapture.Event.TIME_IN if action == "clock_in" else AttendanceFaceCapture.Event.TIME_OUT
         existing_log = AttendanceLog.objects.filter(intern=intern, work_date=today).first()
         if existing_log and existing_log.face_captures.filter(
             event=event,
             review_status=AttendanceFaceCapture.ReviewStatus.PENDING,
         ).exists():
-            messages.info(request, "This attendance event is already waiting for company/admin review.")
-            return redirect("portal:attendance")
-        face_status, face_score, encrypted_image = _attendance_face_check(request, intern)
+            return attendance_response(
+                "This attendance event is already waiting for company/admin review.",
+                code="already_pending",
+                status_code=409,
+                level="info",
+            )
+        verification_token = request.POST.get("face_verification_token", "").strip()
+        if verification_token:
+            face_image_data = request.POST.get("face_image", "").strip()
+            face_score = _validated_attendance_face_token(
+                verification_token,
+                intern,
+                action,
+                face_image_data,
+            )
+            if face_score is None:
+                return attendance_response(
+                    "Face verification expired or changed. Please verify your face again.",
+                    code="face_verification_expired",
+                    status_code=403,
+                )
+            try:
+                verified_image = decode_camera_image(face_image_data)
+                encrypted_image = encrypt_face_capture(encode_camera_image(verified_image))
+            except (FaceCaptureError, FaceModelError):
+                LOGGER.exception("Could not retain verified attendance capture for intern %s.", intern.pk)
+                return attendance_response(
+                    "The verified camera frame could not be saved. Please try again.",
+                    code="face_capture_unavailable",
+                    status_code=422,
+                )
+            face_status = AttendanceLog.FaceCheckStatus.MATCHED
+        else:
+            face_status, face_score, encrypted_image = _attendance_face_check(request, intern)
         if face_status != AttendanceLog.FaceCheckStatus.MATCHED:
-            messages.error(request, _attendance_face_rejection_message(face_status))
-            return redirect("portal:attendance")
+            face_response_code = (
+                503
+                if face_status == AttendanceLog.FaceCheckStatus.ERROR
+                else 403
+                if face_status in {
+                    AttendanceLog.FaceCheckStatus.NOT_MATCHED,
+                    AttendanceLog.FaceCheckStatus.NOT_ENROLLED,
+                    AttendanceLog.FaceCheckStatus.CONSENT_REQUIRED,
+                }
+                else 422
+            )
+            return attendance_response(
+                _attendance_face_rejection_message(face_status),
+                code="face_verification_failed",
+                status_code=face_response_code,
+                face_status=face_status,
+            )
 
         captured_at = timezone.now()
+        attendance_status = "pending_review"
         try:
             with transaction.atomic():
                 if action == "clock_out":
@@ -1242,16 +1658,25 @@ def attendance(request):
                     event=event,
                     review_status=AttendanceFaceCapture.ReviewStatus.PENDING,
                 ).exists():
-                    messages.info(request, "This attendance event is already waiting for company/admin review.")
-                    return redirect("portal:attendance")
+                    return attendance_response(
+                        "This attendance event is already waiting for company/admin review.",
+                        code="already_pending",
+                        status_code=409,
+                        level="info",
+                    )
                 if getattr(log, fields["timestamp"]):
-                    messages.info(request, f"You have already recorded {event.replace('_', ' ')} today.")
-                    return redirect("portal:attendance")
+                    return attendance_response(
+                        f"You have already recorded {event.replace('_', ' ')} today.",
+                        code="already_recorded",
+                        status_code=409,
+                        level="info",
+                    )
 
                 automatically_approved = (
                     face_status == AttendanceLog.FaceCheckStatus.MATCHED
                     and location_status == AttendanceFaceCapture.LocationStatus.INSIDE
                 )
+                attendance_status = "approved" if automatically_approved else "pending_review"
                 review_status = (
                     AttendanceFaceCapture.ReviewStatus.NOT_REQUIRED
                     if automatically_approved
@@ -1310,10 +1735,11 @@ def attendance(request):
                         log,
                         capture_id=capture.pk,
                     )
-                    messages.success(
-                        request,
-                        f"Face verified and {event.replace('_', ' ')} approved within the assigned worksite.",
-                    )
+                    if not is_ajax:
+                        messages.success(
+                            request,
+                            f"Face verified and {event.replace('_', ' ')} approved within the assigned worksite.",
+                        )
                 elif requires_location_reason:
                     audit(
                         request.user,
@@ -1323,12 +1749,34 @@ def attendance(request):
                         capture_id=capture.pk,
                         location_status=location_status,
                     )
-                    messages.warning(
-                        request,
-                        f"{event.replace('_', ' ').title()} was submitted with a location exception and is awaiting supervisor review.",
-                    )
+                    if not is_ajax:
+                        messages.warning(
+                            request,
+                            f"{event.replace('_', ' ').title()} was submitted with a location exception and is awaiting supervisor review.",
+                        )
         except IntegrityError:
+            if is_ajax:
+                return attendance_response(
+                    "Today's attendance record was already created. Refresh and try again.",
+                    code="already_recorded",
+                    status_code=409,
+                    level="info",
+                )
             messages.info(request, "Today's attendance record was already created. Refresh and try again.")
+        if is_ajax:
+            if attendance_status == "approved":
+                message = f"Face verified and {event.replace('_', ' ')} approved within the assigned worksite."
+            else:
+                message = (
+                    f"{event.replace('_', ' ').title()} was submitted with a location exception "
+                    "and is awaiting supervisor review."
+                )
+            return attendance_response(
+                message,
+                status_code=200,
+                success=True,
+                attendance_status=attendance_status,
+            )
         return redirect("portal:attendance")
 
     today_log = AttendanceLog.objects.filter(intern=intern, work_date=today).first()
@@ -1361,6 +1809,7 @@ def attendance(request):
             face_enrollment is not None
             and face_enrollment.consent_text_version == FACE_CONSENT_VERSION
         ),
+        "face_capture_diagnostics": settings.FACE_CAPTURE_DIAGNOSTICS,
         "pending_worksite_request": intern.attendance_worksites.filter(
             approval_status=WorksiteLocation.ApprovalStatus.PENDING,
         ).first(),
@@ -1369,7 +1818,7 @@ def attendance(request):
     })
 
 
-@role_required(User.Role.COORDINATOR)
+@admin_required
 def coordinator_face_enrollment(request):
     if request.method == "POST":
         action = request.POST.get("action")
@@ -1379,6 +1828,11 @@ def coordinator_face_enrollment(request):
             return redirect("portal:coordinator_face_enrollment")
         if action != "enroll":
             return HttpResponseBadRequest("Unknown face-enrollment action.")
+        if FaceEnrollmentSubmission.objects.filter(
+            intern=intern,
+            status=FaceEnrollmentSubmission.Status.PENDING,
+        ).exists():
+            return HttpResponseBadRequest("Review the Intern's pending submission before enrolling a replacement.")
         if request.POST.get("consent_confirmed") != "on":
             messages.error(request, "Confirm that the intern gave informed consent before enrolling.")
             return redirect("portal:coordinator_face_enrollment")
@@ -1403,15 +1857,30 @@ def coordinator_face_enrollment(request):
             messages.error(request, "Face uniqueness could not be verified. Please try again later.")
             return redirect("portal:coordinator_face_enrollment")
 
-        enrollment, created = FaceEnrollment.objects.update_or_create(
-            intern=intern,
-            defaults={
-                "encrypted_embedding": embedding,
-                "enrolled_by": request.user,
-                "consent_confirmed_at": timezone.now(),
-                "consent_text_version": FACE_CONSENT_VERSION,
-            },
-        )
+        with transaction.atomic():
+            locked_intern = InternProfile.objects.select_for_update().get(pk=intern.pk)
+            if FaceEnrollmentSubmission.objects.filter(
+                intern=locked_intern,
+                status=FaceEnrollmentSubmission.Status.PENDING,
+            ).exists():
+                return HttpResponseBadRequest("Review the Intern's pending submission before enrolling a replacement.")
+            _, created = FaceEnrollment.objects.update_or_create(
+                intern=locked_intern,
+                defaults={
+                    "encrypted_embedding": embedding,
+                    "enrolled_by": request.user,
+                    "consent_confirmed_at": timezone.now(),
+                    "consent_text_version": FACE_CONSENT_VERSION,
+                },
+            )
+            reviewed_at = timezone.now()
+            FaceEnrollmentSubmission.objects.create(
+                intern=locked_intern,
+                encrypted_embedding=embedding,
+                status=FaceEnrollmentSubmission.Status.APPROVED,
+                reviewed_by=request.user,
+                reviewed_at=reviewed_at,
+            )
         audit(request.user, "face_enrollment.created" if created else "face_enrollment.updated", intern)
         messages.success(request, "Encrypted face embedding saved with your updated attendance-capture consent.")
         return redirect("portal:coordinator_face_enrollment")
@@ -1425,19 +1894,23 @@ def coordinator_face_enrollment(request):
 
 
 def _delete_intern_face_enrollment(request, intern):
-    enrollment = FaceEnrollment.objects.filter(intern=intern).first()
-    if enrollment:
-        with transaction.atomic():
-            AttendanceFaceCapture.objects.filter(attendance_log__intern=intern).delete()
-            enrollment.delete()
-            AttendanceLog.objects.filter(intern=intern).update(
-                clock_in_face_status=AttendanceLog.FaceCheckStatus.NOT_ATTEMPTED,
-                clock_in_face_score=None,
-                clock_out_face_status=AttendanceLog.FaceCheckStatus.NOT_ATTEMPTED,
-                clock_out_face_score=None,
+    with transaction.atomic():
+        InternProfile.objects.select_for_update().get(pk=intern.pk)
+        enrollment = FaceEnrollment.objects.select_for_update().filter(intern=intern).first()
+        if enrollment:
+            FaceEnrollmentSubmission.objects.create(
+                intern=intern,
+                encrypted_embedding=enrollment.encrypted_embedding,
+                status=FaceEnrollmentSubmission.Status.REJECTED,
+                reviewed_by=request.user,
+                reviewed_at=timezone.now(),
+                review_reason="Enrollment was reset by Admin.",
+                submitted_at=enrollment.updated_at,
             )
-        audit(request.user, "face_enrollment.deleted", intern)
-        messages.success(request, "Face enrollment and its associated attendance captures were deleted.")
+            enrollment.delete()
+    if enrollment:
+        audit(request.user, "face_enrollment.reset", intern)
+        messages.success(request, "Face enrollment was reset. Its encrypted history and attendance captures were retained.")
         return True
     messages.info(request, "This intern has no face enrollment.")
     return False
@@ -2021,27 +2494,31 @@ def coordinator_reset_user_face(request, intern_id):
 @require_POST
 def coordinator_reset_user_worksite(request, intern_id):
     intern = get_object_or_404(InternProfile.objects.select_related("user"), pk=intern_id)
-    worksites = list(
-        WorksiteLocation.objects.filter(intern=intern).filter(
-            Q(is_active=True)
-            | Q(approval_status=WorksiteLocation.ApprovalStatus.PENDING)
-        )
-    )
-    if not worksites:
-        messages.info(request, "This intern has no active or pending worksite to reset.")
-        return redirect("portal:coordinator_users")
-
+    review_reason = request.POST.get("review_reason", "").strip()
+    if not 1 <= len(review_reason) <= 1000:
+        return HttpResponseBadRequest("Provide instructions of no more than 1000 characters for the new worksite submission.")
     with transaction.atomic():
+        InternProfile.objects.select_for_update().get(pk=intern.pk)
+        worksites = list(
+            WorksiteLocation.objects.select_for_update().filter(intern=intern).filter(
+                Q(is_active=True)
+                | Q(approval_status=WorksiteLocation.ApprovalStatus.PENDING)
+            )
+        )
+        if not worksites:
+            messages.info(request, "This intern has no active or pending worksite to reset.")
+            return redirect("portal:coordinator_users")
         reviewed_at = timezone.now()
         for worksite in worksites:
             worksite.is_active = False
-            if worksite.approval_status == WorksiteLocation.ApprovalStatus.PENDING:
-                worksite.approval_status = WorksiteLocation.ApprovalStatus.REJECTED
+            worksite.approval_status = WorksiteLocation.ApprovalStatus.RESUBMISSION_REQUESTED
+            worksite.rejection_reason = review_reason
             worksite.reviewed_by = request.user
             worksite.reviewed_at = reviewed_at
             worksite.save(update_fields=(
                 "is_active",
                 "approval_status",
+                "rejection_reason",
                 "reviewed_by",
                 "reviewed_at",
             ))

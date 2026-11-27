@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from portal.models import CompanyProfile, InternProfile, Posting
+from portal.models import CompanyProfile, INSTITUTION_NAME, InternProfile, Posting
 
 
 class Command(BaseCommand):
@@ -35,7 +35,10 @@ class Command(BaseCommand):
             user=company_user,
             defaults={"organization": "Northstar Studio", "website": "https://example.test", "verified": True},
         )
-        InternProfile.objects.get_or_create(user=intern_user, defaults={"university": "Example University", "course": "Information Systems"})
+        InternProfile.objects.get_or_create(
+            user=intern_user,
+            defaults={"university": INSTITUTION_NAME, "course": "Information Systems"},
+        )
         Posting.objects.get_or_create(
             company=company,
             title="Junior Data Operations Intern",

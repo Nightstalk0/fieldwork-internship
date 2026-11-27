@@ -248,7 +248,6 @@ class InternProfileForm(forms.ModelForm):
         model = InternProfile
         fields = (
             "student_id",
-            "university",
             "course",
             "year_level",
             "placement_type",

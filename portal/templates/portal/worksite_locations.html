@@ -50,6 +50,13 @@
   {% endif %}
 </section>
 {% else %}
+{% if is_coordinator %}
+<section class="panel">
+  <h2>External Intern submissions</h2>
+  <p class="muted">Interns must submit their own OJT locations. Pending and prior submissions are reviewed in Admin approvals.</p>
+  <a class="button button-primary" href="{% url 'portal:admin_approvals' %}">Review Admin approvals</a>
+</section>
+{% else %}
 <section class="panel form-panel">
   {% if pending_worksite_count %}<p class="status status-risk">{{ pending_worksite_count }} {{ pending_worksite_label }} awaiting Admin approval</p>{% endif %}
   <h2>{% if is_coordinator %}Assign external intern worksite{% elif is_admin_company_manager %}Register official Company worksite{% else %}Request a Company worksite location{% endif %}</h2>
@@ -84,6 +91,7 @@
     </div>
   </form>
 </section>
+{% endif %}
 <section class="panel">
   <div class="section-heading">
     <h2>Enrolled locations</h2>
@@ -135,7 +143,7 @@
 {% endif %}
 {% endblock %}
 {% block scripts %}
-{% if not is_read_only_company %}
+{% if not is_read_only_company and not is_coordinator %}
 <script>
   const captureLocationButton = document.getElementById("capture-worksite-location");
   const locationStatus = document.getElementById("worksite-location-status");
