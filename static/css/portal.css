@@ -363,6 +363,7 @@ textarea { resize: vertical; line-height: 1.45; }
 .auth-panel h2 { margin-bottom: .3125rem; font-size: var(--font-xl); }
 .auth-panel > .muted { margin-bottom: 1.25rem; font-size: 0.9rem; }
 .form-footnote { margin: 1.125rem 0 0; color: var(--muted); font-size: 0.85rem; }
+.resend-form { margin-top: .75rem; }
 .role-tabs { display: grid; grid-template-columns: 1fr 1fr; margin: 1.25rem 0; border-bottom: .0625rem solid var(--line); }
 .role-tabs button { padding: .625rem; border: 0; border-bottom: .125rem solid transparent; color: var(--muted); background: transparent; font-weight: 700; cursor: pointer; }
 .role-tabs button[aria-selected="true"] { color: var(--forest); border-color: var(--forest); }

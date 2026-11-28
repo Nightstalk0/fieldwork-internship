@@ -151,13 +151,15 @@ def _send_password_reset_code(user):
         "If you did not request a password reset, you can safely ignore this email."
     )
     try:
-        send_mail(
+        sent_count = send_mail(
             subject,
             message,
             settings.DEFAULT_FROM_EMAIL,
             [locked_user.email],
             fail_silently=False,
         )
+        if sent_count != 1:
+            raise OSError("Email provider did not confirm delivery.")
     except (SMTPException, OSError):
         LOGGER.exception("Failed to send password reset code for user %s.", locked_user.pk)
         reset_code.used_at = timezone.now()
@@ -311,6 +313,11 @@ def password_reset_confirm(request):
                 used_at__isnull=True,
             ).exclude(pk=locked_code.pk).update(used_at=now)
         _clear_password_reset_session(request)
-        messages.success(request, "Your password has been reset. Sign in with your new password.")
-        return redirect("accounts:login")
+        return redirect("accounts:password_reset_success")
     return render(request, "accounts/password_reset_confirm.html", {"form": form})
+
+
+def password_reset_success(request):
+    if request.user.is_authenticated:
+        return redirect("portal:dashboard")
+    return render(request, "accounts/password_reset_success.html")

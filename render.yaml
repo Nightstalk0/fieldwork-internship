@@ -21,6 +21,8 @@ services:
         sync: false
       - key: DEFAULT_FROM_EMAIL
         sync: false
+      - key: EMAIL_PROVIDER
+        value: resend
       - key: BREVO_API_KEY
         sync: false
       - key: RESEND_API_KEY

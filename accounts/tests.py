@@ -1,11 +1,13 @@
 from datetime import timedelta
+import json
 import re
 from smtplib import SMTPException
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.core import mail
+from django.core.mail import EmailMessage
 from django.http import HttpResponse
-from django.test import RequestFactory, TestCase
+from django.test import RequestFactory, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -16,6 +18,40 @@ from .models import PasswordResetCode, User
 
 
 class AccountFlowTests(TestCase):
+    @override_settings(
+        RESEND_API_KEY="test-resend-key",
+        DEFAULT_FROM_EMAIL="Fieldwork <no-reply@example.test>",
+        EMAIL_TIMEOUT=10,
+    )
+    def test_resend_http_backend_forms_api_request_and_handles_success(self):
+        response = MagicMock()
+        response.status = 200
+        response_context = MagicMock()
+        response_context.__enter__.return_value = response
+        response_context.__exit__.return_value = False
+
+        message = EmailMessage(
+            "Password reset",
+            "Your code is 123456",
+            "Fieldwork <no-reply@example.test>",
+            ["recipient@example.test"],
+        )
+
+        with patch("urllib.request.urlopen", return_value=response_context) as urlopen:
+            sent = mail.get_connection(
+                "accounts.email_backends.ResendEmailBackend",
+            ).send_messages([message])
+
+        self.assertEqual(sent, 1)
+        request = urlopen.call_args.args[0]
+        payload = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(request.full_url, "https://api.resend.com/emails")
+        self.assertEqual(request.method, "POST")
+        self.assertEqual(payload["to"], ["recipient@example.test"])
+        self.assertEqual(payload["subject"], "Password reset")
+        self.assertEqual(payload["text"], "Your code is 123456")
+        self.assertEqual(request.headers["Authorization"], "Bearer test-resend-key")
+
     def test_coordinator_role_displays_as_admin_without_changing_its_stored_value(self):
         coordinator = User.objects.create_user(
             username="existing-admin-role",
@@ -524,7 +560,10 @@ class AccountFlowTests(TestCase):
             "new_password1": "Updated-Strong-Password-2026!",
             "new_password2": "Updated-Strong-Password-2026!",
         })
-        self.assertRedirects(reset, reverse("accounts:login"))
+        self.assertRedirects(reset, reverse("accounts:password_reset_success"))
+        success = self.client.get(reverse("accounts:password_reset_success"))
+        self.assertContains(success, "Your password has been reset successfully.")
+        self.assertContains(success, "Back to sign in")
 
         user.refresh_from_db()
         self.assertFalse(user.check_password("Initial-Password-927!"))

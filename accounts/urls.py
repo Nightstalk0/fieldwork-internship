@@ -7,6 +7,7 @@ from .views import (
     logout_view,
     password_reset_confirm,
     password_reset_request,
+    password_reset_success,
     password_reset_verify,
     register,
 )
@@ -17,6 +18,7 @@ urlpatterns = [
     path("forgot-password/", password_reset_request, name="password_reset"),
     path("forgot-password/verify/", password_reset_verify, name="password_reset_verify"),
     path("forgot-password/reset/", password_reset_confirm, name="password_reset_confirm"),
+    path("forgot-password/success/", password_reset_success, name="password_reset_success"),
     path("company/login/", company_login_view, name="company_login"),
     path("company/register/", company_register_view, name="company_register"),
     path("register/", register, name="register"),
