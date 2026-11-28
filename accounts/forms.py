@@ -1,6 +1,6 @@
 from django import forms
 from django.conf import settings
-from django.contrib.auth.forms import AuthenticationForm, UserCreationForm
+from django.contrib.auth.forms import AuthenticationForm, SetPasswordForm, UserCreationForm
 from django.core.validators import RegexValidator
 
 from portal.models import CompanyProfile, InternProfile
@@ -292,3 +292,62 @@ class InternRegistrationForm(RegistrationForm):
 
     def clean_role(self):
         return User.Role.INTERN
+
+
+class PasswordResetRequestForm(forms.Form):
+    email = forms.EmailField(
+        label="Email address",
+        widget=forms.EmailInput(attrs={
+            "autocomplete": "email",
+            "placeholder": "you@example.com",
+        }),
+    )
+    if settings.CAPTCHA_ENABLED:
+        captcha = CaptchaField()
+
+    def clean_email(self):
+        return self.cleaned_data["email"].strip().lower()
+
+
+class PasswordResetVerifyForm(forms.Form):
+    email = forms.EmailField(
+        label="Email address",
+        widget=forms.EmailInput(attrs={"autocomplete": "email"}),
+    )
+    code = forms.CharField(
+        label="Verification code",
+        min_length=6,
+        max_length=12,
+        widget=forms.TextInput(attrs={
+            "inputmode": "numeric",
+            "autocomplete": "one-time-code",
+            "pattern": "[0-9]{6}",
+            "maxlength": "6",
+            "placeholder": "6-digit code",
+        }),
+    )
+
+    def clean_email(self):
+        return self.cleaned_data["email"].strip().lower()
+
+    def clean_code(self):
+        code = "".join((self.cleaned_data.get("code") or "").split())
+        if not code.isdigit() or len(code) != 6:
+            raise forms.ValidationError("Enter the 6-digit verification code sent to your email.")
+        return code
+
+
+class PasswordResetSetPasswordForm(SetPasswordForm):
+    def __init__(self, user, *args, **kwargs):
+        super().__init__(user, *args, **kwargs)
+        self.fields["new_password1"].widget.attrs.update({
+            "autocomplete": "new-password",
+            "minlength": 8,
+            "data-registration-password": "",
+            "aria-describedby": "password1-feedback",
+        })
+        self.fields["new_password2"].widget.attrs.update({
+            "autocomplete": "new-password",
+            "data-password-confirmation": "",
+            "aria-describedby": "password2-feedback",
+        })

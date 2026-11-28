@@ -1,11 +1,18 @@
+from datetime import timedelta
+import re
+from smtplib import SMTPException
+from unittest.mock import patch
+
+from django.core import mail
 from django.http import HttpResponse
 from django.test import RequestFactory, TestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from portal.models import INSTITUTION_NAME
 
 from .middleware import RoleBasedRouteGuardMiddleware
-from .models import User
+from .models import PasswordResetCode, User
 
 
 class AccountFlowTests(TestCase):
@@ -472,3 +479,178 @@ class AccountFlowTests(TestCase):
         self.client.force_login(user)
         response = self.client.get(reverse("portal:coordinator_dashboard"))
         self.assertEqual(response.status_code, 403)
+
+    def test_login_page_links_to_forgot_password(self):
+        response = self.client.get(reverse("accounts:login"))
+        self.assertContains(response, reverse("accounts:password_reset"))
+        self.assertContains(response, "Forgot your password?")
+
+    def test_forgot_password_email_code_verification_and_reset_flow(self):
+        user = User.objects.create_user(
+            username="reset-intern",
+            email="reset.intern@example.test",
+            password="Initial-Password-927!",
+        )
+        request_url = reverse("accounts:password_reset")
+        verify_url = reverse("accounts:password_reset_verify")
+        confirm_url = reverse("accounts:password_reset_confirm")
+
+        requested = self.client.post(request_url, {"email": "  RESET.INTERN@example.test  "})
+        self.assertRedirects(requested, verify_url)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ["reset.intern@example.test"])
+        match = re.search(r"\b(\d{6})\b", mail.outbox[0].body)
+        self.assertIsNotNone(match)
+        code = match.group(1)
+
+        record = PasswordResetCode.objects.get(user=user)
+        self.assertNotIn(code, record.code_hash)
+        self.assertTrue(record.verify_code(code))
+
+        verified = self.client.post(verify_url, {
+            "email": "reset.intern@example.test",
+            "code": code,
+        })
+        self.assertRedirects(verified, confirm_url)
+
+        weak = self.client.post(confirm_url, {
+            "new_password1": "12345678",
+            "new_password2": "12345678",
+        })
+        self.assertEqual(weak.status_code, 200)
+        self.assertTrue(weak.context["form"].errors)
+
+        reset = self.client.post(confirm_url, {
+            "new_password1": "Updated-Strong-Password-2026!",
+            "new_password2": "Updated-Strong-Password-2026!",
+        })
+        self.assertRedirects(reset, reverse("accounts:login"))
+
+        user.refresh_from_db()
+        self.assertFalse(user.check_password("Initial-Password-927!"))
+        self.assertTrue(user.check_password("Updated-Strong-Password-2026!"))
+        record.refresh_from_db()
+        self.assertIsNotNone(record.used_at)
+
+        reused_confirm = self.client.get(confirm_url)
+        self.assertRedirects(reused_confirm, request_url)
+        reused_verify = self.client.post(verify_url, {
+            "email": "reset.intern@example.test",
+            "code": code,
+        })
+        self.assertEqual(reused_verify.status_code, 200)
+        self.assertContains(reused_verify, "invalid or has expired")
+
+    def test_forgot_password_unknown_email_does_not_leak_account_status(self):
+        response = self.client.post(
+            reverse("accounts:password_reset"),
+            {"email": "nonexistent@example.test"},
+            follow=True,
+        )
+        self.assertRedirects(response, reverse("accounts:password_reset_verify"))
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertContains(response, "If an active account matches that email")
+
+    def test_forgot_password_code_expires_and_locks_after_five_failed_attempts(self):
+        user = User.objects.create_user(
+            username="lockout-intern",
+            email="lockout@example.test",
+            password="Initial-Password-927!",
+        )
+        self.client.post(reverse("accounts:password_reset"), {"email": "lockout@example.test"})
+        code = re.search(r"\b(\d{6})\b", mail.outbox[0].body).group(1)
+        wrong_code = "000000" if code != "000000" else "111111"
+
+        verify_url = reverse("accounts:password_reset_verify")
+        for _ in range(PasswordResetCode.MAX_FAILED_ATTEMPTS):
+            attempt = self.client.post(verify_url, {
+                "email": "lockout@example.test",
+                "code": wrong_code,
+            })
+            self.assertEqual(attempt.status_code, 200)
+
+        record = PasswordResetCode.objects.get(user=user)
+        self.assertIsNotNone(record.used_at)
+        self.assertEqual(record.failed_attempts, PasswordResetCode.MAX_FAILED_ATTEMPTS)
+
+        blocked = self.client.post(verify_url, {
+            "email": "lockout@example.test",
+            "code": code,
+        })
+        self.assertEqual(blocked.status_code, 200)
+        self.assertContains(blocked, "invalid or has expired")
+
+        PasswordResetCode.objects.filter(user=user).update(
+            used_at=None,
+            failed_attempts=0,
+            expires_at=timezone.now() - timedelta(minutes=1),
+        )
+        expired = self.client.post(verify_url, {
+            "email": "lockout@example.test",
+            "code": code,
+        })
+        self.assertEqual(expired.status_code, 200)
+        self.assertContains(expired, "invalid or has expired")
+
+    def test_forgot_password_resend_respects_cooldown_and_invalidates_previous_code(self):
+        user = User.objects.create_user(
+            username="resend-intern",
+            email="resend@example.test",
+            password="Initial-Password-927!",
+        )
+        self.client.post(reverse("accounts:password_reset"), {"email": "resend@example.test"})
+        first_code = re.search(r"\b(\d{6})\b", mail.outbox[0].body).group(1)
+
+        verify_url = reverse("accounts:password_reset_verify")
+        too_soon = self.client.post(
+            verify_url,
+            {"action": "resend", "email": "resend@example.test"},
+            follow=True,
+        )
+        self.assertContains(too_soon, "Please wait")
+        self.assertEqual(len(mail.outbox), 1)
+
+        PasswordResetCode.objects.filter(user=user).update(
+            created_at=timezone.now() - timedelta(seconds=PasswordResetCode.RESEND_COOLDOWN_SECONDS + 5),
+        )
+        resent = self.client.post(
+            verify_url,
+            {"action": "resend", "email": "resend@example.test"},
+            follow=True,
+        )
+        self.assertContains(resent, "new 6-digit verification code")
+        self.assertEqual(len(mail.outbox), 2)
+        second_code = re.search(r"\b(\d{6})\b", mail.outbox[1].body).group(1)
+
+        old_rejected = self.client.post(verify_url, {
+            "email": "resend@example.test",
+            "code": first_code,
+        })
+        if first_code != second_code:
+            self.assertEqual(old_rejected.status_code, 200)
+            self.assertContains(old_rejected, "Incorrect verification code")
+        new_accepted = self.client.post(verify_url, {
+            "email": "resend@example.test",
+            "code": second_code,
+        })
+        self.assertRedirects(new_accepted, reverse("accounts:password_reset_confirm"))
+
+    def test_forgot_password_confirm_requires_verified_session_and_handles_smtp_error(self):
+        User.objects.create_user(
+            username="smtp-intern",
+            email="smtp@example.test",
+            password="Initial-Password-927!",
+        )
+        direct_confirm = self.client.get(reverse("accounts:password_reset_confirm"))
+        self.assertRedirects(direct_confirm, reverse("accounts:password_reset"))
+
+        with patch("accounts.views.send_mail", side_effect=SMTPException("SMTP unavailable")):
+            failed_send = self.client.post(
+                reverse("accounts:password_reset"),
+                {"email": "smtp@example.test"},
+            )
+        self.assertEqual(failed_send.status_code, 200)
+        self.assertContains(failed_send, "We could not send the verification email right now.")
+        self.assertFalse(
+            PasswordResetCode.objects.filter(email="smtp@example.test", used_at__isnull=True).exists()
+        )

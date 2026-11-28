@@ -179,19 +179,39 @@ textarea { resize: vertical; line-height: 1.45; }
 .clock-actions { grid-column: 1 / -1; display: flex; align-items: center; gap: 1rem; padding-top: 1.0625rem; border-top: .0625rem solid var(--line); }
 .clock-form { margin: 0; }
 .face-camera-frame { position: relative; width: min(100%, 32.5rem); aspect-ratio: 4 / 3; overflow: hidden; border-radius: .5rem; background: #17221d; }
-.face-enrollment-form { margin-top: .75rem; }
-.face-enrollment-layout { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(17rem, .85fr); gap: 1.25rem; align-items: start; }
-.face-enrollment-frame { width: 100%; }
-.face-enrollment-details { display: grid; gap: .75rem; align-content: start; }
-.face-privacy-badge { margin: 0; padding: .625rem .75rem; border: .0625rem solid var(--line); border-radius: var(--radius-md); color: var(--ink); background: var(--surface-soft); font-size: var(--font-sm); line-height: 1.4; }
-.face-enrollment-tips { display: grid; gap: .5rem; margin: 0; padding: 0; list-style: none; }
-.face-enrollment-tips li { display: flex; align-items: center; gap: .625rem; color: var(--ink); font-size: var(--font-sm); }
+.face-enrollment-panel { max-width: 64rem; }
+.face-enrollment-header { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: .75rem 1.25rem; margin-bottom: .75rem; }
+.face-enrollment-header h2 { margin-bottom: .25rem; }
+.face-enrollment-header p:last-child { margin-bottom: 0; }
+.face-enrollment-status-group { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.face-enrollment-status-group .status { margin: 0; }
+.face-admin-feedback { padding: .625rem .875rem; border-left: .1875rem solid var(--amber); border-radius: .375rem; background: var(--accent-soft); }
+.face-enrollment-form { margin-top: 1rem; }
+.face-enrollment-layout { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, .95fr); gap: 1.5rem; align-items: start; }
+.face-enrollment-media { min-width: 0; display: grid; gap: .75rem; align-content: start; }
+.face-enrollment-stage { position: relative; width: 100%; }
+.face-enrollment-frame { width: 100%; max-width: 100%; margin: 0; }
+.face-camera-placeholder { position: absolute; inset: 0; display: grid; place-items: center; padding: 1.25rem; text-align: center; color: rgba(255, 255, 255, .92); background: radial-gradient(circle at center, rgba(42, 61, 52, .75), rgba(23, 34, 29, .95)); }
+.face-camera-placeholder[hidden] { display: none; }
+.face-camera-placeholder p { max-width: 18rem; margin: 0; font-size: var(--font-sm); line-height: 1.5; }
+.face-enrollment-guidance { margin: 0; font-size: var(--font-sm); line-height: 1.5; }
+.face-enrollment-camera-actions { display: flex; flex-wrap: wrap; gap: .625rem; }
+.face-enrollment-camera-actions .button { flex: 1 1 11rem; min-height: 2.75rem; }
+.face-enrollment-details { min-width: 0; display: grid; gap: .875rem; align-content: start; }
+.face-enrollment-instructions { display: grid; gap: .625rem; }
+.face-privacy-badge { margin: 0; padding: .75rem .875rem; border: .0625rem solid var(--line); border-radius: var(--radius-md); color: var(--ink); background: var(--surface-soft); font-size: var(--font-sm); line-height: 1.45; }
+.face-enrollment-tips { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr)); gap: .5rem; margin: 0; padding: 0; list-style: none; }
+.face-enrollment-tips li { display: flex; align-items: center; gap: .5rem; padding: .5rem .625rem; border: .0625rem solid var(--line); border-radius: var(--radius-sm); background: var(--surface); color: var(--ink); font-size: var(--font-sm); }
 .face-tip-icon { width: 1.75rem; height: 1.75rem; flex: 0 0 1.75rem; display: grid; place-items: center; border-radius: 50%; color: var(--primary); background: var(--primary-light); font-size: 1rem; }
-.face-enrollment-consent-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .75rem; align-items: center; padding-top: .75rem; border-top: .0625rem solid var(--line); }
-.face-enrollment-consent-row .consent-checkbox { font-size: var(--font-sm); line-height: 1.45; }
-.face-enrollment-consent-row .consent-checkbox input { width: 1.25rem; min-height: 1.25rem; height: 1.25rem; margin: 0 .45rem 0 0; vertical-align: middle; }
-.face-enrollment-controls { display: flex; flex-wrap: wrap; gap: .5rem; }
-.face-enrollment-controls .button { flex: 1 1 auto; }
+.face-consent-card { padding: .875rem 1rem; border: .0625rem solid var(--line); border-radius: var(--radius-md); background: var(--surface-soft); }
+.face-consent-card .consent-checkbox { display: flex; align-items: flex-start; gap: .75rem; font-size: var(--font-sm); font-weight: 500; line-height: 1.55; cursor: pointer; }
+.face-consent-card .consent-checkbox input { width: 1.25rem; height: 1.25rem; min-height: 1.25rem; flex: 0 0 1.25rem; margin: .1875rem 0 0; cursor: pointer; }
+.face-consent-card .consent-checkbox span { min-width: 0; overflow-wrap: break-word; }
+.face-enrollment-validation { margin: 0; font-size: var(--font-sm); line-height: 1.45; }
+.face-validation-ready { color: var(--forest); font-weight: 600; }
+.face-validation-error { color: var(--coral); font-weight: 600; }
+.face-enrollment-controls { display: flex; flex-wrap: wrap; gap: .625rem; }
+.face-enrollment-controls .button { flex: 1 1 100%; min-height: 2.875rem; }
 .face-reenrollment-request-form { max-width: 38rem; margin-top: .75rem; }
 .attendance-action-card { width: min(100%, 62rem); margin: 0 auto 1.25rem; }
 .attendance-status-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: 1rem; }
@@ -257,7 +277,8 @@ textarea { resize: vertical; line-height: 1.45; }
 .face-guide-mismatch .face-detection-status { background: rgba(142, 61, 53, .96); }
 .face-capture-progress { display: flex; align-items: center; gap: .625rem; margin-top: .5rem; color: var(--muted); font-size: var(--font-sm); }
 .face-capture-progress progress { width: min(100%, 14rem); height: .75rem; accent-color: var(--forest); }
-.face-enrollment-captured-preview { width: min(100%, 32.5rem); margin-top: .75rem; overflow: hidden; border: .0625rem solid var(--line); border-radius: var(--radius-md); background: #17221d; }
+.face-enrollment-captured-preview { width: 100%; margin-top: 0; overflow: hidden; border: .0625rem solid var(--line); border-radius: var(--radius-md); background: #17221d; }
+.face-enrollment-captured-preview[hidden] { display: none; }
 .face-enrollment-captured-preview img { width: 100%; max-height: 24rem; display: block; object-fit: contain; }
 .face-capture-diagnostics { margin-top: .75rem; padding: .75rem; border: .0625rem dashed var(--line); border-radius: var(--radius-md); background: var(--surface-soft); font-size: var(--font-sm); }
 .face-capture-diagnostics h3 { margin: 0 0 .5rem; font-size: var(--font-base); }
@@ -285,7 +306,6 @@ textarea { resize: vertical; line-height: 1.45; }
 .location-reason-dialog form { display: grid; gap: .75rem; }
 .location-reason-dialog h2, .location-reason-dialog p { margin: 0; }
 .location-reason-dialog .clock-actions { justify-content: flex-end; gap: .625rem; padding-top: .75rem; border-top: 0; }
-.face-enrollment-frame { margin: 1rem 0 .625rem; }
 .consent-checkbox { display: flex; align-items: flex-start; gap: .625rem; line-height: 1.55; }
 .consent-checkbox input { width: 1.125rem; min-height: 1.125rem; flex: 0 0 auto; margin: .125rem 0 0; }
 .login-field { display: grid; gap: .3125rem; }
@@ -408,11 +428,12 @@ input:focus, select:focus, textarea:focus { outline: .1875rem solid rgba(72, 38,
 @media (max-width: 62rem) {
   .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .content-grid { grid-template-columns: minmax(0, 1fr); }
+  .face-enrollment-layout { grid-template-columns: minmax(0, 1fr); gap: 1.125rem; }
+  .face-enrollment-stage { max-width: 34rem; }
 }
 @media (max-width: 48rem) {
-  .face-enrollment-layout { grid-template-columns: 1fr; }
-  .face-enrollment-consent-row { grid-template-columns: 1fr; }
-  .face-enrollment-controls .button { flex: 1 1 10rem; }
+  .face-enrollment-stage { max-width: 100%; }
+  .face-enrollment-controls .button { flex: 1 1 100%; }
   .worksite-setup-steps { grid-template-columns: 1fr; }
   .topbar { position: sticky; top: 0; z-index: 20; min-height: var(--mobile-header-height); justify-content: space-between; padding: .5rem 1rem; }
   .topbar:not(.sidebar) { gap: .5rem; }

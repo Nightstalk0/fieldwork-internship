@@ -151,6 +151,27 @@ LOGIN_URL = "accounts:login"
 LOGIN_REDIRECT_URL = "portal:dashboard"
 LOGOUT_REDIRECT_URL = "accounts:login"
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "internship@example.com")
+EMAIL_HOST = os.getenv("EMAIL_HOST", "")
+try:
+    EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
+    EMAIL_TIMEOUT = int(os.getenv("EMAIL_TIMEOUT", "10"))
+except ValueError as exc:
+    raise ImproperlyConfigured("EMAIL_PORT and EMAIL_TIMEOUT must be positive integers.") from exc
+if EMAIL_PORT < 1 or EMAIL_TIMEOUT < 1:
+    raise ImproperlyConfigured("EMAIL_PORT and EMAIL_TIMEOUT must be positive integers.")
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_SSL = os.getenv("EMAIL_USE_SSL", "false").lower() in {"1", "true", "yes"}
+EMAIL_USE_TLS = (
+    False
+    if EMAIL_USE_SSL
+    else os.getenv("EMAIL_USE_TLS", "true").lower() in {"1", "true", "yes"}
+)
+EMAIL_BACKEND = os.getenv("EMAIL_BACKEND") or (
+    "django.core.mail.backends.smtp.EmailBackend"
+    if EMAIL_HOST or not DEBUG
+    else "django.core.mail.backends.console.EmailBackend"
+)
 CAPTCHA_ENABLED = os.getenv("CAPTCHA_ENABLED", "false").lower() in {"1", "true", "yes"}
 FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
 DATA_UPLOAD_MAX_MEMORY_SIZE = 12 * 1024 * 1024

@@ -2316,25 +2316,53 @@ class PortalWorkflowTests(TestCase):
         self.assertContains(profile, "Center your face in the oval")
         self.assertContains(profile, "processed in memory")
         self.assertContains(profile, "Capture begins automatically")
-        self.assertContains(profile, "two acceptable frames")
+        self.assertContains(profile, "Capture Manually")
         self.assertContains(profile, 'id="manual-capture-enrollment" type="button" disabled hidden')
-        self.assertContains(profile, 'id="capture-runtime-diagnostics"')
-        self.assertContains(profile, 'id="runtime-stability-counter"')
-        self.assertContains(profile, 'id="runtime-backend-request"')
-        self.assertContains(profile, 'id="runtime-blocked-reason"')
-        self.assertContains(profile, 'faceDetected: "No"')
-        self.assertContains(profile, "readyState < 2")
-        self.assertContains(profile, "last usable face detection is stale")
-        self.assertContains(profile, "Face Detected — Hold still")
         self.assertContains(profile, 'id="enrollment-capture-progress-bar"')
         self.assertNotContains(profile, 'id="capture-face-enrollment"')
         self.assertContains(profile, 'id="submit-face-enrollment" type="submit" disabled')
-        self.assertContains(profile, "submitValidatedEnrollment")
-        self.assertNotContains(profile, "Development capture diagnostics")
+        self.assertContains(profile, "Submit for Admin Review")
+        self.assertContains(profile, "Face captured successfully!")
+        self.assertContains(profile, 'data-diagnostics-enabled="false"')
+        self.assertContains(profile, 'class="face-consent-card"')
+        self.assertContains(profile, "enrollmentSubmitting")
+        for state_label in (
+            "Camera starting",
+            "Camera ready",
+            "Face detected",
+            "Checking face",
+            "Captured successfully",
+            "Reviewing captured image",
+            "Submitting enrollment",
+            "Capture failed",
+            "Submission failed",
+        ):
+            self.assertContains(profile, state_label)
+        for removed_diagnostic in (
+            "Live capture diagnostics",
+            "Development capture diagnostics",
+            "Camera initialized",
+            "Video ready state",
+            "Video dimensions",
+            "Detection callback",
+            "Face bounding box",
+            "Detection confidence",
+            "Stability counter",
+            "Canvas extraction",
+            "Backend request",
+            "Capture function called",
+            "Blocked reason",
+            "BLOCKED REASON",
+            "capture-runtime-diagnostics",
+            "enrollment-capture-diagnostics",
+            "submitValidatedEnrollment",
+        ):
+            self.assertNotContains(profile, removed_diagnostic)
         with self.settings(FACE_CAPTURE_DIAGNOSTICS=True):
             diagnostic_profile = self.client.get(profile_url)
-        self.assertContains(diagnostic_profile, "Development capture diagnostics")
-        self.assertContains(diagnostic_profile, "Blocked because")
+        self.assertContains(diagnostic_profile, 'data-diagnostics-enabled="true"')
+        self.assertNotContains(diagnostic_profile, "Development capture diagnostics")
+        self.assertNotContains(diagnostic_profile, "Live capture diagnostics")
         payload = {"face_image": self._camera_data_url()}
 
         missing_consent = self.client.post(enrollment_url, payload)
@@ -2355,6 +2383,7 @@ class PortalWorkflowTests(TestCase):
         self.assertEqual(FaceEnrollmentSubmission.objects.filter(intern=self.intern).count(), 1)
         enrolled_profile = self.client.get(profile_url)
         self.assertContains(enrolled_profile, "Pending Admin Review")
+        self.assertContains(enrolled_profile, 'data-enrollment-state="pending-admin-review"')
         self.assertNotContains(enrolled_profile, 'id="intern-face-enrollment-form"')
 
         coordinator = User.objects.create_user(username="initial-face-approver", role=User.Role.COORDINATOR)
@@ -2374,7 +2403,29 @@ class PortalWorkflowTests(TestCase):
         pending_worksite.refresh_from_db()
         self.assertEqual(pending_worksite.approval_status, WorksiteLocation.ApprovalStatus.PENDING)
         self.client.force_login(self.intern_user)
-        self.assertContains(self.client.get(profile_url), "Enrolled / Approved")
+        approved_profile = self.client.get(profile_url)
+        self.assertContains(approved_profile, "Enrolled / Approved")
+        self.assertContains(approved_profile, 'data-enrollment-state="approved"')
+
+    def test_face_enrollment_ui_never_auto_submits_and_keeps_responsive_layout(self):
+        from pathlib import Path
+        from django.conf import settings
+
+        self.client.force_login(self.intern_user)
+        html = self.client.get(reverse("portal:profile")).content.decode()
+        self.assertNotIn(".requestSubmit(", html)
+        self.assertNotIn("enrollmentForm.submit(", html)
+        self.assertIn("consentCheckbox?.addEventListener(\"change\"", html)
+        self.assertIn("updateSubmitButtonState()", html)
+        self.assertIn("enrollmentSubmitting = true", html)
+        self.assertIn('saveEnrollmentButton.classList.add("is-loading")', html)
+
+        css = (Path(settings.BASE_DIR) / "static" / "css" / "portal.css").read_text(encoding="utf-8")
+        self.assertIn(".face-enrollment-panel", css)
+        self.assertIn(".face-consent-card", css)
+        self.assertIn(".face-enrollment-layout", css)
+        self.assertIn("@media (max-width: 62rem)", css)
+        self.assertNotIn(".face-enrollment-consent-row", css)
 
     @override_settings(FACE_EMBEDDING_ENCRYPTION_KEY=Fernet.generate_key().decode("ascii"))
     def test_admin_can_request_face_retake_without_replacing_current_enrollment(self):
