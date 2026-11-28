@@ -151,6 +151,8 @@ LOGIN_URL = "accounts:login"
 LOGIN_REDIRECT_URL = "portal:dashboard"
 LOGOUT_REDIRECT_URL = "accounts:login"
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "internship@example.com")
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "").strip()
 EMAIL_HOST = os.getenv("EMAIL_HOST", "")
 try:
     EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
@@ -168,7 +170,11 @@ EMAIL_USE_TLS = (
     else os.getenv("EMAIL_USE_TLS", "true").lower() in {"1", "true", "yes"}
 )
 EMAIL_BACKEND = os.getenv("EMAIL_BACKEND") or (
-    "django.core.mail.backends.smtp.EmailBackend"
+    "accounts.email_backends.ResendEmailBackend"
+    if RESEND_API_KEY
+    else "accounts.email_backends.BrevoEmailBackend"
+    if BREVO_API_KEY
+    else "django.core.mail.backends.smtp.EmailBackend"
     if EMAIL_HOST or not DEBUG
     else "django.core.mail.backends.console.EmailBackend"
 )
