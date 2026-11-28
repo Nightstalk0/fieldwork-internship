@@ -270,6 +270,7 @@ textarea { resize: vertical; line-height: 1.45; }
 .face-check-result h3 { margin-bottom: .5rem; font-size: 1.15rem; }
 .face-check-result p { margin-bottom: .5rem; font-size: 0.95rem; line-height: 1.5; }
 .face-check-result .clock-actions { padding-top: .75rem; }
+.face-check-result .status { max-width: 100%; border-radius: var(--radius-sm); white-space: normal; line-height: 1.45; }
 .face-check-good { border-left-color: var(--forest); }
 .face-check-needs_review { border-left-color: var(--amber); }
 .face-check-poor { border-left-color: var(--coral); }

@@ -447,6 +447,7 @@
   const capturedPreview = document.getElementById("enrollment-captured-preview");
   const capturedImage = document.getElementById("enrollment-captured-image");
   const faceImageInput = document.getElementById("enrollment-face-image");
+  const consentCheckbox = enrollmentForm.querySelector('input[name="consent_confirmed"]');
   const enrollmentDiagnostics = document.getElementById("enrollment-capture-diagnostics");
   const hasExistingEnrollment = enrollmentForm.dataset.hasEnrollment === "true";
   const requiredStableEnrollmentFrames = 2;
@@ -808,11 +809,21 @@
       saveEnrollmentButton.disabled = !captureIsValid;
       enrollmentResult.hidden = false;
       enrollmentStatus.textContent = captureIsValid
-        ? result.identity_status === "matched" ? "Face Matched. Review the image, then submit it for Admin review." : "Captured Successfully. Review the image, then submit it for Admin review."
+        ? result.identity_status === "matched"
+          ? consentCheckbox?.checked
+            ? "Face Matched. Submitting enrollment for Admin review…"
+            : "Face Matched. Check the consent box to submit automatically."
+          : consentCheckbox?.checked
+            ? "Captured Successfully. Submitting enrollment for Admin review…"
+            : "Captured Successfully. Check the consent box to submit automatically."
         : result.label === "Face Not Matched" ? "Face Not Matched. Retake using your own face." : "Capture check failed. Retake and follow the positioning guide.";
       updateCaptureRuntimeDiagnostics({
         captureReady: captureIsValid ? "Yes — checks passed" : "No — backend checks failed",
-        blockedReason: captureIsValid ? "No blocking condition; review the preview before submitting." : result.message || "Backend quality or identity checks failed.",
+        blockedReason: captureIsValid
+          ? consentCheckbox?.checked
+            ? "No blocking condition; submitting enrollment automatically."
+            : "Check the informed consent box to submit automatically."
+          : result.message || "Backend quality or identity checks failed.",
       });
       enrollmentDetectionStatus.textContent = captureIsValid ? result.label : result.label || "Position Your Face";
       enrollmentCameraFrame.classList.remove("face-guide-processing", "face-guide-ready", "face-guide-error", "face-guide-mismatch");
@@ -835,6 +846,9 @@
         readiness: captureIsValid ? "PASS" : "FAIL",
         blockedReason: captureIsValid ? "No blocking condition." : result.message || "Capture checks failed.",
       });
+      if (captureIsValid) {
+        submitValidatedEnrollment();
+      }
     } catch (error) {
       enrollmentCaptureStarted = false;
       faceCaptureReady = false;
@@ -1307,6 +1321,25 @@
     });
     return enrollmentCameraPromise;
   };
+
+  const submitValidatedEnrollment = () => {
+    if (!faceImageInput.value || saveEnrollmentButton.disabled || !consentCheckbox?.checked) return false;
+    enrollmentStatus.textContent = "Submitting your face enrollment for Admin review…";
+    if (typeof enrollmentForm.requestSubmit === "function") {
+      enrollmentForm.requestSubmit(saveEnrollmentButton);
+    } else {
+      enrollmentForm.submit();
+    }
+    return true;
+  };
+
+  consentCheckbox?.addEventListener("change", () => {
+    if (!consentCheckbox.checked) return;
+    if (submitValidatedEnrollment()) return;
+    if (!enrollmentStream && !enrollmentCameraPromise && !enrollmentCaptureStarted) {
+      void startEnrollmentCamera();
+    }
+  });
 
   startEnrollmentButton.addEventListener("click", startEnrollmentCamera);
 

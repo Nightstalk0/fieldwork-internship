@@ -57,7 +57,7 @@
   <div class="clock-actions">
     {% if not today_log.clock_in and 'time_in' not in pending_face_events %}
       {% if location_enrolled %}
-      <form method="post" class="clock-form" data-action="clock_in">
+      <form method="post" action="{% url 'portal:attendance' %}" class="clock-form" data-action="clock_in">
         {% csrf_token %}
         <input type="hidden" name="action" value="clock_in">
         <input type="hidden" name="clock_in_latitude">
@@ -76,7 +76,7 @@
       <span class="status">Time in pending review</span>
     {% elif not today_log.clock_out and 'time_out' not in pending_face_events %}
     {% if location_enrolled %}
-    <form method="post" class="clock-form" data-action="clock_out">
+    <form method="post" action="{% url 'portal:attendance' %}" class="clock-form" data-action="clock_out">
       {% csrf_token %}
       <input type="hidden" name="action" value="clock_out">
       <input type="hidden" name="clock_out_latitude">
@@ -162,6 +162,24 @@
   let detectionCallbackCount = 0;
   let captureAttemptCount = 0;
   let lastFaceMessage = "";
+  let retakeTimeoutId = null;
+
+  const clearScheduledRetake = () => {
+    if (retakeTimeoutId !== null) {
+      window.clearTimeout(retakeTimeoutId);
+      retakeTimeoutId = null;
+    }
+  };
+
+  const scheduleAutoRetake = (delayMs) => {
+    clearScheduledRetake();
+    retakeTimeoutId = window.setTimeout(() => {
+      retakeTimeoutId = null;
+      if (currentForm && !attendanceSubmitting) {
+        document.getElementById("retake-face").click();
+      }
+    }, delayMs);
+  };
 
   const setProgress = (key, text, state = "waiting") => {
     if (diagnosticsEnabled) console.debug("[attendance-face]", key, text, state);
@@ -356,12 +374,12 @@
       "faceSize",
       `${Math.round(faceWidth)} × ${Math.round(faceHeight)} px (${Math.round(faceWidth / result.image_width * 100)}% × ${Math.round(faceHeight / result.image_height * 100)}% of frame)`,
     );
+    let liveQualityWarning = null;
     if (candidate.quality_issue === "lighting") {
-      setProgress("quality", "Fail — lighting", "fail");
-      setProgress("alignment", "Waiting for usable image", "waiting");
-      resetFaceStability("Poor lighting is preventing face-quality validation.");
-      setVerificationState("CHECKING_FACE_QUALITY", "Move to a brighter area.");
-      return { state: "", message: "Please move to a brighter area." };
+      liveQualityWarning = "LIGHTING";
+    }
+    if (candidate.quality_issue === "contrast") {
+      liveQualityWarning = "LOW CONTRAST";
     }
     if (candidate.quality_issue === "blur") {
       setProgress("quality", "Fail — blur", "fail");
@@ -369,13 +387,6 @@
       resetFaceStability("The face image is blurred.");
       setVerificationState("CHECKING_FACE_QUALITY", "Keep your face steady; the image is blurry.");
       return { state: "", message: "Keep your face steady; the image is blurry." };
-    }
-    if (candidate.quality_issue === "contrast") {
-      setProgress("quality", "Fail — contrast", "fail");
-      setProgress("alignment", "Waiting for usable image", "waiting");
-      resetFaceStability("Face contrast is too low.");
-      setVerificationState("CHECKING_FACE_QUALITY", "Move to even lighting so your face is clearly visible.");
-      return { state: "", message: "Please move to a brighter area so your face is clearly visible." };
     }
     if (candidate.quality_issue === "too_far") {
       setProgress("quality", "Fail — face too far", "fail");
@@ -385,23 +396,27 @@
       return { state: "", message: "Move closer to the camera." };
     }
     if (candidate.roll_degrees !== null && Math.abs(candidate.roll_degrees) > 20) {
-      setProgress("quality", "PASS", "pass");
+      setProgress("quality", liveQualityWarning ? `Warning — ${liveQualityWarning}` : "PASS", liveQualityWarning ? "active" : "pass");
       setProgress("alignment", "Fail — head angle", "fail");
       resetFaceStability("Face landmarks are detected, but the head angle exceeds the existing alignment limit.");
       setVerificationState("ALIGNING_FACE", "Keep your head level and look directly at the camera.");
       return { state: "", message: "Keep your head level and look directly at the camera." };
     }
     if (!candidate.alignment_ready) {
-      setProgress("quality", "PASS", "pass");
+      setProgress("quality", liveQualityWarning ? `Warning — ${liveQualityWarning}` : "PASS", liveQualityWarning ? "active" : "pass");
       setProgress("alignment", "Fail — landmarks/alignment", "fail");
       resetFaceStability("The face landmarks do not satisfy the existing alignment check.");
       setVerificationState("ALIGNING_FACE", "Look directly at the camera and keep your full face visible.");
       return { state: "", message: "Look directly at the camera and keep your full face visible." };
     }
-    setProgress("quality", "PASS", "pass");
+    setProgress("quality", liveQualityWarning ? `Warning — ${liveQualityWarning}` : "PASS", liveQualityWarning ? "active" : "pass");
 
     const frame = document.getElementById("attendance-camera-frame");
     const frameRect = frame.getBoundingClientRect();
+    if (!frameRect.width || !frameRect.height || !video.videoWidth || !video.videoHeight) {
+      resetFaceStability("Video or guide dimensions are unavailable.");
+      return { state: "error", message: "The camera frame is not ready. Please try again." };
+    }
     const scale = Math.max(frameRect.width / video.videoWidth, frameRect.height / video.videoHeight);
     const offsetX = (video.videoWidth * scale - frameRect.width) / 2;
     const offsetY = (video.videoHeight * scale - frameRect.height) / 2;
@@ -420,8 +435,6 @@
     const centerY = (box.top + box.bottom) / 2;
     const guideWidth = frameRect.width * 0.58;
     const guideHeight = frameRect.height * 0.78;
-    const guideLeft = (frameRect.width - guideWidth) / 2;
-    const guideTop = (frameRect.height - guideHeight) / 2;
     const ellipseValue = (x, y) => (
       ((x - frameRect.width / 2) / (guideWidth / 2)) ** 2
       + ((y - frameRect.height / 2) / (guideHeight / 2)) ** 2
@@ -439,15 +452,9 @@
       setVerificationState("ALIGNING_FACE", "Move slightly farther away.");
       return { state: "", message: "Move slightly farther away." };
     }
-    if (
-      box.left < guideLeft
-      || box.right > guideLeft + guideWidth
-      || box.top < guideTop
-      || box.bottom > guideTop + guideHeight
-      || ellipseValue(centerX, centerY) > 0.55
-    ) {
-      setProgress("alignment", "Fail — outside guide", "fail");
-      resetFaceStability("The face bounding box is outside the existing oval guide.");
+    if (ellipseValue(centerX, centerY) > 0.70) {
+      setProgress("alignment", "Fail — face center outside guide", "fail");
+      resetFaceStability("The mapped face center is outside the oval guide.");
       setVerificationState("ALIGNING_FACE", "Center your full face inside the circle.");
       return { state: "", message: "Center your full face inside the circle." };
     }
@@ -490,7 +497,10 @@
     }
     setProgress("capture", "Waiting for stable face", "active");
     setVerificationState("FACE_STABILIZING", `${stabilityReason} Stable ${stableFaceFrames}/${requiredStableFaceFrames}.`);
-    return { state: "detected", message: "Keep your face steady inside the circle." };
+    const qualityNote = liveQualityWarning
+      ? ` ${liveQualityWarning === "LIGHTING" ? "Lighting varies" : "Contrast varies"}; the captured frame will be quality-checked.`
+      : "";
+    return { state: "detected", message: `Keep your face steady inside the circle.${qualityNote}` };
   };
 
   const startLiveFaceDetection = () => {
@@ -514,6 +524,7 @@
       frame: document.getElementById("attendance-camera-frame"),
       status: document.getElementById("attendance-detection-status"),
       endpoint: cameraPanel.dataset.detectionUrl,
+      intervalMs: 900,
       diagnosticsEnabled,
       onDetection: (result) => evaluateLiveFace(result),
       onDiagnostic: handleDetectionDiagnostic,
@@ -817,7 +828,7 @@
           similarity: null,
         });
         captureStatus.textContent = message;
-        window.setTimeout(() => document.getElementById("retake-face").click(), 1800);
+        scheduleAutoRetake(1800);
         return;
       }
       if (result.quality !== "good" || typeof result.verification_token !== "string" || !result.verification_token) {
@@ -831,7 +842,7 @@
           message,
           similarity: null,
         });
-        window.setTimeout(() => document.getElementById("retake-face").click(), 1800);
+        scheduleAutoRetake(1800);
         return;
       }
       pendingFaceImage = faceImage;
@@ -854,7 +865,7 @@
       } else {
         setProgress("final", "Verification failed", "fail");
         setVerificationState("NOT_MATCHED", result.message || "Face verification did not match.", "fail");
-        window.setTimeout(() => document.getElementById("retake-face").click(), 1800);
+        scheduleAutoRetake(1800);
       }
     } catch (error) {
       setProgress("backend", "Failed or timed out", "fail");
@@ -870,7 +881,7 @@
           : "The system could not check this frame right now. Retake it before recording attendance.",
         similarity: null,
       });
-      window.setTimeout(() => document.getElementById("retake-face").click(), 2500);
+      scheduleAutoRetake(2500);
     }
   };
 
@@ -887,7 +898,8 @@
       : "Location verified. Recording attendance...";
     setProgress("final", "Face match passed — submitting attendance", "active");
     try {
-      const { response, result } = await fetchJsonWithTimeout(currentForm.action, {
+      const submitUrl = currentForm.getAttribute("action") || "{% url 'portal:attendance' %}";
+      const { response, result } = await fetchJsonWithTimeout(submitUrl, {
         method: "POST",
         body: new FormData(currentForm),
         credentials: "same-origin",
@@ -1122,11 +1134,13 @@
           : "The camera frame could not be captured. Keep the preview open and try again.",
         similarity: null,
       });
-      window.setTimeout(() => document.getElementById("retake-face").click(), 1800);
+      scheduleAutoRetake(1800);
     }
   };
 
   document.getElementById("retake-face").addEventListener("click", async () => {
+    clearScheduledRetake();
+    if (!currentForm || attendanceSubmitting) return;
     checkResult.hidden = true;
     pendingFaceImage = "";
     pendingFaceVerificationToken = "";
@@ -1196,6 +1210,7 @@
   });
 
   document.getElementById("cancel-face-capture").addEventListener("click", () => {
+    clearScheduledRetake();
     stopCamera();
     currentForm = null;
     pendingFaceImage = "";
